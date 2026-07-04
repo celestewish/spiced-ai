@@ -1,0 +1,54 @@
+# --- Secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# --- Local database / app data ---
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.spiced/
+data/*.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+sdist/
+wheels/
+develop-eggs/
+.installed.cfg
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Testing / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+
+# --- Tooling / caches ---
+.ruff_cache/
+.mypy_cache/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
