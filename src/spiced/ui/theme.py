@@ -39,6 +39,28 @@ QFrame#Sidebar {{
     background: {SIDEBAR};
 }}
 
+/* Dashboard cards */
+QFrame#Card {{
+    background: {CREAM_PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+}}
+QFrame#ReadinessCard {{
+    background: {SELECTED};
+    border: 1px solid {SAFFRON};
+    border-radius: 12px;
+}}
+QLabel#CardTitle {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {SAFFRON_DEEP};
+}}
+QLabel#ReadinessLabel {{
+    font-size: 18px;
+    font-weight: 700;
+    color: {BROWN};
+}}
+
 QLabel#Brand {{
     font-size: 22px;
     font-weight: 700;

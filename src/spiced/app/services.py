@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
 from spiced.core.feedback import FeedbackService
 from spiced.core.projects_service import ProjectsService
@@ -40,6 +41,7 @@ class Services:
             TestCaseRepository(self.db), TestRunRepository(self.db)
         )
         self.feedback = FeedbackService(FeedbackBatchRepository(self.db))
+        self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
 
     def provider_name(self) -> str:
         import os
