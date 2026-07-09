@@ -75,6 +75,10 @@ Unity project.
 3. Track each case with a **status** — Not Run, Pass, Fail, or Blocked. When you
    mark a case **Fail**, you can attach a short failure note. This all works with
    no API key.
+4. Select a case in the list to load it into the form. Change any field and click
+   **Save changes**, or click **Delete** (with confirmation) to remove it — your
+   saved test-run history is never affected. Use **New / clear** to go back to
+   authoring a fresh case.
 
 **Review test results**
 
@@ -107,9 +111,9 @@ provider. Use the **mock** provider to try it offline with no key.
   folder with automatic validation.
 - **Unity Debugging Buddy**: deterministic local log parsing, structured AI
   guidance, and saved debug-session history (see above).
-- **Automated Testing**: offline manual test-case authoring and status tracking,
-  a deterministic result parser (text/JSON/XML), AI-assisted result review, and
-  saved test-run history (see above).
+- **Automated Testing**: offline manual test-case authoring, editing, deletion,
+  and status tracking, a deterministic result parser (text/JSON/XML), AI-assisted
+  result review, and saved test-run history (see above).
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*

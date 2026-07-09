@@ -75,6 +75,7 @@ class TestingScreen(QWidget):
         self._thread: QThread | None = None
         self._worker: _Worker | None = None
         self._pending_filename: str | None = None
+        self._selected_case_id: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -135,10 +136,22 @@ class TestingScreen(QWidget):
         layout.addLayout(form)
 
         row = QHBoxLayout()
+        self._selection_hint = QLabel("Editing a new test case.")
+        self._selection_hint.setObjectName("Muted")
+        row.addWidget(self._selection_hint)
         row.addStretch(1)
+        self._clear_btn = QPushButton("New / clear")
+        self._clear_btn.clicked.connect(self._on_clear_selection)
+        row.addWidget(self._clear_btn)
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.clicked.connect(self._on_delete_case)
+        row.addWidget(self._delete_btn)
         self._add_btn = QPushButton("Add test case")
         self._add_btn.clicked.connect(self._on_add_case)
         row.addWidget(self._add_btn)
+        self._save_btn = QPushButton("Save changes")
+        self._save_btn.clicked.connect(self._on_save_case)
+        row.addWidget(self._save_btn)
         layout.addLayout(row)
 
     def _build_case_list(self, layout: QVBoxLayout) -> None:
@@ -233,6 +246,17 @@ class TestingScreen(QWidget):
 
         self._refresh_cases()
         self._refresh_history()
+        self._update_edit_buttons()
+
+    def _update_edit_buttons(self) -> None:
+        has_selection = self._selected_case_id is not None
+        self._save_btn.setEnabled(has_selection)
+        self._delete_btn.setEnabled(has_selection)
+        self._clear_btn.setEnabled(has_selection)
+        if has_selection:
+            self._selection_hint.setText("Editing the selected test case.")
+        else:
+            self._selection_hint.setText("Editing a new test case.")
 
     def _refresh_cases(self) -> None:
         self._case_list.blockSignals(True)
@@ -288,21 +312,83 @@ class TestingScreen(QWidget):
             steps=self._steps_input.toPlainText().strip() or None,
             expected_result=self._expected_input.toPlainText().strip() or None,
         )
+        self._selected_case_id = None
+        self._case_list.setCurrentItem(None)
         self._title_input.clear()
         self._steps_input.clear()
         self._expected_input.clear()
         self._refresh_cases()
+        self._update_edit_buttons()
 
     def _on_case_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
         if current is None:
+            self._selected_case_id = None
+            self._update_edit_buttons()
             return
         case_id = current.data(_USER_ROLE)
         if case_id is None:
             return
         case = self._services.testing.get_case(int(case_id))
+        self._selected_case_id = case.id
+        self._title_input.setText(case.title)
+        self._category_input.setCurrentText(case.category)
+        self._priority_input.setCurrentText(case.priority)
+        self._steps_input.setPlainText(case.steps or "")
+        self._expected_input.setPlainText(case.expected_result or "")
         self._status_input.setCurrentText(case.status)
         self._failure_note_input.setText(case.failure_note or "")
         self._on_status_choice_changed(case.status)
+        self._update_edit_buttons()
+
+    def _on_clear_selection(self) -> None:
+        self._selected_case_id = None
+        self._case_list.setCurrentItem(None)
+        self._title_input.clear()
+        self._category_input.setCurrentText("General")
+        self._priority_input.setCurrentText("Medium")
+        self._steps_input.clear()
+        self._expected_input.clear()
+        self._status_input.setCurrentText("Not Run")
+        self._failure_note_input.clear()
+        self._on_status_choice_changed("Not Run")
+        self._update_edit_buttons()
+
+    def _on_save_case(self) -> None:
+        if self._selected_case_id is None:
+            return
+        title = self._title_input.text().strip()
+        if not title:
+            QMessageBox.information(self, "Title needed", "Please enter a test case title.")
+            return
+        status = self._status_input.currentText()
+        self._services.testing.update_case(
+            self._selected_case_id,
+            title=title,
+            category=self._category_input.currentText(),
+            priority=self._priority_input.currentText(),
+            steps=self._steps_input.toPlainText().strip() or None,
+            expected_result=self._expected_input.toPlainText().strip() or None,
+            status=status,
+            failure_note=self._failure_note_input.text().strip() or None,
+        )
+        self._refresh_cases()
+        self._update_edit_buttons()
+
+    def _on_delete_case(self) -> None:
+        if self._selected_case_id is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Delete test case?",
+            "Delete this test case? Saved test-run history is not affected.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._services.testing.delete_case(self._selected_case_id)
+        self._on_clear_selection()
+        self._refresh_cases()
 
     def _on_status_choice_changed(self, status: str) -> None:
         self._failure_note_input.setEnabled(status == "Fail")

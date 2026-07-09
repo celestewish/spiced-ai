@@ -105,6 +105,29 @@ def test_analyze_saves_run_and_records_usage():
     assert service.history(project.id)[0].parsed_summary["failed"] == 2
 
 
+def test_update_and_delete_case_through_service():
+    service, project = _service()
+    case = service.create_case(project_id=project.id, title="Original", category="UI")
+    edited = service.update_case(
+        case.id, title="Edited", category="Gameplay", priority="High", status="Blocked"
+    )
+    assert edited.title == "Edited"
+    assert edited.category == "Gameplay"
+    assert edited.status == "Blocked"
+
+    service.delete_case(case.id)
+    assert service.list_cases(project.id) == []
+
+
+def test_delete_case_keeps_test_run_history():
+    service, project = _service()
+    service.analyze(FakeProvider(), MANUAL_TEXT, project=project)
+    case = service.create_case(project_id=project.id, title="Doomed")
+    service.delete_case(case.id)
+    # The run recorded before the delete is still there.
+    assert len(service.history(project.id)) == 1
+
+
 def test_analyze_without_project_does_not_save():
     service, _ = _service()
     review = service.analyze(FakeProvider(), MANUAL_TEXT, project=None)

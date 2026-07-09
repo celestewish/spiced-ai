@@ -70,6 +70,55 @@ def test_set_status_rejects_unknown_status():
         cases.set_status(case.id, "Exploded")
 
 
+def test_update_changes_all_editable_fields():
+    cases, project = _setup()
+    case = cases.create(project_id=project.id, title="Old title", category="UI")
+    updated = cases.update(
+        case.id,
+        title="New title",
+        category="Gameplay",
+        priority="Critical",
+        steps="do a thing",
+        expected_result="the thing happens",
+        status="Fail",
+        failure_note="did not happen",
+    )
+    assert updated.title == "New title"
+    assert updated.category == "Gameplay"
+    assert updated.priority == "Critical"
+    assert updated.steps == "do a thing"
+    assert updated.expected_result == "the thing happens"
+    assert updated.status == "Fail"
+    assert updated.failure_note == "did not happen"
+
+
+def test_update_clears_failure_note_when_not_fail():
+    cases, project = _setup()
+    case = cases.create(project_id=project.id, title="Case")
+    cases.update(case.id, title="Case", status="Fail", failure_note="broke")
+    cleared = cases.update(case.id, title="Case", status="Pass", failure_note="stale")
+    assert cleared.failure_note is None
+
+
+def test_update_rejects_empty_title():
+    cases, project = _setup()
+    case = cases.create(project_id=project.id, title="Case")
+    with pytest.raises(ValueError):
+        cases.update(case.id, title="   ")
+
+
+def test_delete_removes_only_the_case():
+    cases, project = _setup()
+    keep = cases.create(project_id=project.id, title="Keep me")
+    drop = cases.create(project_id=project.id, title="Drop me")
+    cases.delete(drop.id)
+    remaining = cases.list_for_project(project.id)
+    assert [c.title for c in remaining] == ["Keep me"]
+    with pytest.raises(KeyError):
+        cases.get(drop.id)
+    assert cases.get(keep.id).title == "Keep me"
+
+
 def test_list_is_project_scoped():
     db = Database(":memory:")
     cases = TestCaseRepository(db)

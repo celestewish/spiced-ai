@@ -68,6 +68,33 @@ class TestingService:
     ) -> TestCase:
         return self._cases.set_status(test_case_id, status, failure_note)
 
+    def update_case(
+        self,
+        test_case_id: int,
+        *,
+        title: str,
+        category: str = "General",
+        priority: str = "Medium",
+        steps: str | None = None,
+        expected_result: str | None = None,
+        status: str = "Not Run",
+        failure_note: str | None = None,
+    ) -> TestCase:
+        return self._cases.update(
+            test_case_id,
+            title=title,
+            category=category,
+            priority=priority,
+            steps=steps,
+            expected_result=expected_result,
+            status=status,
+            failure_note=failure_note,
+        )
+
+    def delete_case(self, test_case_id: int) -> None:
+        """Delete a manual test case. Saved test-run history is untouched."""
+        self._cases.delete(test_case_id)
+
     def list_cases(self, project_id: int) -> list[TestCase]:
         return self._cases.list_for_project(project_id)
 

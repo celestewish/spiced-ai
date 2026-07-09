@@ -74,6 +74,37 @@ class TestCaseRepository:
         )
         return self.get(new_id)
 
+    def update(
+        self,
+        test_case_id: int,
+        *,
+        title: str,
+        category: str = DEFAULT_CATEGORY,
+        priority: str = DEFAULT_PRIORITY,
+        steps: str | None = None,
+        expected_result: str | None = None,
+        status: str = DEFAULT_STATUS,
+        failure_note: str | None = None,
+    ) -> TestCase:
+        title = title.strip()
+        if not title:
+            raise ValueError("Test case title cannot be empty.")
+        category = category if category in CATEGORIES else DEFAULT_CATEGORY
+        priority = priority if priority in PRIORITIES else DEFAULT_PRIORITY
+        status = status if status in STATUSES else DEFAULT_STATUS
+        # A note only makes sense for a failure; clear it otherwise.
+        note = failure_note if status == "Fail" else None
+        self._db.execute(
+            "UPDATE test_cases SET title = ?, category = ?, priority = ?, steps = ?, "
+            "expected_result = ?, status = ?, failure_note = ?, updated_at = datetime('now') "
+            "WHERE id = ?",
+            (title, category, priority, steps, expected_result, status, note, test_case_id),
+        )
+        return self.get(test_case_id)
+
+    def delete(self, test_case_id: int) -> None:
+        self._db.execute("DELETE FROM test_cases WHERE id = ?", (test_case_id,))
+
     def set_status(
         self, test_case_id: int, status: str, failure_note: str | None = None
     ) -> TestCase:
