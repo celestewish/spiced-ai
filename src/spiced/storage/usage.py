@@ -12,12 +12,11 @@ class UsageRepository:
         self._db = db
 
     def record(self, provider: str, kind: str = "chat") -> None:
-        self._db.conn.execute(
+        self._db.execute(
             "INSERT INTO prompt_usage (provider, kind) VALUES (?, ?)",
             (provider, kind),
         )
-        self._db.conn.commit()
 
     def total(self) -> int:
-        row = self._db.conn.execute("SELECT COUNT(*) AS n FROM prompt_usage").fetchone()
+        row = self._db.query_one("SELECT COUNT(*) AS n FROM prompt_usage")
         return int(row["n"])
