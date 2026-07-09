@@ -99,9 +99,22 @@ The mock provider works with no setup. To use Gemini:
 3. In the app, open **Settings**, choose the **gemini** provider, and click
    **Send test prompt**.
 
+Spiced defaults to the `gemini-2.0-flash` model. To use a different one, set
+`GEMINI_MODEL` (in `.env` or your shell), e.g. `GEMINI_MODEL=gemini-2.0-flash`.
+
 > **Secrets policy:** never hardcode API keys. Keep them in your environment or a
 > local `.env` (git-ignored). Do not put keys in commits, logs, docs, or
 > screenshots.
+
+### Troubleshooting Gemini
+
+- **`model ... is not found ... or is not supported for generateContent`**
+  The configured model isn't available for your API key or region. Set
+  `GEMINI_MODEL` to a supported model (for example `gemini-2.0-flash`) and try
+  the test prompt again. Available models change over time; check the
+  [Gemini API docs](https://ai.google.dev/gemini-api/docs/models) for the
+  current list.
+- **`GEMINI_API_KEY is not set`** — add your key to `.env` or the environment.
 
 ## Run
 

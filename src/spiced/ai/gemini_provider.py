@@ -10,7 +10,7 @@ import os
 
 from spiced.ai.base import AIProvider, AIResponse
 
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.0-flash"
 
 
 class GeminiProvider(AIProvider):
@@ -49,9 +49,22 @@ class GeminiProvider(AIProvider):
 
         genai.configure(api_key=key)
         model = genai.GenerativeModel(self.model)
-        result = model.generate_content(prompt)
+        try:
+            result = model.generate_content(prompt)
+        except Exception as exc:
+            raise self._friendly_error(exc) from exc
         text = getattr(result, "text", None) or "(No text returned by Gemini.)"
         return AIResponse(text=text, provider=self.name, model=self.model)
+
+    def _friendly_error(self, exc: Exception) -> RuntimeError:
+        message = str(exc)
+        if "not found" in message.lower() or "is not supported" in message.lower():
+            return RuntimeError(
+                f"The Gemini model '{self.model}' isn't available for your API key. "
+                "Set GEMINI_MODEL to a supported model (for example 'gemini-2.0-flash') "
+                "in your environment or local .env file, then try again."
+            )
+        return RuntimeError(f"Gemini request failed: {message}")
 
     def display_name(self) -> str:
         return f"Gemini ({self.model})"
