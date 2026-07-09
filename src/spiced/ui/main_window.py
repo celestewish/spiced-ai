@@ -19,6 +19,7 @@ from spiced.ui.screens.base import PlaceholderScreen
 from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.settings import SettingsScreen
+from spiced.ui.screens.testing import TestingScreen
 
 NAV_ITEMS = [
     "Projects",
@@ -82,7 +83,7 @@ class MainWindow(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-        version = QLabel("MVP preview · Phase 1")
+        version = QLabel("MVP preview · Phase 2")
         version.setObjectName("Muted")
         layout.addWidget(version)
         return sidebar
@@ -97,29 +98,20 @@ class MainWindow(QWidget):
 
         self._projects_screen = ProjectsScreen(self._services)
         self._debugging_screen = DebuggingScreen(self._services)
+        self._testing_screen = TestingScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
         self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._testing_screen.refresh)
 
         self._debugging_screen.usage_changed.connect(self._context.refresh)
+        self._testing_screen.usage_changed.connect(self._context.refresh)
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
 
         self._stack.addWidget(self._projects_screen)
         self._stack.addWidget(self._debugging_screen)
-        self._stack.addWidget(
-            PlaceholderScreen(
-                "Automated Testing",
-                "Spiced will help you draft, organize, and understand automated tests "
-                "for your game — starting with Unity. You review and run everything; "
-                "Spiced never touches your project on its own.",
-                [
-                    "Suggest play-mode and edit-mode test scaffolds",
-                    "Explain failing tests in plain language",
-                    "Track flaky tests over time",
-                ],
-            )
-        )
+        self._stack.addWidget(self._testing_screen)
         self._stack.addWidget(
             PlaceholderScreen(
                 "Feedback Review",
