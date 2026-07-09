@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.ui.context_panel import ContextPanel
-from spiced.ui.screens.base import PlaceholderScreen
 from spiced.ui.screens.debugging import DebuggingScreen
+from spiced.ui.screens.feedback import FeedbackScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.testing import TestingScreen
@@ -83,7 +83,7 @@ class MainWindow(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-        version = QLabel("MVP preview · Phase 2")
+        version = QLabel("MVP preview · Phase 3")
         version.setObjectName("Muted")
         layout.addWidget(version)
         return sidebar
@@ -99,12 +99,15 @@ class MainWindow(QWidget):
         self._projects_screen = ProjectsScreen(self._services)
         self._debugging_screen = DebuggingScreen(self._services)
         self._testing_screen = TestingScreen(self._services)
+        self._feedback_screen = FeedbackScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
         self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
         self._projects_screen.projects_changed.connect(self._testing_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._feedback_screen.refresh)
 
         self._debugging_screen.usage_changed.connect(self._context.refresh)
         self._testing_screen.usage_changed.connect(self._context.refresh)
+        self._feedback_screen.usage_changed.connect(self._context.refresh)
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
@@ -112,18 +115,7 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._projects_screen)
         self._stack.addWidget(self._debugging_screen)
         self._stack.addWidget(self._testing_screen)
-        self._stack.addWidget(
-            PlaceholderScreen(
-                "Feedback Review",
-                "Bring in player feedback and playtest notes, and Spiced will help you "
-                "find themes and turn them into clear, actionable tasks.",
-                [
-                    "Group similar feedback into themes",
-                    "Draft respectful reply summaries",
-                    "Highlight recurring pain points",
-                ],
-            )
-        )
+        self._stack.addWidget(self._feedback_screen)
         self._stack.addWidget(self._settings_screen)
 
         outer.addWidget(self._stack)
