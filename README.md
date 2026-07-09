@@ -7,11 +7,13 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> **Phase 3** preview: everything from Phases 0–2 (desktop skeleton, local
-> storage, AI provider boundary, the **Unity Debugging Buddy**, and the
-> **Automated Testing** foundation) plus the **Feedback Review** foundation —
-> paste or import player feedback, parse and classify it locally, and get a
-> calm, structured AI review that keeps design decisions in your hands.
+> **Phase 4** preview: everything from Phases 0–3 (desktop skeleton, local
+> storage, AI provider boundary, the **Unity Debugging Buddy**, the
+> **Automated Testing** foundation, and the **Feedback Review** foundation)
+> plus the **Project Dashboard** — a calm, offline overview of the active
+> project that synthesizes your debugging, testing, and feedback signals into a
+> cautious build-readiness label with its evidence and recommended next actions.
+> It sends nothing to AI and never claims your game is ready to ship.
 
 ---
 
@@ -133,13 +135,50 @@ Only the parsed summary, local category counts, and a trimmed excerpt are sent
 to a provider — never full feedback files and never your project files. Use the
 **mock** provider to try it offline with no key.
 
-## Current MVP scope (Phases 0–3)
+## Project Dashboard (Phase 4)
+
+The Dashboard is the first screen you see. It gives the active project a calm,
+at-a-glance overview built **entirely from data Spiced already stored** — there
+is no AI call and no network here. It refreshes whenever you open it or capture
+new debugging, testing, or feedback data.
+
+**What it shows**
+
+1. **Overview** — project name, engine, Unity folder validation status, and path.
+2. **Build readiness** — one cautious label with its supporting evidence:
+   - *Not enough data* — too little captured to judge.
+   - *Needs review* — failing tests, blocked cases, a flagged debug error, or
+     likely bug/performance feedback need your attention.
+   - *Stabilizing* — tests are passing and only soft signals (e.g. onboarding
+     confusion) remain.
+   - *Demo candidate* — clean across debugging, testing, and feedback.
+
+   The label is a **planning aid, not a verdict**. Every assessment lists *why*
+   and carries an explicit caveat — Spiced never claims your build is ready to
+   ship. You stay the decision-maker.
+3. **Module cards** — recent debug sessions, test-case/run status, and top
+   feedback categories, each with a friendly prompt when a module is still empty.
+4. **Recommended next actions** — a suggested, human-approved review queue drawn
+   from your failing tests, blocked cases, detected debug errors, and bug or
+   confusion feedback. Each item names its source module, a reason, and a
+   priority (Low / Medium / High). These are suggestions to help you plan; Spiced
+   never acts on them.
+5. **Setup reminders** — gentle nudges for any module that has no data yet.
+
+**Project health summary**
+
+Click **Generate summary** for a local, Markdown-friendly recap you can paste
+into planning or devlog notes, then **Copy to clipboard**. The summary contains
+only counts and short summaries — never full logs, full feedback, test output,
+source code, or secrets. Nothing is sent anywhere.
+
+## Current MVP scope (Phases 0–4)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
   project-context panel.
-- Screens: **Projects**, **Debugging Buddy**, **Automated Testing**,
-  **Feedback Review**, **Settings**.
+- Screens: **Dashboard**, **Projects**, **Debugging Buddy**, **Automated
+  Testing**, **Feedback Review**, **Settings**.
 - Local **SQLite** storage for projects, prompt usage, app settings, debug
   sessions, test cases, test runs, and feedback batches.
 - Create and view projects locally, pick an active one, and connect a Unity
@@ -152,6 +191,10 @@ to a provider — never full feedback files and never your project files. Use th
 - **Feedback Review**: a deterministic feedback parser (text/Markdown/CSV/JSON),
   offline heuristic classification, AI-assisted review that separates bugs from
   design preferences, and saved feedback-batch history (see above).
+- **Project Dashboard**: a fully offline, deterministic overview that synthesizes
+  debugging, testing, and feedback signals into a cautious build-readiness label
+  with evidence, recommended next actions, setup reminders, and a copyable local
+  health summary (see above).
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*
@@ -174,6 +217,9 @@ to a provider — never full feedback files and never your project files. Use th
   what you paste or import.
 - Spiced never decides your game's design; it organizes feedback and suggests,
   and you decide what to act on.
+- The Project Dashboard is deterministic and offline: it sends nothing to any AI
+  provider, keeps no build snapshots, and never marks a project as definitively
+  ready to ship — its readiness label is a planning aid, not a verdict.
 
 ## Windows-first notes
 
@@ -276,7 +322,7 @@ ruff check .    # lint
 src/spiced/
 ├── app/          # entry point + composition root (services wiring)
 ├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # usage counter, project/debugging/testing/feedback use-cases, parsers + classifier
+├── core/         # usage counter, project/debugging/testing/feedback/dashboard use-cases, parsers + classifier
 ├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
 ├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback, settings, usage)
 └── connectors/   # Unity project-folder detection (shallow, read-only)
