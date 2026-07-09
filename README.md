@@ -23,7 +23,7 @@ developers. Its design principles:
 - **Local first.** Projects, usage, and settings live in a local SQLite database
   on your machine. Nothing is uploaded.
 - **Explicit sharing.** Your project files are never sent to an AI provider
-  without a future, explicit confirmation step. The built-in Gemini test prompt
+  without a future, explicit confirmation step. The built-in connection test
   sends only a short, fixed message — never your files.
 - **Honest voice.** Spiced speaks like a calm, professional teammate, not a hype
   machine.
@@ -41,9 +41,10 @@ developers. Its design principles:
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*
-- Swappable **AI provider boundary** with a **mock** provider (offline) and a
-  **Gemini** provider.
-- A real **Gemini test prompt** from Settings when a credential is configured.
+- Swappable **AI provider boundary** with an **OpenAI** provider (default), a
+  **mock** provider (free, offline), and an optional **Gemini** provider.
+- A real **connection test** from Settings that calls your selected provider
+  when a credential is configured.
 
 ### Not in this phase (by design)
 
@@ -54,8 +55,9 @@ developers. Its design principles:
 
 ## Windows-first notes
 
-The first MVP targets **Windows** with **Unity** projects and **Gemini** as the
-default AI provider (behind the swappable interface above).
+The first MVP targets **Windows** with **Unity** projects and **OpenAI** as the
+default AI provider (behind the swappable interface above). Gemini remains
+available as an optional provider.
 
 - Everything here is cross-platform Python, so it also runs on macOS/Linux for
   development, but Windows is the primary supported target.
@@ -78,43 +80,58 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-### Configure Gemini (optional)
+### Configure OpenAI (default provider)
 
-The mock provider works with no setup. To use Gemini:
+The **mock** provider works with no setup and no key — use it for free, offline
+testing. To use OpenAI:
 
-1. Get an API key from <https://aistudio.google.com/app/apikey>.
+1. Get an API key from <https://platform.openai.com/api-keys>.
 2. Copy `.env.example` to `.env` and set your key:
 
    ```
-   GEMINI_API_KEY=your-real-key
+   OPENAI_API_KEY=your-real-key
    ```
 
    …or export it in your shell:
 
    ```bash
-   # Windows (PowerShell):  $env:GEMINI_API_KEY="your-real-key"
-   export GEMINI_API_KEY="your-real-key"
+   # Windows (PowerShell):  $env:OPENAI_API_KEY="your-real-key"
+   export OPENAI_API_KEY="your-real-key"
    ```
 
-3. In the app, open **Settings**, choose the **gemini** provider, and click
+3. In the app, open **Settings** (OpenAI is selected by default) and click
    **Send test prompt**.
 
-Spiced defaults to the `gemini-2.0-flash` model. To use a different one, set
-`GEMINI_MODEL` (in `.env` or your shell), e.g. `GEMINI_MODEL=gemini-2.0-flash`.
+Spiced defaults to the `gpt-4o-mini` model. To use a different one, set
+`OPENAI_MODEL` (in `.env` or your shell), e.g. `OPENAI_MODEL=gpt-4o-mini`.
 
 > **Secrets policy:** never hardcode API keys. Keep them in your environment or a
 > local `.env` (git-ignored). Do not put keys in commits, logs, docs, or
 > screenshots.
 
-### Troubleshooting Gemini
+### Using Gemini instead (optional)
 
-- **`model ... is not found ... or is not supported for generateContent`**
-  The configured model isn't available for your API key or region. Set
-  `GEMINI_MODEL` to a supported model (for example `gemini-2.0-flash`) and try
-  the test prompt again. Available models change over time; check the
-  [Gemini API docs](https://ai.google.dev/gemini-api/docs/models) for the
-  current list.
-- **`GEMINI_API_KEY is not set`** — add your key to `.env` or the environment.
+Gemini is supported but no longer the default. It requires a paid Google API
+credential, so it is opt-in:
+
+```bash
+pip install -e ".[gemini]"        # installs the optional Gemini dependency
+export GEMINI_API_KEY=your-real-key
+# optional: export GEMINI_MODEL=gemini-2.0-flash
+```
+
+Then choose the **gemini** provider in **Settings**.
+
+### Troubleshooting
+
+- **`OPENAI_API_KEY is not set`** — add your key to `.env` or the environment.
+- **`The OpenAI model '...' isn't available`** — set `OPENAI_MODEL` to a model
+  your key can access (for example `gpt-4o-mini`); available models change over
+  time.
+- **`OpenAI rejected the API key`** — double-check `OPENAI_API_KEY` for typos or
+  a revoked/expired key.
+- **Gemini `model ... is not found / not supported`** — set `GEMINI_MODEL` to a
+  supported model and confirm you installed the `[gemini]` extra.
 
 ## Run
 
@@ -138,7 +155,7 @@ src/spiced/
 ├── app/          # entry point + composition root (services wiring)
 ├── ui/           # PySide6 window, panels, theme, and screens
 ├── core/         # plans, usage counter, project use-cases
-├── ai/           # provider interface, mock provider, Gemini provider
+├── ai/           # provider interface, OpenAI (default), mock, Gemini (optional)
 ├── storage/      # SQLite database + repositories
 └── connectors/   # placeholder for future engine integrations (Unity first)
 ```

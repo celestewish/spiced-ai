@@ -1,4 +1,4 @@
-"""Settings: AI provider, mock plan, and a real Gemini test prompt."""
+"""Settings: AI provider, mock plan, and a real connection test prompt."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from spiced.ai import build_provider
+from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
 from spiced.core.plans import PLANS
 
@@ -36,9 +36,9 @@ class SettingsScreen(QWidget):
         form = QFormLayout()
         form.setSpacing(12)
 
-        # AI provider
+        # AI provider (OpenAI is the default; mock is free/offline; Gemini optional)
         self._provider_box = QComboBox()
-        self._provider_box.addItems(["mock", "gemini"])
+        self._provider_box.addItems(available_providers())
         self._provider_box.setCurrentText(self._services.provider_name())
         self._provider_box.currentTextChanged.connect(self._on_provider_changed)
         form.addRow("AI provider", self._provider_box)
@@ -64,15 +64,16 @@ class SettingsScreen(QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
 
-        # Gemini test prompt
-        test_title = QLabel("Gemini connection test")
+        # Connection test for the selected provider
+        test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
         layout.addWidget(test_title)
 
         test_desc = QLabel(
-            "Sends one short, fixed prompt to Gemini to confirm your GEMINI_API_KEY "
-            "works. No project files are included."
+            "Sends one short, fixed prompt to your selected provider to confirm it's "
+            "set up. With OpenAI, this uses your OPENAI_API_KEY. No project files are "
+            "included."
         )
         test_desc.setObjectName("Muted")
         test_desc.setWordWrap(True)
@@ -103,14 +104,12 @@ class SettingsScreen(QWidget):
 
     def _on_test(self) -> None:
         self._test_btn.setEnabled(False)
-        self._test_result.setText("Contacting Gemini…")
+        provider_key = self._provider_box.currentText()
         try:
-            provider = build_provider("gemini")
+            provider = build_provider(provider_key)
+            self._test_result.setText(f"Contacting {provider.display_name()}…")
             if not provider.is_available():
-                self._test_result.setText(
-                    "Gemini isn't configured. Set GEMINI_API_KEY in your environment "
-                    "or a local .env file (see .env.example), then try again."
-                )
+                self._test_result.setText(self._not_configured_message(provider_key))
                 return
             response = provider.generate(
                 "Reply with one short, friendly sentence confirming the connection works."
@@ -122,3 +121,14 @@ class SettingsScreen(QWidget):
             self._test_result.setText(f"Test failed: {exc}")
         finally:
             self._test_btn.setEnabled(True)
+
+    @staticmethod
+    def _not_configured_message(provider_key: str) -> str:
+        env_var = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}.get(provider_key)
+        if env_var:
+            return (
+                f"{provider_key.capitalize()} isn't configured yet. Set {env_var} in your "
+                "environment or a local .env file (see .env.example), then try again. "
+                "You can also switch to the mock provider for free offline testing."
+            )
+        return "This provider is ready to use."

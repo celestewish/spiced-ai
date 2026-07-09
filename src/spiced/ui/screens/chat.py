@@ -34,8 +34,9 @@ class _Worker(QObject):
             provider = self._services.build_provider()
             if not provider.is_available():
                 self.failed.emit(
-                    f"The {provider.display_name()} provider isn't ready. "
-                    "Check Settings and your GEMINI_API_KEY, or switch to the mock provider."
+                    f"The {provider.display_name()} provider isn't ready. Check your API "
+                    "key in Settings (see .env.example), or switch to the mock provider "
+                    "for free offline testing."
                 )
                 return
             response = provider.generate(self._prompt)

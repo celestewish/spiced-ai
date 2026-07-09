@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from spiced.ai import AIProvider, build_provider
+from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
 from spiced.core.projects_service import ProjectsService
 from spiced.core.usage_counter import UsageCounter
 from spiced.storage.database import Database
@@ -32,7 +32,7 @@ class Services:
         import os
 
         return self._settings.get(
-            PROVIDER_SETTING_KEY, os.environ.get("SPICED_AI_PROVIDER", "mock")
+            PROVIDER_SETTING_KEY, os.environ.get("SPICED_AI_PROVIDER", DEFAULT_PROVIDER)
         )
 
     def set_provider_name(self, name: str) -> None:
