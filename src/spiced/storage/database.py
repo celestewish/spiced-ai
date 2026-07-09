@@ -51,6 +51,33 @@ CREATE TABLE IF NOT EXISTS debug_sessions (
     provider                  TEXT,
     created_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS test_cases (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL,
+    title           TEXT NOT NULL,
+    category        TEXT NOT NULL DEFAULT 'General',
+    priority        TEXT NOT NULL DEFAULT 'Medium',
+    steps           TEXT,
+    expected_result TEXT,
+    status          TEXT NOT NULL DEFAULT 'Not Run',
+    failure_note    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS test_runs (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id            INTEGER NOT NULL,
+    source_type           TEXT NOT NULL,
+    source_filename       TEXT,
+    raw_excerpt           TEXT,
+    parsed_summary_json   TEXT,
+    ai_summary            TEXT,
+    retest_checklist_json TEXT,
+    provider              TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
