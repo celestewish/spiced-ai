@@ -164,8 +164,13 @@ class TestingScreen(QWidget):
         self._case_list.currentItemChanged.connect(self._on_case_selected)
         layout.addWidget(self._case_list)
 
-        self._cases_empty = QLabel("No test cases yet. Add one above.")
+        self._cases_empty = QLabel(
+            "No test cases yet. Test cases are a lightweight manual QA checklist — track what "
+            "you've verified and what still needs a pass before you share a build. Add one "
+            "above, or load the demo from Help to see a set with mixed statuses."
+        )
         self._cases_empty.setObjectName("Muted")
+        self._cases_empty.setWordWrap(True)
         layout.addWidget(self._cases_empty)
 
         status_row = QHBoxLayout()
@@ -280,7 +285,10 @@ class TestingScreen(QWidget):
             return
         runs = self._services.testing.history(project.id, limit=10)
         if not runs:
-            self._history.setPlainText("No test runs saved for this project yet.")
+            self._history.setPlainText(
+                "No test runs saved yet. Paste or import results above and click Analyze to get "
+                "a pass/fail summary and a retest checklist — Spiced never runs the tests itself."
+            )
             return
         lines = []
         for run in runs:
