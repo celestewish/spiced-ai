@@ -15,9 +15,16 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.ui.context_panel import ContextPanel
+from spiced.ui.onboarding import (
+    ACTION_CONFIGURE_PROVIDER,
+    ACTION_CREATE_PROJECT,
+    ACTION_LOAD_DEMO,
+    WelcomeDialog,
+)
 from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.feedback import FeedbackScreen
+from spiced.ui.screens.help import HelpScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.testing import TestingScreen
@@ -29,9 +36,12 @@ NAV_ITEMS = [
     "Automated Testing",
     "Feedback Review",
     "Settings",
+    "Help",
 ]
 
 _DASHBOARD_INDEX = 0
+_PROJECTS_INDEX = 1
+_SETTINGS_INDEX = 5
 
 
 class MainWindow(QWidget):
@@ -87,7 +97,7 @@ class MainWindow(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-        version = QLabel("MVP preview · Phase 4")
+        version = QLabel("MVP preview · Phase 5")
         version.setObjectName("Muted")
         layout.addWidget(version)
         return sidebar
@@ -123,12 +133,17 @@ class MainWindow(QWidget):
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
 
+        self._help_screen = HelpScreen(self._services)
+        self._help_screen.demo_requested.connect(self._load_demo)
+        self._help_screen.replay_welcome_requested.connect(self.show_onboarding)
+
         self._stack.addWidget(self._dashboard_screen)
         self._stack.addWidget(self._projects_screen)
         self._stack.addWidget(self._debugging_screen)
         self._stack.addWidget(self._testing_screen)
         self._stack.addWidget(self._feedback_screen)
         self._stack.addWidget(self._settings_screen)
+        self._stack.addWidget(self._help_screen)
         # Recompute the dashboard whenever the user navigates to it.
         self._stack.currentChanged.connect(self._on_stack_changed)
 
@@ -138,3 +153,45 @@ class MainWindow(QWidget):
     def _on_stack_changed(self, index: int) -> None:
         if index == _DASHBOARD_INDEX:
             self._dashboard_screen.refresh()
+
+    def _go_to(self, index: int) -> None:
+        self._nav_buttons[index].setChecked(True)
+        self._stack.setCurrentIndex(index)
+
+    def _refresh_all(self) -> None:
+        """Reflect new active-project data across every screen and the context panel."""
+        self._context.refresh()
+        self._projects_screen.refresh()
+        self._debugging_screen.refresh()
+        self._testing_screen.refresh()
+        self._feedback_screen.refresh()
+        self._dashboard_screen.refresh()
+
+    # --- Onboarding & demo -------------------------------------------------
+
+    def maybe_show_onboarding(self) -> None:
+        """Show the first-run welcome once, then remember it was seen."""
+        if self._services.has_seen_onboarding():
+            return
+        self.show_onboarding()
+
+    def show_onboarding(self) -> None:
+        dialog = WelcomeDialog(self)
+        dialog.exec()
+        self._services.mark_onboarding_seen()
+        self._handle_welcome_action(dialog.action)
+
+    def _handle_welcome_action(self, action: str) -> None:
+        if action == ACTION_CREATE_PROJECT:
+            self._go_to(_PROJECTS_INDEX)
+        elif action == ACTION_CONFIGURE_PROVIDER:
+            self._go_to(_SETTINGS_INDEX)
+        elif action == ACTION_LOAD_DEMO:
+            self._load_demo(False)
+        else:
+            self._go_to(_DASHBOARD_INDEX)
+
+    def _load_demo(self, fresh: bool = False) -> None:
+        self._services.load_demo_project(fresh=fresh)
+        self._refresh_all()
+        self._go_to(_DASHBOARD_INDEX)

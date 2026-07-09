@@ -69,8 +69,13 @@ class ProjectsScreen(QWidget):
         self._list.currentItemChanged.connect(self._on_selection_changed)
         layout.addWidget(self._list, 1)
 
-        self._empty = QLabel("No projects yet. Create your first one above.")
+        self._empty = QLabel(
+            "No projects yet. A project is where Spiced keeps your debugging sessions, test "
+            "cases, and feedback organized. Create your first one above — or load the bundled "
+            "demo from the Help screen to see a fully populated example."
+        )
         self._empty.setObjectName("Muted")
+        self._empty.setWordWrap(True)
         layout.addWidget(self._empty)
 
         # Active-project detail + Unity folder controls

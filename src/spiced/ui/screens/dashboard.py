@@ -59,8 +59,16 @@ class DashboardScreen(QWidget):
         if summary is None:
             self._body.addWidget(
                 _muted(
-                    "No active project selected. Create or choose one on the Projects screen "
-                    "to see its dashboard."
+                    "The Dashboard gives your active project a calm, offline overview — a "
+                    "cautious build-readiness read plus your debugging, testing, and feedback "
+                    "signals in one place. It helps you decide what to look at next without "
+                    "sending anything anywhere."
+                )
+            )
+            self._body.addWidget(
+                _muted(
+                    "Nothing to show yet. Create or choose a project on the Projects screen, or "
+                    "load the bundled demo from the Help screen to explore everything right away."
                 )
             )
             return

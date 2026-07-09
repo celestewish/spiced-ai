@@ -166,4 +166,13 @@ QListWidget::item:selected {{
 }}
 
 QScrollArea {{ border: none; background: transparent; }}
+
+/* First-run welcome dialog */
+QDialog#WelcomeDialog {{
+    background: {CREAM};
+}}
+QLabel#WelcomeLead {{
+    font-size: 15px;
+    color: {BROWN};
+}}
 """

@@ -158,7 +158,11 @@ class DebuggingScreen(QWidget):
             return
         sessions = self._services.debugging.history(project.id, limit=10)
         if not sessions:
-            self._history.setPlainText("No debugging sessions saved for this project yet.")
+            self._history.setPlainText(
+                "No debugging sessions saved yet. Paste a Unity error above and click Analyze — "
+                "each one is saved here so you can revisit the likely cause and next steps. "
+                "(Load the demo from Help to see an example.)"
+            )
             return
         lines = []
         for s in sessions:

@@ -2,18 +2,27 @@
 
 **A human-centered AI companion for indie game developers.**
 
-Spiced helps you with QA, debugging, automated testing, and player-feedback
-review. It is built on a simple belief: AI should work *alongside* developers,
-not replace them. Spiced suggests, explains, and helps you reason — you stay in
-control of every change to your project.
+Spiced helps indie developers review bugs, tests, and player feedback without
+taking creative control away from them. It is built on a simple belief: AI
+should work *alongside* developers, not replace them. Spiced suggests, explains,
+and helps you reason — you stay in control of every change to your project.
 
-> **Phase 4** preview: everything from Phases 0–3 (desktop skeleton, local
+> **Phase 5** preview: everything from Phases 0–4 (desktop skeleton, local
 > storage, AI provider boundary, the **Unity Debugging Buddy**, the
-> **Automated Testing** foundation, and the **Feedback Review** foundation)
-> plus the **Project Dashboard** — a calm, offline overview of the active
-> project that synthesizes your debugging, testing, and feedback signals into a
-> cautious build-readiness label with its evidence and recommended next actions.
-> It sends nothing to AI and never claims your game is ready to ship.
+> **Automated Testing** foundation, the **Feedback Review** foundation, and the
+> **Project Dashboard**) plus a portfolio-polish pass: a friendly **first-run
+> welcome**, a safe **bundled demo project** you can load in one click, clearer
+> **empty states** across every screen, and a **Help & About** screen that keeps
+> Spiced's promises one click away. The demo is fully local — no Unity is run,
+> no real files are touched, and nothing is sent to any AI provider.
+
+---
+
+## Screenshots
+
+_Portfolio screenshots go here._ Suggested captures: the first-run welcome, the
+Project Dashboard with the demo loaded, the Debugging Buddy, and the Feedback
+Review. (Placeholders only — no images are committed yet.)
 
 ---
 
@@ -172,13 +181,53 @@ into planning or devlog notes, then **Copy to clipboard**. The summary contains
 only counts and short summaries — never full logs, full feedback, test output,
 source code, or secrets. Nothing is sent anywhere.
 
-## Current MVP scope (Phases 0–4)
+## Onboarding & demo (Phase 5)
+
+Phase 5 makes Spiced easy to try — for a curious developer or a portfolio
+reviewer — without changing what it does or weakening any of its promises.
+
+**First-run welcome**
+
+The first time you open Spiced, a short welcome dialog explains what Spiced is,
+what it helps with, and — just as importantly — what it will *never* do without
+permission. It offers four clear next steps: **Load demo project**, **Create a
+project**, **Configure AI provider**, or **Continue to dashboard**. You can
+reopen it any time from the **Help** screen.
+
+**A safe, bundled demo project**
+
+Click **Load demo project** (from the welcome dialog or the Help screen) to seed
+a small, self-contained sample — *Starfall Prototype (Demo)* — so every screen
+has realistic data to explore:
+
+- a Unity validation-style project context (no real folder on disk),
+- one debug session (a `NullReferenceException` in `HealthPickup.cs:24`),
+- six manual test cases with mixed statuses (pass, fail, blocked, not run),
+- one test run (5 checks: 2 passed, 2 failed, 1 skipped),
+- one player-feedback batch built from a six-line playtest scenario.
+
+The demo is deliberately safe: **no Unity is run, no real project files are
+touched, and nothing is sent to an AI provider** — the sample analyses are
+clearly labelled bundled copy. Seeding is repeat-safe (it never creates a second
+demo project) and **never reads from or modifies a project you created**. From
+the Help screen you can also **Reset demo data**, which refreshes only the
+bundled demo and leaves your own projects untouched.
+
+**Help & About**
+
+The **Help** screen keeps Spiced's mission, capabilities, and safety boundaries
+one click away, alongside quick AI-provider setup notes and the exact local path
+where your data is stored.
+
+## Current MVP scope (Phases 0–5)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
   project-context panel.
 - Screens: **Dashboard**, **Projects**, **Debugging Buddy**, **Automated
-  Testing**, **Feedback Review**, **Settings**.
+  Testing**, **Feedback Review**, **Settings**, **Help**.
+- A first-run **welcome** dialog and a safe, one-click **bundled demo project**
+  that populates every screen locally (see above).
 - Local **SQLite** storage for projects, prompt usage, app settings, debug
   sessions, test cases, test runs, and feedback batches.
 - Create and view projects locally, pick an active one, and connect a Unity
@@ -195,6 +244,9 @@ source code, or secrets. Nothing is sent anywhere.
   debugging, testing, and feedback signals into a cautious build-readiness label
   with evidence, recommended next actions, setup reminders, and a copyable local
   health summary (see above).
+- **Onboarding & demo**: a first-run welcome, a repeat-safe bundled demo project
+  (local, no AI, no Unity), clearer empty states everywhere, and a Help & About
+  screen (see above).
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*
@@ -220,6 +272,9 @@ source code, or secrets. Nothing is sent anywhere.
 - The Project Dashboard is deterministic and offline: it sends nothing to any AI
   provider, keeps no build snapshots, and never marks a project as definitively
   ready to ship — its readiness label is a planning aid, not a verdict.
+- The bundled demo is local, deterministic, and explicit: it is only ever loaded
+  when you ask, its sample analyses are labelled bundled copy (never a live AI
+  review), and it never overwrites, reads from, or deletes a project you created.
 
 ## Windows-first notes
 
@@ -321,8 +376,8 @@ ruff check .    # lint
 ```
 src/spiced/
 ├── app/          # entry point + composition root (services wiring)
-├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # usage counter, project/debugging/testing/feedback/dashboard use-cases, parsers + classifier
+├── ui/           # PySide6 window, panels, theme, first-run onboarding, and screens (incl. Help)
+├── core/         # usage counter, project/debugging/testing/feedback/dashboard use-cases, demo seeding, parsers + classifier
 ├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
 ├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback, settings, usage)
 └── connectors/   # Unity project-folder detection (shallow, read-only)

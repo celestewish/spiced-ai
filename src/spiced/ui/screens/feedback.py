@@ -191,7 +191,11 @@ class FeedbackScreen(QWidget):
             return
         batches = self._services.feedback.history(project.id, limit=10)
         if not batches:
-            self._history.setPlainText("No feedback batches saved for this project yet.")
+            self._history.setPlainText(
+                "No feedback batches saved yet. Paste playtester comments above, Preview the "
+                "local parse, then Analyze to group them into themes and separate bugs from "
+                "design preferences. (Load the demo from Help to see an example.)"
+            )
             return
         lines = []
         for batch in batches:

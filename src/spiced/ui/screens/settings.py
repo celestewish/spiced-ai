@@ -33,6 +33,15 @@ class SettingsScreen(QWidget):
         title.setObjectName("ScreenTitle")
         layout.addWidget(title)
 
+        intro = QLabel(
+            "Choose which AI provider Spiced uses and confirm it's set up. The mock provider "
+            "works offline with no key, so you can try every screen for free before adding one. "
+            "Nothing here leaves your machine except the short connection test you trigger."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
         form = QFormLayout()
         form.setSpacing(12)
 

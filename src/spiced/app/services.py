@@ -11,6 +11,7 @@ from pathlib import Path
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
 from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
+from spiced.core.demo_data import DemoDataService
 from spiced.core.feedback import FeedbackService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.testing import TestingService
@@ -26,6 +27,7 @@ from spiced.storage.usage import UsageRepository
 
 PROVIDER_SETTING_KEY = "ai_provider"
 ACTIVE_PROJECT_SETTING_KEY = "active_project_id"
+ONBOARDING_SEEN_SETTING_KEY = "onboarding_seen"
 
 
 class Services:
@@ -42,6 +44,17 @@ class Services:
         )
         self.feedback = FeedbackService(FeedbackBatchRepository(self.db))
         self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
+        self.demo = DemoDataService(self.db)
+
+    def load_demo_project(self, *, fresh: bool = False) -> Project:
+        """Seed the bundled demo project and make it active.
+
+        Repeat-safe by default (reuses the existing demo project). Pass
+        ``fresh=True`` to reset the demo data first. Never touches real projects.
+        """
+        project = self.demo.load_fresh_demo() if fresh else self.demo.seed()
+        self.set_active_project(project.id)
+        return project
 
     def provider_name(self) -> str:
         import os
@@ -75,6 +88,12 @@ class Services:
             self._settings.set(ACTIVE_PROJECT_SETTING_KEY, "")
         else:
             self._settings.set(ACTIVE_PROJECT_SETTING_KEY, str(project_id))
+
+    def has_seen_onboarding(self) -> bool:
+        return self._settings.get(ONBOARDING_SEEN_SETTING_KEY) == "1"
+
+    def mark_onboarding_seen(self) -> None:
+        self._settings.set(ONBOARDING_SEEN_SETTING_KEY, "1")
 
     def close(self) -> None:
         self.db.close()

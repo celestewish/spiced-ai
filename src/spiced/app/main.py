@@ -35,6 +35,7 @@ def main() -> int:
     services = Services()
     window = MainWindow(services)
     window.show()
+    window.maybe_show_onboarding()
 
     exit_code = app.exec()
     services.close()
