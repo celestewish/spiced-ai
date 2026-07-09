@@ -7,8 +7,9 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> This is an early **Phase 0** preview: the desktop skeleton, local storage, and
-> the AI provider boundary. Most feature screens are honest placeholders for now.
+> **Phase 1** preview: the desktop skeleton, local storage, and AI provider
+> boundary from Phase 0, plus the first real feature — the **Unity Debugging
+> Buddy**. Automated Testing and Feedback Review remain honest placeholders.
 
 ---
 
@@ -28,7 +29,35 @@ developers. Its design principles:
 - **Honest voice.** Spiced speaks like a calm, professional teammate, not a hype
   machine.
 
-## Current MVP scope (Phase 0)
+## Unity Debugging Buddy (Phase 1)
+
+The first real feature helps you understand Unity errors faster — without ever
+taking control of your project.
+
+**Connect a Unity project**
+
+1. Open **Projects** and create (or select) a project.
+2. It becomes the *active* project automatically; click **Choose Unity Folder…**
+3. Spiced checks the folder for `Assets/` and `ProjectSettings/`. Valid projects
+   are marked; anything else gets a friendly warning (the path is still saved).
+   The right-hand context panel shows the active project and its Unity status.
+
+**Analyze a log**
+
+1. Open **Debugging Buddy**.
+2. Paste a Unity console error, or **Import log file…** (`.log` / `.txt`).
+3. Click **Analyze**. Spiced parses the log locally to find the error type,
+   affected script, and line, then asks your selected provider for calm,
+   structured guidance: *likely issue · evidence · what to check in Unity ·
+   safe next steps · what not to change yet*.
+4. Each analysis is saved as a debug session under the active project and shown
+   in **Recent sessions**.
+
+Only a small, relevant excerpt of the log is ever sent to a provider — never the
+full log and never your project files. Try it with the **mock** provider first;
+it works offline with no API key.
+
+## Current MVP scope (Phases 0–1)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
@@ -36,8 +65,12 @@ developers. Its design principles:
 - Screens: **Projects**, **Debugging Buddy**, **Automated Testing**,
   **Feedback Review**, **Settings**. Automated Testing and Feedback Review are
   placeholders for later phases.
-- Local **SQLite** storage for projects, prompt usage, and app settings.
-- Create and view projects locally.
+- Local **SQLite** storage for projects, prompt usage, app settings, and debug
+  sessions.
+- Create and view projects locally, pick an active one, and connect a Unity
+  folder with automatic validation.
+- **Unity Debugging Buddy**: deterministic local log parsing, structured AI
+  guidance, and saved debug-session history (see above).
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*
@@ -46,12 +79,15 @@ developers. Its design principles:
 - A real **connection test** from Settings that calls your selected provider
   when a credential is configured.
 
-### Not in this phase (by design)
+### Not in these phases (by design)
 
-- No automatic file modification.
+- No automatic file modification or code patching.
 - No real billing, no cloud accounts.
-- No Unity (or other engine) command execution.
-- No sending of project files to any AI provider.
+- No Unity (or other engine) command execution, and no running of Unity tests.
+- No sending of project files or full logs to any AI provider — only a trimmed,
+  relevant excerpt.
+- No deep static analysis of the whole project; Unity folder detection is
+  shallow and non-recursive.
 
 ## Windows-first notes
 
@@ -154,10 +190,10 @@ ruff check .    # lint
 src/spiced/
 ├── app/          # entry point + composition root (services wiring)
 ├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # plans, usage counter, project use-cases
-├── ai/           # provider interface, OpenAI (default), mock, Gemini (optional)
-├── storage/      # SQLite database + repositories
-└── connectors/   # placeholder for future engine integrations (Unity first)
+├── core/         # plans, usage counter, project + debugging use-cases, log parser
+├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
+├── storage/      # SQLite database + repositories (projects, sessions, settings, usage)
+└── connectors/   # Unity project-folder detection (shallow, read-only)
 ```
 
 ## License

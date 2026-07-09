@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.ui.context_panel import ContextPanel
 from spiced.ui.screens.base import PlaceholderScreen
-from spiced.ui.screens.chat import ChatScreen
+from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.settings import SettingsScreen
 
@@ -82,7 +82,7 @@ class MainWindow(QWidget):
             layout.addWidget(btn)
 
         layout.addStretch(1)
-        version = QLabel("MVP preview · Phase 0")
+        version = QLabel("MVP preview · Phase 1")
         version.setObjectName("Muted")
         layout.addWidget(version)
         return sidebar
@@ -95,17 +95,18 @@ class MainWindow(QWidget):
 
         self._stack = QStackedWidget()
 
-        self._projects_screen = ProjectsScreen(self._services.projects)
+        self._projects_screen = ProjectsScreen(self._services)
+        self._debugging_screen = DebuggingScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
+        self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
 
-        self._chat_screen = ChatScreen(self._services)
-        self._chat_screen.usage_changed.connect(self._context.refresh)
+        self._debugging_screen.usage_changed.connect(self._context.refresh)
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
 
         self._stack.addWidget(self._projects_screen)
-        self._stack.addWidget(self._chat_screen)
+        self._stack.addWidget(self._debugging_screen)
         self._stack.addWidget(
             PlaceholderScreen(
                 "Automated Testing",

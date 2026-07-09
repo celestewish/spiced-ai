@@ -36,7 +36,29 @@ CREATE TABLE IF NOT EXISTS prompt_usage (
     kind       TEXT NOT NULL DEFAULT 'chat',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS debug_sessions (
+    id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id                INTEGER NOT NULL,
+    source_type               TEXT NOT NULL,
+    source_filename           TEXT,
+    detected_error_type       TEXT,
+    detected_file             TEXT,
+    detected_line             INTEGER,
+    raw_excerpt               TEXT,
+    summary                   TEXT,
+    suggested_next_steps_json TEXT,
+    provider                  TEXT,
+    created_at                TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
+
+# Columns added after Phase 0. Applied idempotently so existing databases and
+# their project rows keep working; missing values default safely to NULL.
+PROJECT_MIGRATIONS = {
+    "validation_status": "TEXT",
+    "engine_metadata_json": "TEXT",
+}
 
 
 def default_db_path() -> Path:
@@ -67,7 +89,14 @@ class Database:
     def _init_schema(self) -> None:
         with self._lock:
             self.conn.executescript(SCHEMA)
+            self._migrate_projects()
             self.conn.commit()
+
+    def _migrate_projects(self) -> None:
+        existing = {row["name"] for row in self.conn.execute("PRAGMA table_info(projects)")}
+        for column, col_type in PROJECT_MIGRATIONS.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {col_type}")
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> int:
         """Run a write statement, commit, and return the new row id."""
