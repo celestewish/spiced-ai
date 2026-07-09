@@ -10,11 +10,13 @@ from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
 from spiced.core.debugging import DebuggingService
+from spiced.core.feedback import FeedbackService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.testing import TestingService
 from spiced.core.usage_counter import UsageCounter
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
+from spiced.storage.feedback_batches import FeedbackBatchRepository
 from spiced.storage.projects import Project, ProjectRepository
 from spiced.storage.settings import SettingsRepository
 from spiced.storage.test_cases import TestCaseRepository
@@ -37,6 +39,7 @@ class Services:
         self.testing = TestingService(
             TestCaseRepository(self.db), TestRunRepository(self.db)
         )
+        self.feedback = FeedbackService(FeedbackBatchRepository(self.db))
 
     def provider_name(self) -> str:
         import os

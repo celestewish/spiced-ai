@@ -7,10 +7,11 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> **Phase 2** preview: everything from Phases 0–1 (desktop skeleton, local
-> storage, AI provider boundary, and the **Unity Debugging Buddy**) plus the
-> **Automated Testing** foundation — manual test cases and AI-assisted review of
-> test results you gathered. Feedback Review remains an honest placeholder.
+> **Phase 3** preview: everything from Phases 0–2 (desktop skeleton, local
+> storage, AI provider boundary, the **Unity Debugging Buddy**, and the
+> **Automated Testing** foundation) plus the **Feedback Review** foundation —
+> paste or import player feedback, parse and classify it locally, and get a
+> calm, structured AI review that keeps design decisions in your hands.
 
 ---
 
@@ -97,16 +98,50 @@ Unity project.
 As with debugging, only the parsed summary and a trimmed excerpt are sent to a
 provider. Use the **mock** provider to try it offline with no key.
 
-## Current MVP scope (Phases 0–2)
+## Feedback Review (Phase 3)
+
+The Feedback Review screen turns messy player feedback into a calm, structured
+read — without ever deciding your game's design for you. Like the other screens,
+the local parse works fully offline; only the AI review needs a provider.
+
+**Bring in feedback**
+
+1. Pick an active project on **Projects**, then open **Feedback Review**.
+2. Paste playtester comments, or **Import feedback file…** — plain text,
+   Markdown notes (`.md`), CSV rows (`.csv`), or a JSON array/object (`.json`)
+   with an obvious feedback field.
+3. Optionally add a **source label** (e.g. *Playtest 1*, *Discord*, *itch.io
+   comments*) so saved batches are easy to tell apart.
+
+**Preview locally, then review with AI**
+
+1. Click **Preview (local only)** to see what Spiced detected with no AI at all:
+   the format, entry count, parser confidence, any detected fields, and a
+   heuristic category breakdown (bugs, confusion, performance, balance, UI/UX,
+   feature requests, praise, and subjective preferences).
+2. Click **Analyze** for the full review. Your selected provider returns a
+   structured read: *overall summary · recurring themes · potential bugs ·
+   confusion points · positive signals · design preferences · prioritized next
+   actions · what it will not assume yet*. It separates likely bugs from
+   subjective preferences, never treats feedback as objectively correct, and
+   leaves the final design judgment with you.
+3. Each analysis is saved as a compact feedback batch under the active project
+   and shown in **Recent feedback batches** — only a trimmed excerpt, the parsed
+   summary, and the analysis outputs are stored, never the full feedback file.
+
+Only the parsed summary, local category counts, and a trimmed excerpt are sent
+to a provider — never full feedback files and never your project files. Use the
+**mock** provider to try it offline with no key.
+
+## Current MVP scope (Phases 0–3)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
   project-context panel.
 - Screens: **Projects**, **Debugging Buddy**, **Automated Testing**,
-  **Feedback Review**, **Settings**. Feedback Review is a placeholder for a
-  later phase.
+  **Feedback Review**, **Settings**.
 - Local **SQLite** storage for projects, prompt usage, app settings, debug
-  sessions, test cases, and test runs.
+  sessions, test cases, test runs, and feedback batches.
 - Create and view projects locally, pick an active one, and connect a Unity
   folder with automatic validation.
 - **Unity Debugging Buddy**: deterministic local log parsing, structured AI
@@ -114,6 +149,9 @@ provider. Use the **mock** provider to try it offline with no key.
 - **Automated Testing**: offline manual test-case authoring, editing, deletion,
   and status tracking, a deterministic result parser (text/JSON/XML), AI-assisted
   result review, and saved test-run history (see above).
+- **Feedback Review**: a deterministic feedback parser (text/Markdown/CSV/JSON),
+  offline heuristic classification, AI-assisted review that separates bugs from
+  design preferences, and saved feedback-batch history (see above).
 - Local **prompt-usage counter** with mock **Free / Indie / Studio** plan labels
   and a visible remaining-prompt count. *(Plans are UI-only: no billing, no
   accounts, no payment.)*
@@ -131,6 +169,11 @@ provider. Use the **mock** provider to try it offline with no key.
   relevant excerpt.
 - No deep static analysis of the whole project; Unity folder detection is
   shallow and non-recursive.
+- No scraping of external platforms or communities, no survey-tool connections,
+  and no posting to GitHub or other external services. Feedback comes only from
+  what you paste or import.
+- Spiced never decides your game's design; it organizes feedback and suggests,
+  and you decide what to act on.
 
 ## Windows-first notes
 
@@ -233,9 +276,9 @@ ruff check .    # lint
 src/spiced/
 ├── app/          # entry point + composition root (services wiring)
 ├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # usage counter, project/debugging/testing use-cases, log + result parsers
+├── core/         # usage counter, project/debugging/testing/feedback use-cases, parsers + classifier
 ├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
-├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, settings, usage)
+├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback, settings, usage)
 └── connectors/   # Unity project-folder detection (shallow, read-only)
 ```
 

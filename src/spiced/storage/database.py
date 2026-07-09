@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS test_runs (
     provider              TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS feedback_batches (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_type         TEXT NOT NULL,
+    source_label        TEXT,
+    source_filename     TEXT,
+    entry_count         INTEGER NOT NULL DEFAULT 0,
+    raw_excerpt         TEXT,
+    parsed_summary_json TEXT,
+    ai_summary          TEXT,
+    themes_json         TEXT,
+    issues_json         TEXT,
+    action_items_json   TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
