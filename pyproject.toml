@@ -14,11 +14,13 @@ keywords = ["gamedev", "unity", "qa", "debugging", "ai-assistant"]
 
 dependencies = [
     "PySide6>=6.6",
-    "google-generativeai>=0.5",
+    "openai>=1.0",
     "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
+# Gemini is optional and no longer the default provider.
+gemini = ["google-generativeai>=0.5"]
 dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",

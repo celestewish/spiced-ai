@@ -8,15 +8,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from spiced.ai import AIProvider, build_provider
+from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.core.debugging import DebuggingService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.usage_counter import UsageCounter
 from spiced.storage.database import Database
-from spiced.storage.projects import ProjectRepository
+from spiced.storage.debug_sessions import DebugSessionRepository
+from spiced.storage.projects import Project, ProjectRepository
 from spiced.storage.settings import SettingsRepository
 from spiced.storage.usage import UsageRepository
 
 PROVIDER_SETTING_KEY = "ai_provider"
+ACTIVE_PROJECT_SETTING_KEY = "active_project_id"
 
 
 class Services:
@@ -27,12 +30,13 @@ class Services:
         self.projects = ProjectsService(ProjectRepository(self.db))
         self._settings = SettingsRepository(self.db)
         self.usage = UsageCounter(UsageRepository(self.db), self._settings)
+        self.debugging = DebuggingService(DebugSessionRepository(self.db))
 
     def provider_name(self) -> str:
         import os
 
         return self._settings.get(
-            PROVIDER_SETTING_KEY, os.environ.get("SPICED_AI_PROVIDER", "mock")
+            PROVIDER_SETTING_KEY, os.environ.get("SPICED_AI_PROVIDER", DEFAULT_PROVIDER)
         )
 
     def set_provider_name(self, name: str) -> None:
@@ -40,6 +44,26 @@ class Services:
 
     def build_provider(self) -> AIProvider:
         return build_provider(self.provider_name())
+
+    def active_project(self) -> Project | None:
+        """Return the developer's currently selected project, if still present."""
+        raw = self._settings.get(ACTIVE_PROJECT_SETTING_KEY)
+        if not raw:
+            return None
+        try:
+            project_id = int(raw)
+        except (TypeError, ValueError):
+            return None
+        try:
+            return self.projects.get_project(project_id)
+        except KeyError:
+            return None
+
+    def set_active_project(self, project_id: int | None) -> None:
+        if project_id is None:
+            self._settings.set(ACTIVE_PROJECT_SETTING_KEY, "")
+        else:
+            self._settings.set(ACTIVE_PROJECT_SETTING_KEY, str(project_id))
 
     def close(self) -> None:
         self.db.close()

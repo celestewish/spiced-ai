@@ -12,15 +12,12 @@ class SettingsRepository:
         self._db = db
 
     def get(self, key: str, default: str | None = None) -> str | None:
-        row = self._db.conn.execute(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = self._db.query_one("SELECT value FROM app_settings WHERE key = ?", (key,))
         return row["value"] if row is not None else default
 
     def set(self, key: str, value: str) -> None:
-        self._db.conn.execute(
+        self._db.execute(
             "INSERT INTO app_settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
-        self._db.conn.commit()

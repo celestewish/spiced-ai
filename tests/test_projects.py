@@ -34,3 +34,23 @@ def test_empty_name_rejected():
     service = _service()
     with pytest.raises(ValueError):
         service.create_project("   ")
+
+
+def test_attach_unity_folder_valid(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    updated, detection = service.attach_unity_folder(project.id, str(tmp_path))
+    assert detection.is_valid
+    assert updated.path == str(tmp_path)
+    assert updated.is_valid_unity
+
+
+def test_attach_unity_folder_invalid_still_saves_path(tmp_path):
+    service = _service()
+    project = service.create_project("Not Unity")
+    updated, detection = service.attach_unity_folder(project.id, str(tmp_path))
+    assert not detection.is_valid
+    assert updated.path == str(tmp_path)
+    assert not updated.is_valid_unity
