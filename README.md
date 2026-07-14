@@ -172,6 +172,20 @@ into planning or devlog notes, then **Copy to clipboard**. The summary contains
 only counts and short summaries — never full logs, full feedback, test output,
 source code, or secrets. Nothing is sent anywhere.
 
+## First-run onboarding (Phase 5B)
+
+The first time you open Spiced with a fresh local database, a short welcome
+screen explains what Spiced helps with (debugging, testing, feedback, and build
+readiness) and — just as importantly — what it will **not** do on its own: it
+does not run Unity, edit your project files, make design decisions for you, or
+send data anywhere unless you explicitly start a provider-backed analysis.
+
+From the welcome screen you can pick a first step: **Create a project**, **Load
+demo project**, **Configure AI provider**, or **Continue to Dashboard**. Once
+you complete, skip, or pick a step, onboarding won't appear automatically again.
+You can reopen it any time from **Settings → Show onboarding again**; reopening
+never resets your projects, settings, or demo data.
+
 ## Try the demo project (Phase 5A)
 
 Spiced is easier to explore with some data in it. On the **Projects** screen,

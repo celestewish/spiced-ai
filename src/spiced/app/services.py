@@ -27,6 +27,7 @@ from spiced.storage.usage import UsageRepository
 
 PROVIDER_SETTING_KEY = "ai_provider"
 ACTIVE_PROJECT_SETTING_KEY = "active_project_id"
+ONBOARDING_COMPLETED_SETTING_KEY = "onboarding_completed"
 
 
 class Services:
@@ -87,6 +88,18 @@ class Services:
             self._settings.set(ACTIVE_PROJECT_SETTING_KEY, "")
         else:
             self._settings.set(ACTIVE_PROJECT_SETTING_KEY, str(project_id))
+
+    def onboarding_completed(self) -> bool:
+        """Whether the user has finished or skipped first-run onboarding.
+
+        Defaults to False on a fresh database so onboarding shows once.
+        """
+        return self._settings.get(ONBOARDING_COMPLETED_SETTING_KEY, "false") == "true"
+
+    def set_onboarding_completed(self, completed: bool) -> None:
+        self._settings.set(
+            ONBOARDING_COMPLETED_SETTING_KEY, "true" if completed else "false"
+        )
 
     def close(self) -> None:
         self.db.close()

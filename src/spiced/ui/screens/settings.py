@@ -20,6 +20,7 @@ from spiced.core.plans import PLANS
 
 class SettingsScreen(QWidget):
     settings_changed = Signal()
+    reopen_onboarding = Signal()
 
     def __init__(self, services: Services) -> None:
         super().__init__()
@@ -91,6 +92,28 @@ class SettingsScreen(QWidget):
         self._test_result.setObjectName("Muted")
         self._test_result.setWordWrap(True)
         layout.addWidget(self._test_result)
+
+        # Onboarding — let users revisit the welcome tour without losing data.
+        onboarding_title = QLabel("Onboarding")
+        onboarding_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(onboarding_title)
+
+        onboarding_desc = QLabel(
+            "Review what Spiced does and where to start. Reopening the welcome tour "
+            "does not change or delete any of your projects, settings, or demo data."
+        )
+        onboarding_desc.setObjectName("Muted")
+        onboarding_desc.setWordWrap(True)
+        layout.addWidget(onboarding_desc)
+
+        onboarding_row = QHBoxLayout()
+        self._onboarding_btn = QPushButton("Show onboarding again")
+        self._onboarding_btn.setObjectName("Ghost")
+        self._onboarding_btn.clicked.connect(self.reopen_onboarding.emit)
+        onboarding_row.addWidget(self._onboarding_btn)
+        onboarding_row.addStretch(1)
+        layout.addLayout(onboarding_row)
 
         layout.addStretch(1)
 
