@@ -61,6 +61,24 @@ class ProjectsScreen(QWidget):
         form.addWidget(self._create_btn, 0)
         layout.addLayout(form)
 
+        # Explicit, safe demo loader. Seeds one bundled sample project so every
+        # screen has realistic data. No Unity, no AI, no network — and it never
+        # touches projects you created yourself.
+        demo_row = QHBoxLayout()
+        demo_row.setSpacing(8)
+        self._demo_btn = QPushButton("Load demo project")
+        self._demo_btn.setObjectName("Ghost")
+        self._demo_btn.clicked.connect(self._load_demo)
+        demo_row.addWidget(self._demo_btn, 0)
+        demo_hint = QLabel(
+            "Adds a bundled sample project (no Unity files, nothing sent anywhere) so you can "
+            "explore the Dashboard and every screen right away."
+        )
+        demo_hint.setObjectName("Muted")
+        demo_hint.setWordWrap(True)
+        demo_row.addWidget(demo_hint, 1)
+        layout.addLayout(demo_row)
+
         section = QLabel("Your projects")
         section.setObjectName("SectionTitle")
         layout.addWidget(section)
@@ -101,6 +119,20 @@ class ProjectsScreen(QWidget):
         self._name_input.clear()
         self.refresh()
         self.projects_changed.emit()
+
+    def _load_demo(self) -> None:
+        already = self._services.demo.is_seeded()
+        project = self._services.load_demo_project()
+        self.refresh()
+        self.projects_changed.emit()
+        message = (
+            "The demo project is already loaded — switched to it."
+            if already
+            else "Loaded the bundled demo project with sample debugging, testing, and "
+            "feedback data. Open the Dashboard to see it. Nothing was sent anywhere, "
+            "and your own projects were not changed."
+        )
+        QMessageBox.information(self, project.name, message)
 
     def _on_selection_changed(self, current: QListWidgetItem | None, _prev=None) -> None:
         if current is None:

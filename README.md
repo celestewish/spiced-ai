@@ -172,6 +172,25 @@ into planning or devlog notes, then **Copy to clipboard**. The summary contains
 only counts and short summaries — never full logs, full feedback, test output,
 source code, or secrets. Nothing is sent anywhere.
 
+## Try the demo project (Phase 5A)
+
+Spiced is easier to explore with some data in it. On the **Projects** screen,
+click **Load demo project** to seed a small, self-contained sample —
+*Starfall Prototype (Demo)* — and make it active. It populates every screen so
+the Dashboard has something meaningful to show:
+
+- a Unity validation-style project context (no real folder on disk),
+- one debug session (a `NullReferenceException` in `HealthPickup.cs:24`),
+- six manual test cases with mixed statuses,
+- one test run (5 checks: 2 passed, 2 failed, 1 skipped),
+- one player-feedback batch from a six-line playtest scenario.
+
+The demo is deliberately safe: **no Unity is run, no real project files are
+touched, and nothing is sent to an AI provider** (its sample analyses are clearly
+labelled bundled copy). Loading it is repeat-safe — it never creates a second
+demo project and **never reads from or modifies a project you created**. Delete
+the demo project any time; your own projects are unaffected.
+
 ## Current MVP scope (Phases 0–4)
 
 - Python + PySide6 desktop application (normal resizable window).

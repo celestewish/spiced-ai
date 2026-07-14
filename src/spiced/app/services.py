@@ -11,6 +11,7 @@ from pathlib import Path
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
 from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
+from spiced.core.demo_data import DemoDataService
 from spiced.core.feedback import FeedbackService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.testing import TestingService
@@ -42,6 +43,17 @@ class Services:
         )
         self.feedback = FeedbackService(FeedbackBatchRepository(self.db))
         self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
+        self.demo = DemoDataService(self.db)
+
+    def load_demo_project(self, *, fresh: bool = False) -> Project:
+        """Seed the bundled demo project and make it active.
+
+        Repeat-safe by default (reuses the existing demo project). Pass
+        ``fresh=True`` to reset the demo data first. Never touches real projects.
+        """
+        project = self.demo.load_fresh_demo() if fresh else self.demo.seed()
+        self.set_active_project(project.id)
+        return project
 
     def provider_name(self) -> str:
         import os
