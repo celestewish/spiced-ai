@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -18,6 +19,12 @@ from spiced.ui.context_panel import ContextPanel
 from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.feedback import FeedbackScreen
+from spiced.ui.screens.onboarding import (
+    ACTION_CONFIGURE_AI,
+    ACTION_CREATE_PROJECT,
+    ACTION_LOAD_DEMO,
+    OnboardingScreen,
+)
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.testing import TestingScreen
@@ -32,6 +39,10 @@ NAV_ITEMS = [
 ]
 
 _DASHBOARD_INDEX = 0
+_PROJECTS_INDEX = 1
+_SETTINGS_INDEX = 5
+# Onboarding lives past the nav-mapped screens so it has no sidebar button.
+_ONBOARDING_INDEX = len(NAV_ITEMS)
 
 
 class MainWindow(QWidget):
@@ -54,8 +65,10 @@ class MainWindow(QWidget):
         root.addWidget(self._build_workspace(), 1)
         root.addWidget(self._context, 0)
 
-        self._nav_buttons[0].setChecked(True)
-        self._stack.setCurrentIndex(0)
+        if self._services.onboarding_completed():
+            self._navigate(_DASHBOARD_INDEX)
+        else:
+            self._stack.setCurrentIndex(_ONBOARDING_INDEX)
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -122,6 +135,10 @@ class MainWindow(QWidget):
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
+        self._settings_screen.reopen_onboarding.connect(self._show_onboarding)
+
+        self._onboarding_screen = OnboardingScreen()
+        self._onboarding_screen.action_selected.connect(self._on_onboarding_action)
 
         self._stack.addWidget(self._dashboard_screen)
         self._stack.addWidget(self._projects_screen)
@@ -129,6 +146,7 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._testing_screen)
         self._stack.addWidget(self._feedback_screen)
         self._stack.addWidget(self._settings_screen)
+        self._stack.addWidget(self._onboarding_screen)
         # Recompute the dashboard whenever the user navigates to it.
         self._stack.currentChanged.connect(self._on_stack_changed)
 
@@ -138,3 +156,47 @@ class MainWindow(QWidget):
     def _on_stack_changed(self, index: int) -> None:
         if index == _DASHBOARD_INDEX:
             self._dashboard_screen.refresh()
+
+    def _navigate(self, index: int) -> None:
+        """Switch to a nav-mapped screen and keep the sidebar in sync."""
+        if 0 <= index < len(self._nav_buttons):
+            self._nav_buttons[index].setChecked(True)
+        self._stack.setCurrentIndex(index)
+
+    def _show_onboarding(self) -> None:
+        """Reopen onboarding on demand. Never resets settings, projects, or data."""
+        self._stack.setCurrentIndex(_ONBOARDING_INDEX)
+
+    def _on_onboarding_action(self, action: str) -> None:
+        # Completing, skipping, or picking a first step all finish onboarding so
+        # it does not auto-show again. Reopening later is manual and non-resetting.
+        self._services.set_onboarding_completed(True)
+        if action == ACTION_CREATE_PROJECT:
+            self._navigate(_PROJECTS_INDEX)
+        elif action == ACTION_CONFIGURE_AI:
+            self._navigate(_SETTINGS_INDEX)
+        elif action == ACTION_LOAD_DEMO:
+            self._load_demo_from_onboarding()
+        else:  # ACTION_DASHBOARD or ACTION_SKIP
+            self._navigate(_DASHBOARD_INDEX)
+
+    def _load_demo_from_onboarding(self) -> None:
+        # Reuses the existing Phase 5A demo service (repeat-safe, no Unity, no AI,
+        # nothing sent anywhere, never touches the developer's own projects).
+        project = self._services.load_demo_project()
+        self._refresh_after_data_change()
+        self._navigate(_DASHBOARD_INDEX)
+        QMessageBox.information(
+            self,
+            project.name,
+            "Demo project loaded. Open the Dashboard to see how Spiced summarizes "
+            "debugging, testing, and feedback signals.",
+        )
+
+    def _refresh_after_data_change(self) -> None:
+        self._context.refresh()
+        self._projects_screen.refresh()
+        self._debugging_screen.refresh()
+        self._testing_screen.refresh()
+        self._feedback_screen.refresh()
+        self._dashboard_screen.refresh()
