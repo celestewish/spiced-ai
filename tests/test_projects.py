@@ -54,3 +54,29 @@ def test_attach_unity_folder_invalid_still_saves_path(tmp_path):
     assert not detection.is_valid
     assert updated.path == str(tmp_path)
     assert not updated.is_valid_unity
+
+
+def test_unity_test_run_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.unity_test_run_enabled is False
+    assert project.unity_editor_path_override is None
+
+
+def test_unity_test_run_settings_can_be_enabled_with_override():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    updated = service.set_unity_test_run_settings(
+        project.id, True, editor_path_override=r"C:\Unity\2022.3.10f1\Editor\Unity.exe"
+    )
+    assert updated.unity_test_run_enabled is True
+    assert updated.unity_editor_path_override == r"C:\Unity\2022.3.10f1\Editor\Unity.exe"
+
+
+def test_unity_test_run_settings_can_be_disabled_again():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    service.set_unity_test_run_settings(project.id, True, r"C:\Unity\Unity.exe")
+    disabled = service.set_unity_test_run_settings(project.id, False, None)
+    assert disabled.unity_test_run_enabled is False
+    assert disabled.unity_editor_path_override is None

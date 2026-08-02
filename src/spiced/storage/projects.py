@@ -18,6 +18,8 @@ class Project:
     created_at: str
     validation_status: str | None = None
     engine_metadata_json: str | None = None
+    unity_test_run_enabled: bool = False
+    unity_editor_path_override: str | None = None
 
     @property
     def engine_metadata(self) -> dict:
@@ -71,6 +73,16 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_unity_test_run_settings(
+        self, project_id: int, enabled: bool, editor_path_override: str | None
+    ) -> Project:
+        self._db.execute(
+            "UPDATE projects SET unity_test_run_enabled = ?, unity_editor_path_override = ? "
+            "WHERE id = ?",
+            (1 if enabled else 0, editor_path_override or None, project_id),
+        )
+        return self.get(project_id)
+
     def get(self, project_id: int) -> Project:
         row = self._db.query_one("SELECT * FROM projects WHERE id = ?", (project_id,))
         if row is None:
@@ -94,5 +106,11 @@ class ProjectRepository:
             validation_status=row["validation_status"] if "validation_status" in keys else None,
             engine_metadata_json=(
                 row["engine_metadata_json"] if "engine_metadata_json" in keys else None
+            ),
+            unity_test_run_enabled=(
+                bool(row["unity_test_run_enabled"]) if "unity_test_run_enabled" in keys else False
+            ),
+            unity_editor_path_override=(
+                row["unity_editor_path_override"] if "unity_editor_path_override" in keys else None
             ),
         )

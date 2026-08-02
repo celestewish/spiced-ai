@@ -191,6 +191,8 @@ CREATE TABLE IF NOT EXISTS community_pulse_checkins (
 PROJECT_MIGRATIONS = {
     "validation_status": "TEXT",
     "engine_metadata_json": "TEXT",
+    "unity_test_run_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "unity_editor_path_override": "TEXT",
 }
 
 

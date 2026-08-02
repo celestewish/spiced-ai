@@ -14,9 +14,11 @@ control of every change to your project.
 > Buddy, and Feedback Review: **Regression Tracking**, **Performance &
 > Profiling Reports**, **Cross-Platform Test Simulation**, an **Accessibility
 > Pass**, **Version-Aware Suggestions**, a **Code Health Dashboard**, the
-> **Feedback-to-Task Converter**, and opt-in **Community Pulse Check-ins**.
-> Every new feature keeps Spiced's founding rules: nothing runs your engine,
-> nothing is sent to AI beyond a trimmed excerpt, and nothing acts without you.
+> **Feedback-to-Task Converter**, opt-in **Community Pulse Check-ins**, and
+> opt-in **Run Unity Tests**. Every new feature keeps Spiced's founding rules:
+> nothing is sent to AI beyond a trimmed excerpt and nothing acts without you.
+> Run Unity Tests is the one deliberate, opt-in exception to "nothing runs
+> your engine" — everything else stays paste/import only.
 
 ---
 
@@ -140,11 +142,14 @@ to a provider — never full feedback files and never your project files. Use th
 
 ## Testing, Debugging & Feedback expansion (Phase 6)
 
-Eight new features, all following the same rule as everything above: Spiced
-never runs your engine, profiler, or tests, and only ever interprets numbers
-and text you paste or import. Deterministic local parsing/scoring always
-happens first and works with no AI provider; the AI step only interprets
-already-correct, structured evidence.
+Nine new features. Deterministic local parsing/scoring always happens first
+and works with no AI provider; the AI step only interprets already-correct,
+structured evidence. Eight of the nine only ever read numbers and text you
+paste or import — Spiced never touches your engine, a profiler, or real
+hardware. The one exception is **Run Unity Tests**, and it's opt-in per
+project, off by default: everywhere else, "automating tests" means Spiced
+helping you review results, never Spiced deciding what to build or replacing
+your judgment about what to do with them.
 
 **Regression Tracking** — every debugging session and test-result failure
 gets a signature (error type + location, or the failure name) and is checked
@@ -154,6 +159,19 @@ issue fixed on \<date\>" so you're not re-diagnosing something you already
 fixed. Shown as a **Known Issues** panel on **Automated Testing → Functional**
 and inline on **Debugging Buddy** analyses, with **Mark resolved**/**Reopen**
 controls. Purely local — no AI involved in matching.
+
+**Run Unity Tests** — opt-in per project (a toggle on **Projects**, off by
+default), because this is the one place Spiced launches an external process
+instead of only reading text you give it. When enabled, **Automated Testing →
+Functional** gets a **Run Tests Now** button that launches your project's own
+Unity Editor headlessly (`-batchmode -runTests`) for EditMode, PlayMode, or
+both. Spiced finds the right Editor version via Unity Hub (matched exactly
+against your project's `ProjectVersion.txt` — never a "close enough"
+substitute) or a manual path you set; the run is capped at 30 minutes and
+always reads Unity's own NUnit-XML results file rather than trusting its exit
+code, since Unity's docs say the exit code isn't a reliable pass/fail signal.
+From there it's the exact same pipeline as a pasted result: local parsing,
+Known Issues matching, and an AI review.
 
 **Performance & Profiling Reports** — paste or import fps/memory/load-time
 numbers (plain text like `Waterfall Area: fps=42, memory=850MB, load=3.2s`,
@@ -279,10 +297,12 @@ the demo project any time; your own projects are unaffected.
   (Version-Aware Suggestions), and a collapsible Code Health card (see above).
 - **Automated Testing**: offline manual test-case authoring/editing/deletion
   and status tracking; a deterministic functional result parser (text/JSON/
-  XML) with AI-assisted review; a **Performance** tab (fps/memory/load-time
-  parsing, spike detection, and an optional target-hardware simulation); an
-  **Accessibility** tab (WCAG contrast + colorblind-simulation checklist); and
-  a cross-feature **Known Issues** panel (Regression Tracking) (see above).
+  XML) with AI-assisted review; opt-in **Run Unity Tests** (a real, headless
+  Unity Test Runner invocation feeding the same parser); a **Performance**
+  tab (fps/memory/load-time parsing, spike detection, and an optional
+  target-hardware simulation); an **Accessibility** tab (WCAG contrast +
+  colorblind-simulation checklist); and a cross-feature **Known Issues**
+  panel (Regression Tracking) (see above).
 - **Feedback Review**: a deterministic feedback parser (text/Markdown/CSV/
   JSON), offline heuristic classification shown as frequency-sorted theme
   cards, AI-assisted review that separates bugs from design preferences, a
@@ -304,10 +324,12 @@ the demo project any time; your own projects are unaffected.
 
 - No automatic file modification or code patching.
 - No real billing, no cloud accounts.
-- No Unity (or other engine) command execution, no running of Unity tests, and
-  no real profiler/hardware access — Performance, Cross-Platform Simulation,
-  Accessibility, Version-Aware Suggestions, and Code Health all work from
-  numbers/code you paste or import, never from live engine introspection.
+- No Unity (or other engine) command execution and no real profiler/hardware
+  access, with one deliberate, opt-in exception: **Run Unity Tests**, off by
+  default per project, is the only place Spiced launches an external process.
+  Performance, Cross-Platform Simulation, Accessibility, Version-Aware
+  Suggestions, and Code Health all still work only from numbers/code you
+  paste or import, never from live engine introspection.
 - No sending of project files or full logs to any AI provider — only a trimmed,
   relevant excerpt.
 - No deep static analysis of the whole project; Unity folder detection is
@@ -417,6 +439,25 @@ channel instead:
 Uses only Python's standard library (`urllib`) for the API call — no extra
 dependency to install.
 
+### Enabling Run Unity Tests (optional)
+
+Off by default, per project. To let Spiced launch your project's own Unity
+Editor to run its tests:
+
+1. Connect a valid Unity folder for the project first (**Projects** screen) —
+   Spiced reads the required Editor version from its `ProjectVersion.txt`.
+2. Install that exact Unity version via Unity Hub. Spiced looks it up with
+   Unity Hub's own `editors -i` command and will not substitute a "close
+   enough" version, since opening a project with the wrong Editor can trigger
+   an unwanted upgrade/reimport.
+3. On **Projects**, check **"Allow Spiced to run this project's Unity
+   tests."** If Hub isn't installed, or you want to pin a specific Editor
+   copy, set its `Unity.exe` path directly in the override field instead.
+4. On **Automated Testing → Functional**, pick EditMode / PlayMode / Both and
+   click **Run Tests Now**. Runs are capped at 30 minutes (a slow first-time
+   asset import is the usual reason a run takes a while) and always read
+   Unity's own results XML rather than trusting its exit code.
+
 ### Troubleshooting
 
 - **`OPENAI_API_KEY is not set`** — add your key to `.env` or the environment.
@@ -430,6 +471,12 @@ dependency to install.
 - **Discord "rejected DISCORD_BOT_TOKEN" / "isn't allowed to read that
   channel"** — double-check the token and confirm the bot was actually added
   to the server with access to that channel.
+- **"Unity \<version\> isn't available"** — that exact Editor version isn't
+  installed via Unity Hub. Install it, or set a manual `Unity.exe` path on
+  the Projects screen.
+- **A Unity run times out** — usually a slow first-time asset import, or
+  Unity stuck on a dialog batch mode can't dismiss (e.g. license activation).
+  Open the project in Unity normally once first to clear both.
 
 ## Run
 

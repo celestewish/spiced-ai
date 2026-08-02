@@ -4,8 +4,11 @@ Two responsibilities, both human-centered:
 
 1. Manual test cases — the developer authors and tracks them; Spiced only
    stores them and never runs anything. This works with no AI provider at all.
-2. Test-result review — parse pasted/imported output locally, ask the selected
-   provider for a calm summary + retest checklist, and save a compact run.
+2. Test-result review — parse test output locally, ask the selected provider
+   for a calm summary + retest checklist, and save a compact run. The output
+   can come from a pasted/imported result set, or (opt-in, per project) from
+   Spiced launching the project's own Unity Test Runner — either way it's the
+   same parse -> analyze pipeline from this point on.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from spiced.storage.test_runs import TestRun, TestRunRepository
 
 SOURCE_PASTE = "paste"
 SOURCE_FILE = "file"
+SOURCE_UNITY_RUN = "unity_run"
 
 
 @dataclass(frozen=True)

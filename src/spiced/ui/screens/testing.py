@@ -3,8 +3,11 @@
 Three tabs, each following the same pattern: local/deterministic parsing and
 (for Functional) manual test-case tracking work fully offline with no AI
 provider; the AI review runs the selected provider on a worker thread. Only a
-trimmed excerpt is ever sent — never project files, and Spiced never runs
-anything itself.
+trimmed excerpt is ever sent — never project files. The one exception is the
+opt-in "Run Unity tests" section: when a project has explicitly enabled it
+(on the Projects screen), Spiced launches that project's own Unity Editor
+headlessly to run its tests, then feeds the results through the same local
+parser and AI review as a pasted result.
 """
 
 from __future__ import annotations
@@ -37,12 +40,20 @@ from spiced.core.accessibility import ProviderNotReadyError as AccessibilityNotR
 from spiced.core.hardware_simulation import available_tiers
 from spiced.core.performance import PerformanceReview
 from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
-from spiced.core.testing import SOURCE_FILE, SOURCE_PASTE, ProviderNotReadyError, TestReview
+from spiced.core.testing import (
+    SOURCE_FILE,
+    SOURCE_PASTE,
+    SOURCE_UNITY_RUN,
+    ProviderNotReadyError,
+    TestReview,
+)
+from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor, run_tests
 from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 
 _USER_ROLE = 0x0100
 _NO_HARDWARE = "(none — no simulation)"
+_BOTH_PLATFORMS = "Both"
 
 
 class _FunctionalWorker(QObject):
@@ -74,6 +85,72 @@ class _FunctionalWorker(QObject):
             self.failed.emit(str(exc))
         except Exception as exc:  # surfaced calmly to the user
             self.failed.emit(f"Something went wrong during analysis: {exc}")
+
+
+class _UnityRunWorker(QObject):
+    """Runs one or more Unity test platforms sequentially on a worker thread.
+
+    Emits per-platform so a failure on one platform (e.g. PlayMode timing out)
+    doesn't hide a result already obtained from another (e.g. EditMode).
+    """
+
+    platform_started = Signal(str)
+    platform_done = Signal(str, object)  # platform, TestReview
+    platform_failed = Signal(str, str)  # platform, message
+    finished = Signal()
+
+    def __init__(self, services: Services, project, editor_path: str, platforms: list[str]) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._editor_path = editor_path
+        self._platforms = platforms
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+        except Exception as exc:
+            self.platform_failed.emit(
+                self._platforms[0], f"Could not set up the AI provider: {exc}"
+            )
+            self.finished.emit()
+            return
+        if not provider.is_available():
+            # Checked before launching Unity at all: a run can take a long time, and
+            # there's no point spending it only to fail on the AI review afterward.
+            self.platform_failed.emit(
+                self._platforms[0],
+                f"The {provider.display_name()} provider isn't ready. Add its API key to a "
+                "local .env file, or switch to the Mock provider in Settings, before running "
+                "tests — this is checked first so a run isn't wasted.",
+            )
+            self.finished.emit()
+            return
+
+        for platform in self._platforms:
+            self.platform_started.emit(platform)
+            try:
+                result = run_tests(self._editor_path, self._project.path, platform)
+                if not result.succeeded:
+                    message = result.error or "Unity did not produce a results file."
+                    if result.log_tail:
+                        message += f"\n\nLog excerpt:\n{result.log_tail}"
+                    self.platform_failed.emit(platform, message)
+                    continue
+                review = self._services.testing.analyze(
+                    provider,
+                    result.results_xml,
+                    project=self._project,
+                    source_type=SOURCE_UNITY_RUN,
+                    source_filename=f"unity-{platform.lower()}-run.xml",
+                    record_usage=self._services.usage.record_prompt,
+                )
+                self.platform_done.emit(platform, review)
+            except ProviderNotReadyError as exc:
+                self.platform_failed.emit(platform, str(exc))
+            except Exception as exc:  # surfaced calmly to the user
+                self.platform_failed.emit(platform, f"Something went wrong: {exc}")
+        self.finished.emit()
 
 
 class _PerformanceWorker(QObject):
@@ -203,6 +280,7 @@ class TestingScreen(QWidget):
         container, layout = self._scrollable()
         self._build_case_form(layout)
         self._build_case_list(layout)
+        self._build_unity_run(layout)
         self._build_analyze(layout)
         self._build_known_issues(layout)
         return container
@@ -281,6 +359,45 @@ class TestingScreen(QWidget):
         self._update_status_btn.clicked.connect(self._on_update_status)
         status_row.addWidget(self._update_status_btn)
         layout.addLayout(status_row)
+
+    def _build_unity_run(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Run Unity tests")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Opt-in per project (Projects screen). Launches your project's Unity Editor "
+            "headlessly to run its own tests, then feeds the results into the same review "
+            "and Known Issues matching as a pasted result — nothing else about how Spiced "
+            "handles results changes."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._unity_run_status = QLabel()
+        self._unity_run_status.setObjectName("Muted")
+        self._unity_run_status.setWordWrap(True)
+        layout.addWidget(self._unity_run_status)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Platform:"))
+        self._unity_platform_input = QComboBox()
+        self._unity_platform_input.addItems([EDIT_MODE, PLAY_MODE, _BOTH_PLATFORMS])
+        row.addWidget(self._unity_platform_input)
+        row.addStretch(1)
+        self._unity_run_btn = QPushButton("Run Tests Now")
+        self._unity_run_btn.clicked.connect(self._on_run_unity_tests)
+        row.addWidget(self._unity_run_btn)
+        layout.addLayout(row)
+
+        self._unity_run_result = QTextEdit()
+        self._unity_run_result.setReadOnly(True)
+        self._unity_run_result.setPlaceholderText(
+            "Unity test-run output and review will appear here."
+        )
+        self._unity_run_result.setFixedHeight(180)
+        layout.addWidget(self._unity_run_result)
 
     def _build_analyze(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Analyze test results")
@@ -496,6 +613,7 @@ class TestingScreen(QWidget):
         self._refresh_known_issues()
         self._refresh_perf_history()
         self._refresh_access_history()
+        self._refresh_unity_run_status()
         self._update_edit_buttons()
 
     def _update_edit_buttons(self) -> None:
@@ -601,6 +719,35 @@ class TestingScreen(QWidget):
             score = f"{r.score}/100" if r.score is not None else "n/a"
             lines.append(f"[{r.created_at}] score {score}\n    {r.ai_summary or ''}")
         self._access_history.setPlainText("\n".join(lines))
+
+    def _refresh_unity_run_status(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._unity_run_status.setText("Select a project to run its Unity tests.")
+            self._unity_run_btn.setEnabled(False)
+            return
+        if not project.unity_test_run_enabled:
+            self._unity_run_status.setText(
+                "Not enabled for this project. Turn on \"Allow Spiced to run this project's "
+                "Unity tests\" on the Projects screen."
+            )
+            self._unity_run_btn.setEnabled(False)
+            return
+        if not project.path:
+            self._unity_run_status.setText("Connect a Unity folder for this project first.")
+            self._unity_run_btn.setEnabled(False)
+            return
+        required_version = project.engine_metadata.get("unity_version")
+        editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
+        if editor is None:
+            self._unity_run_status.setText(
+                f"Unity {required_version or '(unknown version)'} isn't available. Install it "
+                "via Unity Hub, or set a manual Editor path on the Projects screen."
+            )
+            self._unity_run_btn.setEnabled(False)
+            return
+        self._unity_run_status.setText(f"Will run Unity {editor.version} at {editor.path}")
+        self._unity_run_btn.setEnabled(True)
 
     # --- Functional handlers -------------------------------------------------
 
@@ -777,6 +924,67 @@ class TestingScreen(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy)
         self._analyze_btn.setText("Analyzing…" if busy else "Analyze")
+
+    # --- Run Unity tests handlers --------------------------------------------
+
+    def _on_run_unity_tests(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.unity_test_run_enabled or not project.path:
+            return
+        required_version = project.engine_metadata.get("unity_version")
+        editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
+        if editor is None:
+            QMessageBox.information(
+                self,
+                "Unity Editor not found",
+                "Spiced couldn't resolve a Unity Editor to run — see the status above.",
+            )
+            return
+
+        platform_choice = self._unity_platform_input.currentText()
+        if platform_choice == _BOTH_PLATFORMS:
+            platforms = [EDIT_MODE, PLAY_MODE]
+        else:
+            platforms = [platform_choice]
+
+        self._unity_run_btn.setEnabled(False)
+        self._unity_platform_input.setEnabled(False)
+        self._unity_run_result.setPlainText(
+            "Launching Unity — this can take a while, especially on a first run…"
+        )
+
+        self._thread = QThread()
+        self._worker = _UnityRunWorker(self._services, project, editor.path, platforms)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.platform_started.connect(self._on_unity_platform_started)
+        self._worker.platform_done.connect(self._on_unity_platform_done)
+        self._worker.platform_failed.connect(self._on_unity_platform_failed)
+        self._worker.finished.connect(self._on_unity_run_finished)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_unity_platform_started(self, platform: str) -> None:
+        self._unity_run_result.append(f"\n--- Running {platform} tests… ---")
+
+    def _on_unity_platform_done(self, platform: str, review: TestReview) -> None:
+        text = f"[{platform}] {review.response_text}"
+        matches = [o for o in review.regression_outcomes if o.match is not None]
+        if matches:
+            lines = ["", "Known-issue matches:"]
+            lines.extend(f"- {o.match.note}" for o in matches)
+            text = text + "\n" + "\n".join(lines)
+        self._unity_run_result.append(text)
+        self.usage_changed.emit()
+        self._refresh_history()
+        self._refresh_known_issues()
+
+    def _on_unity_platform_failed(self, platform: str, message: str) -> None:
+        self._unity_run_result.append(f"[{platform}] {message}")
+
+    def _on_unity_run_finished(self) -> None:
+        self._unity_run_btn.setEnabled(True)
+        self._unity_platform_input.setEnabled(True)
 
     # --- Known Issues handlers ----------------------------------------------
 
