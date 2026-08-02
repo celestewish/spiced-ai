@@ -4,7 +4,7 @@ from spiced.ai.base import AIProvider, AIResponse
 from spiced.ai.prompt_templates import TEST_REVIEW_RULES, build_test_review_prompt
 from spiced.core.regression import RegressionService
 from spiced.core.test_result_parser import parse_test_results
-from spiced.core.testing import ProviderNotReadyError, TestingService
+from spiced.core.testing import SOURCE_UNITY_RUN, ProviderNotReadyError, TestingService
 from spiced.storage.database import Database
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.projects import ProjectRepository
@@ -166,6 +166,20 @@ def test_mark_issue_resolved_and_reopen_through_service():
     assert resolved.status == "resolved"
     reopened = service.mark_issue_open(issue.id)
     assert reopened.status == "open"
+
+
+def test_analyze_accepts_unity_run_as_source_type():
+    """A real Unity test run feeds the exact same analyze() pipeline as a
+    pasted/imported result — only the source_type on the saved run differs."""
+    service, project = _service()
+    review = service.analyze(
+        FakeProvider(), MANUAL_TEXT, project=project, source_type=SOURCE_UNITY_RUN,
+        source_filename="unity-editmode-run.xml",
+    )
+    assert review.run is not None
+    saved = service.history(project.id)[0]
+    assert saved.source_type == SOURCE_UNITY_RUN
+    assert saved.source_filename == "unity-editmode-run.xml"
 
 
 def test_known_issues_empty_when_regression_not_configured():

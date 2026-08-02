@@ -41,3 +41,14 @@ class ProjectsService:
             metadata=detection.metadata() or None,
         )
         return project, detection
+
+    def set_unity_test_run_settings(
+        self, project_id: int, enabled: bool, editor_path_override: str | None = None
+    ) -> Project:
+        """Opt a project in/out of Spiced launching its Unity Editor to run tests.
+
+        Off by default. This is the one place Spiced executes an external
+        engine process rather than just parsing text — everything else stays
+        paste/import only.
+        """
+        return self._repo.set_unity_test_run_settings(project_id, enabled, editor_path_override)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.core.unity_test_runner import resolve_unity_editor
 
 
 class ProjectsScreen(QWidget):
@@ -105,7 +107,119 @@ class ProjectsScreen(QWidget):
         controls.addStretch(1)
         layout.addLayout(controls)
 
+        self._build_unity_test_run(layout)
+
         self.refresh()
+
+    # --- Run Unity Tests opt-in ---------------------------------------------
+
+    def _build_unity_test_run(self, layout: QVBoxLayout) -> None:
+        section = QLabel("Run Unity tests")
+        section.setObjectName("SectionTitle")
+        layout.addWidget(section)
+
+        intro = QLabel(
+            "Off by default. When enabled, the Testing screen can launch this project's "
+            "Unity Editor headlessly to run its tests — the one place Spiced executes an "
+            "external process rather than only reading text you give it."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._unity_run_toggle = QCheckBox(
+            "Allow Spiced to run this project's Unity tests"
+        )
+        self._unity_run_toggle.toggled.connect(self._on_unity_run_toggle)
+        layout.addWidget(self._unity_run_toggle)
+
+        override_row = QHBoxLayout()
+        override_row.addWidget(QLabel("Unity Editor path (optional override):"))
+        self._unity_editor_path_input = QLineEdit()
+        self._unity_editor_path_input.setPlaceholderText(
+            "Leave blank to auto-detect via Unity Hub"
+        )
+        self._unity_editor_path_input.editingFinished.connect(self._on_unity_editor_path_changed)
+        override_row.addWidget(self._unity_editor_path_input, 1)
+        self._unity_editor_browse_btn = QPushButton("Browse…")
+        self._unity_editor_browse_btn.clicked.connect(self._on_browse_unity_editor)
+        override_row.addWidget(self._unity_editor_browse_btn)
+        layout.addLayout(override_row)
+
+        self._unity_run_status = QLabel()
+        self._unity_run_status.setObjectName("Muted")
+        self._unity_run_status.setWordWrap(True)
+        layout.addWidget(self._unity_run_status)
+
+    def _on_unity_run_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        override = self._unity_editor_path_input.text().strip() or None
+        self._services.projects.set_unity_test_run_settings(project.id, checked, override)
+        self._update_unity_run_status()
+
+    def _on_unity_editor_path_changed(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        override = self._unity_editor_path_input.text().strip() or None
+        self._services.projects.set_unity_test_run_settings(
+            project.id, self._unity_run_toggle.isChecked(), override
+        )
+        self._update_unity_run_status()
+
+    def _on_browse_unity_editor(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose the Unity Editor executable",
+            "",
+            "Unity Editor (Unity.exe);;All files (*)",
+        )
+        if not path:
+            return
+        self._unity_editor_path_input.setText(path)
+        self._on_unity_editor_path_changed()
+
+    def _update_unity_run_status(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = project.unity_test_run_enabled if project else False
+        self._unity_run_toggle.blockSignals(True)
+        self._unity_run_toggle.setChecked(bool(enabled))
+        self._unity_run_toggle.blockSignals(False)
+        self._unity_run_toggle.setEnabled(has_project)
+
+        override = project.unity_editor_path_override if project else None
+        self._unity_editor_path_input.blockSignals(True)
+        self._unity_editor_path_input.setText(override or "")
+        self._unity_editor_path_input.blockSignals(False)
+        self._unity_editor_path_input.setEnabled(has_project)
+        self._unity_editor_browse_btn.setEnabled(has_project)
+
+        if not has_project:
+            self._unity_run_status.setText("")
+            return
+        if not enabled:
+            self._unity_run_status.setText("Not enabled. Turn this on to run tests from Testing.")
+            return
+        required_version = project.engine_metadata.get("unity_version")
+        editor = resolve_unity_editor(required_version, override)
+        if editor is not None:
+            self._unity_run_status.setText(f"Will run Unity {editor.version} at {editor.path}")
+        elif override:
+            self._unity_run_status.setText(
+                "The manual path above doesn't point to a file — check it."
+            )
+        elif not required_version:
+            self._unity_run_status.setText(
+                "Connect a valid Unity folder first so Spiced knows which Unity version to run."
+            )
+        else:
+            self._unity_run_status.setText(
+                f"Unity {required_version} isn't installed (or Unity Hub wasn't found). "
+                "Install it via Unity Hub, or set a manual path above."
+            )
 
     def _create(self) -> None:
         name = self._name_input.text().strip()
@@ -196,6 +310,7 @@ class ProjectsScreen(QWidget):
         self._update_detail()
 
     def _update_detail(self) -> None:
+        self._update_unity_run_status()
         project = self._services.active_project()
         if project is None:
             self._detail.setText("Select or create a project to connect a Unity folder.")
