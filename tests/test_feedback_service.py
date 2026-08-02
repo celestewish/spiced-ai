@@ -10,6 +10,7 @@ from spiced.core.feedback_classifier import classify
 from spiced.core.feedback_parser import parse_feedback
 from spiced.storage.database import Database
 from spiced.storage.feedback_batches import FeedbackBatchRepository
+from spiced.storage.feedback_tasks import FeedbackTaskRepository
 from spiced.storage.projects import ProjectRepository
 
 CANNED_REVIEW = """Here's what players seem to be telling you.
@@ -69,7 +70,8 @@ class FakeProvider(AIProvider):
 def _service():
     db = Database(":memory:")
     project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
-    return FeedbackService(FeedbackBatchRepository(db)), project
+    service = FeedbackService(FeedbackBatchRepository(db), FeedbackTaskRepository(db))
+    return service, project
 
 
 def test_prompt_carries_review_rules_and_human_control_language():
@@ -121,3 +123,50 @@ def test_analyze_raises_when_provider_unavailable():
     service, project = _service()
     with pytest.raises(ProviderNotReadyError):
         service.analyze(FakeProvider(available=False), MANUAL_FEEDBACK, project=project)
+
+
+def test_preview_theme_cards_sorted_by_frequency():
+    service, _ = _service()
+    preview = service.preview(MANUAL_FEEDBACK)
+    cards = preview.theme_cards
+    assert cards  # at least one theme detected
+    counts = [c.count for c in cards]
+    assert counts == sorted(counts, reverse=True)
+    assert sum(c.count for c in cards) == 6
+    # Every card with a nonzero count should carry a representative example.
+    assert all(c.representative_text for c in cards)
+
+
+def test_review_theme_cards_match_classification():
+    service, project = _service()
+    review = service.analyze(FakeProvider(), MANUAL_FEEDBACK, project=project)
+    cards = review.theme_cards
+    assert sum(c.count for c in cards) == sum(review.classification.counts.values())
+
+
+def test_draft_task_creates_and_lists():
+    service, project = _service()
+    task = service.draft_task(project.id, "Bug or technical issue", "the pause menu is broken")
+    assert task.status == "draft"
+    assert "pause menu" in task.text
+    assert service.list_tasks(project.id) == [task]
+
+
+def test_update_and_set_status_and_delete_task():
+    service, project = _service()
+    task = service.draft_task(project.id, "Bug or technical issue", "example")
+    edited = service.update_task(task.id, "Edited task text")
+    assert edited.text == "Edited task text"
+    accepted = service.set_task_status(task.id, "accepted")
+    assert accepted.status == "accepted"
+    service.delete_task(task.id)
+    assert service.list_tasks(project.id) == []
+
+
+def test_task_methods_raise_when_not_configured():
+    db = Database(":memory:")
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = FeedbackService(FeedbackBatchRepository(db))  # no task repo wired
+    with pytest.raises(RuntimeError):
+        service.draft_task(project.id, "Bug or technical issue", "example")
+    assert service.list_tasks(project.id) == []

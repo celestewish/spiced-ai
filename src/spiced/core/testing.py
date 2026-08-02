@@ -10,11 +10,13 @@ Two responsibilities, both human-centered:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
 from spiced.ai.prompt_templates import build_test_review_prompt
+from spiced.core.regression import RegressionOutcome, RegressionService, failure_signature
 from spiced.core.test_result_parser import ParsedTestResults, parse_test_results
+from spiced.storage.known_issues import SOURCE_TEST
 from spiced.storage.projects import Project
 from spiced.storage.test_cases import TestCase, TestCaseRepository
 from spiced.storage.test_runs import TestRun, TestRunRepository
@@ -30,6 +32,7 @@ class TestReview:
     provider: str
     retest_checklist: list[str]
     run: TestRun | None
+    regression_outcomes: list[RegressionOutcome] = field(default_factory=list)
 
 
 class ProviderNotReadyError(RuntimeError):
@@ -39,9 +42,15 @@ class ProviderNotReadyError(RuntimeError):
 class TestingService:
     """Manual test-case management plus AI-assisted result review."""
 
-    def __init__(self, cases: TestCaseRepository, runs: TestRunRepository) -> None:
+    def __init__(
+        self,
+        cases: TestCaseRepository,
+        runs: TestRunRepository,
+        regression: RegressionService | None = None,
+    ) -> None:
         self._cases = cases
         self._runs = runs
+        self._regression = regression
 
     # --- Manual test cases (no provider needed) ---------------------------
 
@@ -138,7 +147,9 @@ class TestingService:
 
         checklist = _extract_retest_checklist(response.text)
         run = None
+        regression_outcomes: list[RegressionOutcome] = []
         if project is not None:
+            regression_outcomes = self._note_regressions(project.id, parsed)
             run = self._runs.create(
                 project_id=project.id,
                 source_type=source_type,
@@ -156,7 +167,34 @@ class TestingService:
             provider=response.provider,
             retest_checklist=checklist,
             run=run,
+            regression_outcomes=regression_outcomes,
         )
+
+    def _note_regressions(
+        self, project_id: int, parsed: ParsedTestResults
+    ) -> list[RegressionOutcome]:
+        if self._regression is None:
+            return []
+        outcomes = []
+        for failure in parsed.failures:
+            signature = failure_signature(failure)
+            outcomes.append(
+                self._regression.note_issue(project_id, SOURCE_TEST, signature, failure)
+            )
+        return outcomes
+
+    def known_issues(self, project_id: int):
+        return self._regression.list_for_project(project_id) if self._regression else []
+
+    def mark_issue_resolved(self, issue_id: int):
+        if self._regression is None:
+            raise RuntimeError("Regression tracking is not configured.")
+        return self._regression.mark_resolved(issue_id)
+
+    def mark_issue_open(self, issue_id: int):
+        if self._regression is None:
+            raise RuntimeError("Regression tracking is not configured.")
+        return self._regression.mark_open(issue_id)
 
     def history(self, project_id: int, limit: int = 20) -> list[TestRun]:
         return self._runs.list_for_project(project_id, limit=limit)

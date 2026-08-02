@@ -3,9 +3,11 @@ import pytest
 from spiced.ai.base import AIProvider, AIResponse
 from spiced.ai.prompt_templates import HUMAN_CONTROL_RULES, build_unity_debug_prompt
 from spiced.core.debugging import DebuggingService, ProviderNotReadyError
+from spiced.core.regression import RegressionService
 from spiced.core.unity_log_parser import parse_unity_log
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
+from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.projects import ProjectRepository
 
 CANNED_RESPONSE = """Here's what looks most likely.
@@ -56,8 +58,9 @@ def _service():
     db = Database(":memory:")
     projects = ProjectRepository(db)
     sessions = DebugSessionRepository(db)
+    regression = RegressionService(KnownIssueRepository(db))
     project = projects.create("Moonlit Depths", engine="Unity")
-    return DebuggingService(sessions), project
+    return DebuggingService(sessions, regression), project
 
 
 def test_prompt_includes_human_control_rules():
@@ -107,3 +110,25 @@ def test_analyze_raises_when_provider_unavailable():
     service, project = _service()
     with pytest.raises(ProviderNotReadyError):
         service.analyze(FakeProvider(available=False), NULL_REF_LOG, project=project)
+
+
+def test_first_analyze_has_no_regression_match():
+    service, project = _service()
+    analysis = service.analyze(FakeProvider(), NULL_REF_LOG, project=project)
+    assert analysis.regression_match is None
+
+
+def test_repeated_crash_is_flagged_as_known_issue():
+    service, project = _service()
+    service.analyze(FakeProvider(), NULL_REF_LOG, project=project)
+    second = service.analyze(FakeProvider(), NULL_REF_LOG, project=project)
+    assert second.regression_match is not None
+    assert "HealthPickup" in second.regression_match.issue.title
+
+
+def test_regression_match_none_without_regression_service():
+    db = Database(":memory:")
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = DebuggingService(DebugSessionRepository(db))  # no regression service wired
+    analysis = service.analyze(FakeProvider(), NULL_REF_LOG, project=project)
+    assert analysis.regression_match is None

@@ -11,8 +11,10 @@ from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
 from spiced.ai.prompt_templates import build_unity_debug_prompt
+from spiced.core.regression import RegressionMatch, RegressionService, debug_signature
 from spiced.core.unity_log_parser import ParsedLog, parse_unity_log
 from spiced.storage.debug_sessions import DebugSession, DebugSessionRepository
+from spiced.storage.known_issues import SOURCE_DEBUG
 from spiced.storage.projects import Project
 
 SOURCE_PASTE = "paste"
@@ -25,6 +27,7 @@ class DebugAnalysis:
     response_text: str
     provider: str
     session: DebugSession | None
+    regression_match: RegressionMatch | None = None
 
 
 class ProviderNotReadyError(RuntimeError):
@@ -34,8 +37,11 @@ class ProviderNotReadyError(RuntimeError):
 class DebuggingService:
     """Coordinates parsing, prompting, the provider call, and persistence."""
 
-    def __init__(self, sessions: DebugSessionRepository) -> None:
+    def __init__(
+        self, sessions: DebugSessionRepository, regression: RegressionService | None = None
+    ) -> None:
         self._sessions = sessions
+        self._regression = regression
 
     def parse(self, log_text: str) -> ParsedLog:
         return parse_unity_log(log_text)
@@ -75,7 +81,9 @@ class DebuggingService:
             record_usage(response.provider)
 
         session = None
+        regression_match = None
         if project is not None:
+            regression_match = self._note_regression(project.id, parsed)
             session = self._save_session(
                 project_id=project.id,
                 parsed=parsed,
@@ -90,7 +98,20 @@ class DebuggingService:
             response_text=response.text,
             provider=response.provider,
             session=session,
+            regression_match=regression_match,
         )
+
+    def _note_regression(self, project_id: int, parsed: ParsedLog) -> RegressionMatch | None:
+        if self._regression is None or not parsed.has_errors:
+            return None
+        primary = parsed.primary
+        location = primary.script or primary.file
+        signature = debug_signature(primary.error_type, location)
+        title = f"{primary.error_type} in {location}" if location else primary.error_type
+        outcome = self._regression.note_issue(
+            project_id, SOURCE_DEBUG, signature, title, category=primary.category
+        )
+        return outcome.match
 
     def history(self, project_id: int, limit: int = 20) -> list[DebugSession]:
         return self._sessions.list_for_project(project_id, limit=limit)

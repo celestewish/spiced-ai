@@ -2,9 +2,11 @@ import pytest
 
 from spiced.ai.base import AIProvider, AIResponse
 from spiced.ai.prompt_templates import TEST_REVIEW_RULES, build_test_review_prompt
+from spiced.core.regression import RegressionService
 from spiced.core.test_result_parser import parse_test_results
 from spiced.core.testing import ProviderNotReadyError, TestingService
 from spiced.storage.database import Database
+from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.projects import ProjectRepository
 from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
@@ -63,7 +65,8 @@ class FakeProvider(AIProvider):
 def _service():
     db = Database(":memory:")
     project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
-    service = TestingService(TestCaseRepository(db), TestRunRepository(db))
+    regression = RegressionService(KnownIssueRepository(db))
+    service = TestingService(TestCaseRepository(db), TestRunRepository(db), regression)
     return service, project
 
 
@@ -138,3 +141,37 @@ def test_analyze_raises_when_provider_unavailable():
     service, project = _service()
     with pytest.raises(ProviderNotReadyError):
         service.analyze(FakeProvider(available=False), MANUAL_TEXT, project=project)
+
+
+def test_first_analyze_records_known_issues_with_no_matches():
+    service, project = _service()
+    review = service.analyze(FakeProvider(), MANUAL_TEXT, project=project)
+    assert len(review.regression_outcomes) == 2  # two FAIL lines in MANUAL_TEXT
+    assert all(o.match is None for o in review.regression_outcomes)
+    assert len(service.known_issues(project.id)) == 2
+
+
+def test_repeated_analyze_flags_known_issue_matches():
+    service, project = _service()
+    service.analyze(FakeProvider(), MANUAL_TEXT, project=project)
+    second = service.analyze(FakeProvider(), MANUAL_TEXT, project=project)
+    assert any(o.match is not None for o in second.regression_outcomes)
+
+
+def test_mark_issue_resolved_and_reopen_through_service():
+    service, project = _service()
+    service.analyze(FakeProvider(), MANUAL_TEXT, project=project)
+    issue = service.known_issues(project.id)[0]
+    resolved = service.mark_issue_resolved(issue.id)
+    assert resolved.status == "resolved"
+    reopened = service.mark_issue_open(issue.id)
+    assert reopened.status == "open"
+
+
+def test_known_issues_empty_when_regression_not_configured():
+    db = Database(":memory:")
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = TestingService(TestCaseRepository(db), TestRunRepository(db))
+    assert service.known_issues(project.id) == []
+    with pytest.raises(RuntimeError):
+        service.mark_issue_resolved(1)
