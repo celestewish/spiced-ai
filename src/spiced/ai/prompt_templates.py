@@ -9,10 +9,16 @@ than guessing from raw text.
 
 from __future__ import annotations
 
+from spiced.core.accessibility_parser import ParsedAccessibility
+from spiced.core.code_health_analyzer import LONG_FUNCTION_LINES, CodeHealthMetrics
+from spiced.core.community.base import CommunityMessage
 from spiced.core.feedback_classifier import FeedbackClassification
 from spiced.core.feedback_parser import ParsedFeedback
+from spiced.core.hardware_simulation import HardwareSimulationResult
+from spiced.core.performance_parser import ParsedPerformance
 from spiced.core.test_result_parser import ParsedTestResults
 from spiced.core.unity_log_parser import ParsedError, ParsedLog
+from spiced.core.version_check_parser import ParsedVersionCheck
 
 # Human-control rules. Kept as discrete lines so tests can assert their presence
 # and so the voice stays consistent across providers.
@@ -318,4 +324,447 @@ def build_feedback_review_prompt(
         f"{parsed.excerpt}\n"
         "```\n\n"
         f"{FEEDBACK_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to interpreting performance/profiling numbers. Spiced never
+# profiles the build itself — the developer already gathered these numbers.
+PERFORMANCE_REVIEW_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Separate the parsed evidence from your own assumptions.",
+    "For each flagged spike, suggest plausible, common causes tied to its location — but "
+    "label them as likely guesses, not confirmed diagnoses.",
+    "Never claim you ran a profiler — the developer gathered these numbers.",
+    "Never claim you changed, edited, or fixed any files.",
+    "Never suggest automatic changes; the developer decides what to change.",
+    "If a target-hardware simulation is included, repeat its caveat: it is an estimate from "
+    "measured numbers, not a real device test.",
+    "If something is unclear or the sample is small, say so instead of overclaiming.",
+)
+
+PERFORMANCE_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section short:
+
+Here's what the performance numbers suggest.
+
+Result summary:
+- Samples read:
+- Average fps:
+- Peak memory:
+- Longest load time:
+
+Spikes worth a look:
+- [Location, metric, and a plain-language plausible cause]
+
+Target-hardware notes:
+- [Only if a simulation was included; otherwise write "No hardware simulation requested."]
+
+Suggested checks:
+- [Step 1]
+- [Step 2]
+
+What I would not assume yet:
+- [Unclear or missing context]"""
+
+
+def _format_performance_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in PERFORMANCE_REVIEW_RULES)
+
+
+def _format_parsed_performance(parsed: ParsedPerformance) -> str:
+    lines = [
+        f"- Detected format: {parsed.source_format}",
+        f"- Parser confidence: {parsed.confidence}",
+        f"- Samples: {parsed.sample_count}",
+        f"- Average fps: {parsed.avg_fps if parsed.avg_fps is not None else 'n/a'}",
+        f"- Minimum fps: {parsed.min_fps if parsed.min_fps is not None else 'n/a'}",
+        f"- Peak memory (MB): "
+        f"{parsed.peak_memory_mb if parsed.peak_memory_mb is not None else 'n/a'}",
+        f"- Longest load time (s): "
+        f"{parsed.max_load_time_s if parsed.max_load_time_s is not None else 'n/a'}",
+    ]
+    if parsed.spikes:
+        lines.append("- Spikes detected by the local parser:")
+        lines.extend(f"    • {spike.message} ({spike.severity})" for spike in parsed.spikes)
+    else:
+        lines.append("- Spikes: none identified by the parser")
+    return "\n".join(lines)
+
+
+def _format_hardware_simulation(simulation: HardwareSimulationResult | None) -> str:
+    if simulation is None:
+        return "No hardware simulation requested for this pass."
+    lines = [
+        f"- Target tier: {simulation.tier}",
+        f"- Playable-fps threshold used: {simulation.playable_fps}",
+        f"- Caveat: {simulation.caveat}",
+    ]
+    if simulation.at_risk_samples:
+        lines.append("- Locations estimated below the playable threshold:")
+        lines.extend(
+            f"    • {s.location}: measured {s.measured_fps:g}fps -> "
+            f"estimated {s.estimated_fps:g}fps"
+            for s in simulation.at_risk_samples
+        )
+    else:
+        lines.append("- No locations estimated below the playable threshold.")
+    return "\n".join(lines)
+
+
+def build_performance_review_prompt(
+    parsed: ParsedPerformance,
+    *,
+    project_name: str | None = None,
+    simulation: HardwareSimulationResult | None = None,
+) -> str:
+    """Assemble the performance-review prompt from parser (+ optional simulation) output.
+
+    Only the parsed summary and a trimmed excerpt are included — never the full
+    profiler export and never any project source files.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+
+    return (
+        "You are Spiced, a calm performance-QA companion for indie Unity developers. You "
+        "interpret performance numbers the developer already gathered. You did not run any "
+        "profiler and you never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_performance_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Numbers parsed by Spiced locally (deterministic, trustworthy):\n"
+        f"{_format_parsed_performance(parsed)}\n\n"
+        "Target-hardware simulation (deterministic estimate, not a real device test):\n"
+        f"{_format_hardware_simulation(simulation)}\n\n"
+        "Relevant excerpt (already trimmed; do not ask for the full export):\n"
+        "```\n"
+        f"{parsed.excerpt}\n"
+        "```\n\n"
+        f"{PERFORMANCE_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the accessibility checklist. The checklist itself (contrast
+# ratios, colorblind simulation, caption coverage) is computed deterministically;
+# the AI only turns it into a scored, plain-language write-up with fixes.
+ACCESSIBILITY_REVIEW_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the checklist results as ground truth; do not recompute or second-guess the numbers.",
+    "For each failing or warned check, give a specific, concrete fix, not a vague suggestion.",
+    "Frame this as a prioritized checklist, never a shaming score.",
+    "Never claim you changed, edited, or fixed any files.",
+    "If a section has no data (e.g. no audio files listed), say it wasn't checked rather than "
+    "assuming it passed.",
+)
+
+ACCESSIBILITY_RESPONSE_FORMAT = (
+    """Structure your reply exactly like this, keeping each section short:
+
+Here's the accessibility pass.
+
+Overall score: [n/100, or "not enough data" if nothing was checked]
+
+Contrast:
+- [Each failing element and a specific fix]
+
+Colorblind safety:
+- [Each element that becomes hard to read under simulation, and a fix]
+
+Captions:
+- [Coverage and what's missing]
+
+Controls & text scaling:
+- [Status and what to add if unsupported]
+
+Priority fixes:
+- [Step 1]
+- [Step 2]"""
+)
+
+
+def _format_accessibility_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in ACCESSIBILITY_REVIEW_RULES)
+
+
+def _format_accessibility_checklist(parsed: ParsedAccessibility) -> str:
+    if parsed.source_format != "json" or not (
+        parsed.contrast_checks or parsed.caption_total or parsed.controls_remappable is not None
+        or parsed.text_scaling_supported is not None
+    ):
+        return "No structured checklist data was provided — only a free-text excerpt below."
+
+    lines = [f"- Overall score: {parsed.score if parsed.score is not None else 'n/a'}"]
+    if parsed.contrast_checks:
+        lines.append("- Contrast checks:")
+        for c in parsed.contrast_checks:
+            cb = f", colorblind-safe: {c.colorblind_safe}" if c.colorblind_safe is not None else ""
+            lines.append(f"    • {c.name}: {c.ratio:.2f}:1 ({'pass' if c.passes else 'fail'}){cb}")
+    if parsed.caption_total:
+        lines.append(
+            f"- Caption coverage: {parsed.caption_covered}/{parsed.caption_total} "
+            f"({parsed.caption_coverage_pct}%)"
+        )
+    if parsed.controls_remappable is not None:
+        lines.append(f"- Controls remappable: {parsed.controls_remappable}")
+    if parsed.text_scaling_supported is not None:
+        lines.append(f"- Text scaling supported: {parsed.text_scaling_supported}")
+    if parsed.findings:
+        lines.append("- Findings:")
+        lines.extend(f"    • [{f.severity}] {f.message}" for f in parsed.findings)
+    return "\n".join(lines)
+
+
+def build_accessibility_review_prompt(
+    parsed: ParsedAccessibility, *, project_name: str | None = None
+) -> str:
+    """Assemble the accessibility-review prompt from the deterministic checklist.
+
+    Only the computed checklist and a trimmed excerpt are included — never any
+    project source files or full asset lists.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm accessibility-QA companion for indie Unity developers. You "
+        "turn a deterministic accessibility checklist into a scored, actionable write-up. You "
+        "never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_accessibility_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Checklist computed by Spiced locally (deterministic, trustworthy — WCAG contrast math "
+        "and a standard colorblind-simulation matrix):\n"
+        f"{_format_accessibility_checklist(parsed)}\n\n"
+        "Relevant excerpt (already trimmed):\n"
+        "```\n"
+        f"{parsed.excerpt}\n"
+        "```\n\n"
+        f"{ACCESSIBILITY_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Version-Aware Suggestions. The deprecated-API hits are
+# already deterministic and correct (from a curated rule table); the AI only
+# adds narrative framing and a one-line rationale per hit.
+VERSION_CHECK_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat each detected hit as ground truth; do not invent additional deprecated APIs beyond "
+    "what was detected.",
+    "For each hit, give a short, concrete rationale for switching, using the reason provided.",
+    "Never claim you changed, edited, or fixed any files.",
+    "Never suggest automatic code edits; the developer applies changes themselves.",
+    "If no hits were found, say so plainly rather than inventing a concern.",
+    "Make clear this list is a curated, known-deprecations check, not a full API audit.",
+)
+
+VERSION_CHECK_RESPONSE_FORMAT = (
+    """Structure your reply exactly like this, keeping each section short:
+
+Here's the outdated-API review.
+
+Findings:
+- [Line, old API, replacement, and a one-line rationale — one bullet per hit]
+
+If clean:
+[Only if no hits: a short, honest note that none of Spiced's known deprecations were found]
+
+What this does not cover:
+[A short reminder that this checks a curated list, not the full Unity API surface]"""
+)
+
+
+def _format_version_check_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in VERSION_CHECK_RULES)
+
+
+def _format_version_check_hits(parsed: ParsedVersionCheck) -> str:
+    if not parsed.hits:
+        return "No known-deprecated API calls were detected by the local scanner."
+    lines = [f"- {len(parsed.hits)} hit(s) detected by the local scanner:"]
+    for hit in parsed.hits:
+        lines.append(
+            f"    • Line {hit.line_number}: {hit.api_name} -> {hit.replacement} "
+            f"(deprecated in {hit.deprecated_in}). Reason: {hit.reason}"
+        )
+    return "\n".join(lines)
+
+
+def build_version_check_prompt(
+    parsed: ParsedVersionCheck, *, project_name: str | None = None
+) -> str:
+    """Assemble the version-check prompt from the deterministic scan.
+
+    Only the detected hits and a trimmed excerpt are included — never the full
+    pasted script.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion helping an indie Unity developer stay current on "
+        "engine API changes. You never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_version_check_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Deprecated-API hits detected by Spiced locally (deterministic, trustworthy):\n"
+        f"{_format_version_check_hits(parsed)}\n\n"
+        "Relevant excerpt (already trimmed; do not ask for the full script):\n"
+        "```\n"
+        f"{parsed.excerpt}\n"
+        "```\n\n"
+        f"{VERSION_CHECK_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Code Health Dashboard. Framed as prioritized
+# suggestions, never a score that shames the developer.
+CODE_HEALTH_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Be non-judgmental: this is a heads-up, not a grade. Never shame the developer's code.",
+    "Treat the computed metrics as ground truth; do not recompute or second-guess the numbers.",
+    "Frame findings as prioritized, optional suggestions the developer can act on later.",
+    "Be explicit that this only reflects the one file pasted in, not the whole project.",
+    "Never claim you changed, edited, or fixed any files.",
+    "Never suggest automatic refactors; the developer decides what to change.",
+)
+
+CODE_HEALTH_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section short:
+
+Here's a quick code-health read on this file.
+
+Overview:
+- Lines: / Functions: / Average function length:
+
+Worth a look (not urgent):
+- [Longest functions, duplicate blocks, or heavy branching — plain language, one bullet each]
+
+Housekeeping:
+- [TODO/FIXME count and whether it's worth a pass]
+
+Not covered:
+[A short reminder this only reflects this one file, not the whole project]"""
+
+
+def _format_code_health_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in CODE_HEALTH_RULES)
+
+
+def _format_code_health_metrics(metrics: CodeHealthMetrics) -> str:
+    avg_length = metrics.average_function_length
+    avg_length_text = avg_length if avg_length is not None else "n/a"
+    lines = [
+        f"- Lines: {metrics.line_count}",
+        f"- Functions: {metrics.function_count}",
+        f"- Average function length: {avg_length_text}",
+        f"- Branching/condition count (rough complexity proxy): {metrics.branch_count}",
+        f"- TODO/FIXME/HACK markers: {metrics.todo_count}",
+        f"- Repeated 4+ line blocks: {metrics.duplicate_blocks}",
+    ]
+    if metrics.longest_functions:
+        lines.append(f"- Functions at or over {LONG_FUNCTION_LINES} lines:")
+        lines.extend(
+            f"    • {f.name} (line {f.start_line}, {f.length} lines)"
+            for f in metrics.longest_functions
+        )
+    return "\n".join(lines)
+
+
+def build_code_health_prompt(
+    metrics: CodeHealthMetrics, *, excerpt: str, project_name: str | None = None
+) -> str:
+    """Assemble the code-health prompt from deterministic metrics.
+
+    Only the computed metrics and a trimmed excerpt are included — never the
+    full pasted file.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion giving an indie developer a non-judgmental read on "
+        "one file's code health. You never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_code_health_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Metrics computed by Spiced locally (deterministic, trustworthy):\n"
+        f"{_format_code_health_metrics(metrics)}\n\n"
+        "Relevant excerpt (already trimmed; do not ask for the full file):\n"
+        "```\n"
+        f"{excerpt}\n"
+        "```\n\n"
+        f"{CODE_HEALTH_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Community Pulse Check-ins. This is a light, high-level
+# temperature check — not a replacement for the full Feedback Review flow.
+COMMUNITY_PULSE_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "This is a periodic, high-level sentiment check-in, not a deep feedback analysis.",
+    "Be explicit about exactly what was read (the channel) and how many messages.",
+    "Separate general sentiment from anything that sounds like a concrete bug report.",
+    "Do not treat any message as objectively correct — this is informal chatter, not a survey.",
+    "Never claim you posted, reacted, or wrote anything back to the community.",
+    "Never claim you changed the game, its design, or any files.",
+    "If the sample is small, say so instead of overclaiming a trend.",
+)
+
+COMMUNITY_PULSE_RESPONSE_FORMAT = (
+    """Structure your reply exactly like this, keeping each section short:
+
+Here's this community pulse check-in.
+
+What was read:
+[Channel and message count]
+
+Overall vibe:
+[Short, honest read — with a sample-size caution if the batch is small]
+
+Recurring notes:
+- [Theme and supporting evidence]
+
+Anything that sounds like a bug:
+- [Only if something concrete came up; otherwise "Nothing that reads as a concrete bug."]
+
+What I would not assume yet:
+- [Where this is too thin or informal to be a real trend]"""
+)
+
+
+def _format_community_pulse_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in COMMUNITY_PULSE_RULES)
+
+
+def _format_community_messages(messages: list[CommunityMessage]) -> str:
+    if not messages:
+        return "No messages were read."
+    lines = []
+    for msg in messages:
+        text = msg.text.strip().replace("\n", " ")
+        if len(text) > 200:
+            text = text[:197] + "..."
+        lines.append(f"- {msg.author}: {text}")
+    return "\n".join(lines)
+
+
+def build_community_pulse_prompt(
+    messages: list[CommunityMessage],
+    *,
+    channel_label: str,
+    project_name: str | None = None,
+) -> str:
+    """Assemble the community-pulse prompt from recently read messages.
+
+    Only a trimmed, per-message excerpt is included — never the full channel
+    history and never anything from DMs (sources only read one public channel).
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion giving an indie developer a light community-sentiment "
+        "check-in. You never post or react anywhere and you never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_community_pulse_rules()}\n\n"
+        f"{project_line}\n"
+        f"Channel read: {channel_label}\n"
+        f"Messages read: {len(messages)}\n\n"
+        "Messages (already trimmed):\n"
+        f"{_format_community_messages(messages)}\n\n"
+        f"{COMMUNITY_PULSE_RESPONSE_FORMAT}\n"
     )

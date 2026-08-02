@@ -95,6 +95,95 @@ CREATE TABLE IF NOT EXISTS feedback_batches (
     provider            TEXT,
     created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS known_issues (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    signature     TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    category      TEXT,
+    status        TEXT NOT NULL DEFAULT 'open',
+    occurrences   INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at   TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, signature)
+);
+
+CREATE TABLE IF NOT EXISTS performance_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_type         TEXT NOT NULL,
+    source_filename     TEXT,
+    target_hardware     TEXT,
+    raw_excerpt         TEXT,
+    parsed_summary_json TEXT,
+    ai_summary          TEXT,
+    spikes_json         TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS accessibility_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_type         TEXT NOT NULL,
+    source_filename     TEXT,
+    raw_excerpt         TEXT,
+    parsed_summary_json TEXT,
+    ai_summary          TEXT,
+    findings_json       TEXT,
+    score               INTEGER,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS version_check_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_filename     TEXT,
+    raw_excerpt         TEXT,
+    hits_json           TEXT,
+    ai_summary          TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS code_health_reports (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_filename     TEXT,
+    raw_excerpt         TEXT,
+    metrics_json        TEXT,
+    ai_summary          TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS feedback_tasks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL,
+    batch_id        INTEGER,
+    category        TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'draft',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS community_pulse_checkins (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER NOT NULL,
+    source             TEXT NOT NULL,
+    channel_label      TEXT,
+    message_count      INTEGER NOT NULL DEFAULT 0,
+    raw_excerpt        TEXT,
+    ai_summary         TEXT,
+    provider           TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

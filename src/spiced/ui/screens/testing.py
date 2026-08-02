@@ -1,8 +1,10 @@
-"""Automated Testing: author manual test cases and review imported results.
+"""Automated Testing: functional test cases, performance, and accessibility.
 
-Manual test-case creation and status tracking work fully offline with no AI
-provider. Result analysis runs the selected provider on a worker thread; only a
-trimmed excerpt is ever sent — never project files.
+Three tabs, each following the same pattern: local/deterministic parsing and
+(for Functional) manual test-case tracking work fully offline with no AI
+provider; the AI review runs the selected provider on a worker thread. Only a
+trimmed excerpt is ever sent — never project files, and Spiced never runs
+anything itself.
 """
 
 from __future__ import annotations
@@ -23,19 +25,27 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from spiced.app.services import Services
+from spiced.core.accessibility import AccessibilityReview
+from spiced.core.accessibility import ProviderNotReadyError as AccessibilityNotReadyError
+from spiced.core.hardware_simulation import available_tiers
+from spiced.core.performance import PerformanceReview
+from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
 from spiced.core.testing import SOURCE_FILE, SOURCE_PASTE, ProviderNotReadyError, TestReview
+from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 
 _USER_ROLE = 0x0100
+_NO_HARDWARE = "(none — no simulation)"
 
 
-class _Worker(QObject):
+class _FunctionalWorker(QObject):
     done = Signal(object)  # TestReview
     failed = Signal(str)
 
@@ -66,6 +76,75 @@ class _Worker(QObject):
             self.failed.emit(f"Something went wrong during analysis: {exc}")
 
 
+class _PerformanceWorker(QObject):
+    done = Signal(object)  # PerformanceReview
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        services: Services,
+        text: str,
+        source_type: str,
+        source_filename: str | None,
+        target_hardware: str | None,
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._text = text
+        self._source_type = source_type
+        self._source_filename = source_filename
+        self._target_hardware = target_hardware
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            review = self._services.performance.analyze(
+                provider,
+                self._text,
+                project=self._services.active_project(),
+                target_hardware=self._target_hardware,
+                source_type=self._source_type,
+                source_filename=self._source_filename,
+                record_usage=self._services.usage.record_prompt,
+            )
+            self.done.emit(review)
+        except PerformanceNotReadyError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"Something went wrong during analysis: {exc}")
+
+
+class _AccessibilityWorker(QObject):
+    done = Signal(object)  # AccessibilityReview
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, text: str, source_type: str, source_filename: str | None
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._text = text
+        self._source_type = source_type
+        self._source_filename = source_filename
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            review = self._services.accessibility.analyze(
+                provider,
+                self._text,
+                project=self._services.active_project(),
+                source_type=self._source_type,
+                source_filename=self._source_filename,
+                record_usage=self._services.usage.record_prompt,
+            )
+            self.done.emit(review)
+        except AccessibilityNotReadyError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"Something went wrong during analysis: {exc}")
+
+
 class TestingScreen(QWidget):
     usage_changed = Signal()
 
@@ -73,39 +152,60 @@ class TestingScreen(QWidget):
         super().__init__()
         self._services = services
         self._thread: QThread | None = None
-        self._worker: _Worker | None = None
+        self._worker: QObject | None = None
         self._pending_filename: str | None = None
         self._selected_case_id: int | None = None
+        self._selected_issue_id: int | None = None
+        self._perf_pending_filename: str | None = None
+        self._access_pending_filename: str | None = None
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        header = QVBoxLayout()
+        header.setContentsMargins(28, 28, 28, 0)
+        title = QLabel("Automated Testing")
+        title.setObjectName("ScreenTitle")
+        header.addWidget(title)
+        self._context_label = QLabel()
+        self._context_label.setObjectName("Muted")
+        self._context_label.setWordWrap(True)
+        header.addWidget(self._context_label)
+        outer.addLayout(header)
+
+        self._tabs = QTabWidget()
+        outer.addWidget(self._tabs, 1)
+        self._tabs.addTab(self._build_functional_tab(), "Functional")
+        self._tabs.addTab(self._build_performance_tab(), "Performance")
+        self._tabs.addTab(self._build_accessibility_tab(), "Accessibility")
+
+        self.refresh()
+
+    def _scrollable(self) -> tuple[QWidget, QVBoxLayout]:
+        container = QWidget()
+        outer = QVBoxLayout(container)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         outer.addWidget(scroll)
-
         content = QWidget()
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setContentsMargins(28, 12, 28, 28)
         layout.setSpacing(12)
+        return container, layout
 
-        title = QLabel("Automated Testing")
-        title.setObjectName("ScreenTitle")
-        layout.addWidget(title)
+    # --- Functional tab ------------------------------------------------
 
-        self._context_label = QLabel()
-        self._context_label.setObjectName("Muted")
-        self._context_label.setWordWrap(True)
-        layout.addWidget(self._context_label)
-
+    def _build_functional_tab(self) -> QWidget:
+        container, layout = self._scrollable()
         self._build_case_form(layout)
         self._build_case_list(layout)
         self._build_analyze(layout)
-
-        self.refresh()
-
-    # --- Test case creation ------------------------------------------------
+        self._build_known_issues(layout)
+        return container
 
     def _build_case_form(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Add a test case")
@@ -224,6 +324,157 @@ class TestingScreen(QWidget):
         self._history.setFixedHeight(110)
         layout.addWidget(self._history)
 
+    def _build_known_issues(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Known Issues")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Bugs Spiced has flagged before, from debugging sessions and test failures. New "
+            "failures are checked against this list so repeats surface as \"this resembles a "
+            "bug from before\" instead of starting from scratch."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._issues_list = QListWidget()
+        self._issues_list.setFixedHeight(140)
+        self._issues_list.currentItemChanged.connect(self._on_issue_selected)
+        layout.addWidget(self._issues_list)
+
+        self._issues_empty = QLabel("No known issues tracked for this project yet.")
+        self._issues_empty.setObjectName("Muted")
+        layout.addWidget(self._issues_empty)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._resolve_btn = QPushButton("Mark resolved")
+        self._resolve_btn.clicked.connect(self._on_mark_resolved)
+        row.addWidget(self._resolve_btn)
+        self._reopen_btn = QPushButton("Reopen")
+        self._reopen_btn.clicked.connect(self._on_mark_open)
+        row.addWidget(self._reopen_btn)
+        layout.addLayout(row)
+
+    # --- Performance tab -------------------------------------------------
+
+    def _build_performance_tab(self) -> QWidget:
+        container, layout = self._scrollable()
+
+        heading = QLabel("Performance & Profiling")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Paste or import numbers you already gathered (fps, memory, load time per "
+            "location) as text, CSV, or JSON — Spiced never profiles your build itself. "
+            "Optionally estimate a target hardware tier from those numbers (a simulation, "
+            "not a real device test)."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._perf_input = QPlainTextEdit()
+        self._perf_input.setPlaceholderText(
+            "e.g. Waterfall Area: fps=42, memory=850MB, load=3.2s"
+        )
+        self._perf_input.setFixedHeight(120)
+        layout.addWidget(self._perf_input)
+
+        hw_row = QHBoxLayout()
+        hw_row.addWidget(QLabel("Target hardware:"))
+        self._hardware_input = QComboBox()
+        self._hardware_input.addItem(_NO_HARDWARE)
+        self._hardware_input.addItems(available_tiers())
+        hw_row.addWidget(self._hardware_input, 1)
+        layout.addLayout(hw_row)
+
+        row = QHBoxLayout()
+        self._perf_import_btn = QPushButton("Import performance file…")
+        self._perf_import_btn.clicked.connect(self._on_perf_import)
+        row.addWidget(self._perf_import_btn)
+        row.addStretch(1)
+        self._perf_analyze_btn = QPushButton("Analyze")
+        self._perf_analyze_btn.clicked.connect(self._on_perf_analyze)
+        row.addWidget(self._perf_analyze_btn)
+        layout.addLayout(row)
+
+        self._perf_result = QTextEdit()
+        self._perf_result.setReadOnly(True)
+        self._perf_result.setPlaceholderText("Your performance review will appear here.")
+        self._perf_result.setFixedHeight(220)
+        layout.addWidget(self._perf_result)
+
+        history_title = QLabel("Recent performance reports")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._perf_history = QTextEdit()
+        self._perf_history.setReadOnly(True)
+        self._perf_history.setFixedHeight(110)
+        layout.addWidget(self._perf_history)
+
+        return container
+
+    # --- Accessibility tab -------------------------------------------------
+
+    def _build_accessibility_tab(self) -> QWidget:
+        container, layout = self._scrollable()
+
+        heading = QLabel("Accessibility Pass")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Paste a small JSON description of your HUD colors, audio captions, and control/"
+            "text-scaling support. Spiced runs real WCAG contrast math and a colorblind-"
+            "simulation check locally, then scores the checklist — never a shaming grade."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        example = QLabel(
+            '{"hud_elements": [{"name": "HealthBar", "foreground": "#FF4040", '
+            '"background": "#550000"}], "audio_files": [{"name": "vo_01.wav", '
+            '"captioned": true}], "controls_remappable": true, "text_scaling_supported": false}'
+        )
+        example.setObjectName("Muted")
+        example.setWordWrap(True)
+        layout.addWidget(example)
+
+        self._access_input = QPlainTextEdit()
+        self._access_input.setPlaceholderText("Paste accessibility checklist JSON here…")
+        self._access_input.setFixedHeight(120)
+        layout.addWidget(self._access_input)
+
+        row = QHBoxLayout()
+        self._access_import_btn = QPushButton("Import checklist file…")
+        self._access_import_btn.clicked.connect(self._on_access_import)
+        row.addWidget(self._access_import_btn)
+        row.addStretch(1)
+        self._access_analyze_btn = QPushButton("Analyze")
+        self._access_analyze_btn.clicked.connect(self._on_access_analyze)
+        row.addWidget(self._access_analyze_btn)
+        layout.addLayout(row)
+
+        self._access_result = QTextEdit()
+        self._access_result.setReadOnly(True)
+        self._access_result.setPlaceholderText("Your accessibility review will appear here.")
+        self._access_result.setFixedHeight(220)
+        layout.addWidget(self._access_result)
+
+        history_title = QLabel("Recent accessibility passes")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._access_history = QTextEdit()
+        self._access_history.setReadOnly(True)
+        self._access_history.setFixedHeight(110)
+        layout.addWidget(self._access_history)
+
+        return container
+
     # --- Refresh & state ---------------------------------------------------
 
     def refresh(self) -> None:
@@ -232,20 +483,19 @@ class TestingScreen(QWidget):
         if not has_project:
             self._context_label.setText(
                 "No active project selected. Choose or create one on the Projects screen to "
-                "add test cases and save test runs."
+                "add test cases and save results."
             )
         else:
             self._context_label.setText(f"Active project: {project.name}")
 
-        for widget in (
-            self._add_btn,
-            self._title_input,
-            self._update_status_btn,
-        ):
+        for widget in (self._add_btn, self._title_input, self._update_status_btn):
             widget.setEnabled(has_project)
 
         self._refresh_cases()
         self._refresh_history()
+        self._refresh_known_issues()
+        self._refresh_perf_history()
+        self._refresh_access_history()
         self._update_edit_buttons()
 
     def _update_edit_buttons(self) -> None:
@@ -257,6 +507,9 @@ class TestingScreen(QWidget):
             self._selection_hint.setText("Editing the selected test case.")
         else:
             self._selection_hint.setText("Editing a new test case.")
+        has_issue = self._selected_issue_id is not None
+        self._resolve_btn.setEnabled(has_issue)
+        self._reopen_btn.setEnabled(has_issue)
 
     def _refresh_cases(self) -> None:
         self._case_list.blockSignals(True)
@@ -291,7 +544,65 @@ class TestingScreen(QWidget):
             lines.append(f"[{run.created_at}]{name} · {counts}\n    {summary}")
         self._history.setPlainText("\n".join(lines))
 
-    # --- Handlers ----------------------------------------------------------
+    def _refresh_known_issues(self) -> None:
+        self._issues_list.blockSignals(True)
+        self._issues_list.clear()
+        project = self._services.active_project()
+        issues = self._services.testing.known_issues(project.id) if project else []
+        for issue in issues:
+            when = issue.resolved_at or issue.last_seen_at
+            label = (
+                f"[{issue.status}] {issue.title}  ·  seen {issue.occurrences}x  ·  "
+                f"{'resolved ' if issue.status == STATUS_RESOLVED else 'last seen '}{when}"
+            )
+            item = QListWidgetItem(label)
+            item.setData(_USER_ROLE, issue.id)
+            self._issues_list.addItem(item)
+        self._issues_list.blockSignals(False)
+        self._issues_empty.setVisible(not issues)
+        self._issues_list.setVisible(bool(issues))
+        self._selected_issue_id = None
+        self._update_edit_buttons()
+
+    def _refresh_perf_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._perf_history.setPlainText(
+                "Performance reports are saved once you select a project."
+            )
+            return
+        reports = self._services.performance.history(project.id, limit=10)
+        if not reports:
+            self._perf_history.setPlainText("No performance reports saved for this project yet.")
+            return
+        lines = []
+        for r in reports:
+            s = r.parsed_summary
+            hw = f" · {r.target_hardware}" if r.target_hardware else ""
+            lines.append(
+                f"[{r.created_at}]{hw} · avg {s.get('avg_fps')} fps · {len(r.spikes)} spike(s)\n"
+                f"    {r.ai_summary or ''}"
+            )
+        self._perf_history.setPlainText("\n".join(lines))
+
+    def _refresh_access_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._access_history.setPlainText(
+                "Accessibility passes are saved once you select a project."
+            )
+            return
+        reports = self._services.accessibility.history(project.id, limit=10)
+        if not reports:
+            self._access_history.setPlainText("No accessibility passes saved for this project yet.")
+            return
+        lines = []
+        for r in reports:
+            score = f"{r.score}/100" if r.score is not None else "n/a"
+            lines.append(f"[{r.created_at}] score {score}\n    {r.ai_summary or ''}")
+        self._access_history.setPlainText("\n".join(lines))
+
+    # --- Functional handlers -------------------------------------------------
 
     def _on_add_case(self) -> None:
         project = self._services.active_project()
@@ -436,7 +747,7 @@ class TestingScreen(QWidget):
         self._result.setPlainText("Reading the results and thinking it through…")
 
         self._thread = QThread()
-        self._worker = _Worker(self._services, results_text, source_type, filename)
+        self._worker = _FunctionalWorker(self._services, results_text, source_type, filename)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_done)
@@ -446,11 +757,18 @@ class TestingScreen(QWidget):
         self._thread.start()
 
     def _on_done(self, review: TestReview) -> None:
-        self._result.setPlainText(review.response_text)
+        text = review.response_text
+        matches = [o for o in review.regression_outcomes if o.match is not None]
+        if matches:
+            lines = ["", "Known-issue matches:"]
+            lines.extend(f"- {o.match.note}" for o in matches)
+            text = text + "\n" + "\n".join(lines)
+        self._result.setPlainText(text)
         self._pending_filename = None
         self._set_busy(False)
         self.usage_changed.emit()
         self._refresh_history()
+        self._refresh_known_issues()
 
     def _on_failed(self, message: str) -> None:
         self._result.setPlainText(message)
@@ -459,3 +777,133 @@ class TestingScreen(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy)
         self._analyze_btn.setText("Analyzing…" if busy else "Analyze")
+
+    # --- Known Issues handlers ----------------------------------------------
+
+    def _on_issue_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
+        self._selected_issue_id = int(current.data(_USER_ROLE)) if current is not None else None
+        self._update_edit_buttons()
+
+    def _on_mark_resolved(self) -> None:
+        if self._selected_issue_id is None:
+            return
+        self._services.testing.mark_issue_resolved(self._selected_issue_id)
+        self._refresh_known_issues()
+
+    def _on_mark_open(self) -> None:
+        if self._selected_issue_id is None:
+            return
+        self._services.testing.mark_issue_open(self._selected_issue_id)
+        self._refresh_known_issues()
+
+    # --- Performance handlers ------------------------------------------------
+
+    def _on_perf_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import performance data", "", "Data files (*.txt *.csv *.json);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Could not read file", f"Sorry, I couldn't open that file:\n{exc}"
+            )
+            return
+        self._perf_input.setPlainText(text)
+        self._perf_pending_filename = Path(path).name
+
+    def _on_perf_analyze(self) -> None:
+        text = self._perf_input.toPlainText().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to analyze", "Paste or import performance data first."
+            )
+            return
+        hardware = self._hardware_input.currentText()
+        target_hardware = None if hardware == _NO_HARDWARE else hardware
+        source_type = SOURCE_FILE if self._perf_pending_filename else SOURCE_PASTE
+        filename = self._perf_pending_filename
+        self._perf_analyze_btn.setEnabled(False)
+        self._perf_analyze_btn.setText("Analyzing…")
+        self._perf_result.setPlainText("Reading the numbers and thinking it through…")
+
+        self._thread = QThread()
+        self._worker = _PerformanceWorker(
+            self._services, text, source_type, filename, target_hardware
+        )
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_perf_done)
+        self._worker.failed.connect(self._on_perf_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_perf_done(self, review: PerformanceReview) -> None:
+        self._perf_result.setPlainText(review.response_text)
+        self._perf_pending_filename = None
+        self._perf_analyze_btn.setEnabled(True)
+        self._perf_analyze_btn.setText("Analyze")
+        self.usage_changed.emit()
+        self._refresh_perf_history()
+
+    def _on_perf_failed(self, message: str) -> None:
+        self._perf_result.setPlainText(message)
+        self._perf_analyze_btn.setEnabled(True)
+        self._perf_analyze_btn.setText("Analyze")
+
+    # --- Accessibility handlers ------------------------------------------------
+
+    def _on_access_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import accessibility checklist", "", "JSON files (*.json);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Could not read file", f"Sorry, I couldn't open that file:\n{exc}"
+            )
+            return
+        self._access_input.setPlainText(text)
+        self._access_pending_filename = Path(path).name
+
+    def _on_access_analyze(self) -> None:
+        text = self._access_input.toPlainText().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to analyze", "Paste or import checklist JSON first."
+            )
+            return
+        source_type = SOURCE_FILE if self._access_pending_filename else SOURCE_PASTE
+        filename = self._access_pending_filename
+        self._access_analyze_btn.setEnabled(False)
+        self._access_analyze_btn.setText("Analyzing…")
+        self._access_result.setPlainText("Running the checklist and thinking it through…")
+
+        self._thread = QThread()
+        self._worker = _AccessibilityWorker(self._services, text, source_type, filename)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_access_done)
+        self._worker.failed.connect(self._on_access_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_access_done(self, review: AccessibilityReview) -> None:
+        self._access_result.setPlainText(review.response_text)
+        self._access_pending_filename = None
+        self._access_analyze_btn.setEnabled(True)
+        self._access_analyze_btn.setText("Analyze")
+        self.usage_changed.emit()
+        self._refresh_access_history()
+
+    def _on_access_failed(self, message: str) -> None:
+        self._access_result.setPlainText(message)
+        self._access_analyze_btn.setEnabled(True)
+        self._access_analyze_btn.setText("Analyze")

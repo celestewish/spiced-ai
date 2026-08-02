@@ -7,13 +7,16 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> **Phase 4** preview: everything from Phases 0–3 (desktop skeleton, local
-> storage, AI provider boundary, the **Unity Debugging Buddy**, the
-> **Automated Testing** foundation, and the **Feedback Review** foundation)
-> plus the **Project Dashboard** — a calm, offline overview of the active
-> project that synthesizes your debugging, testing, and feedback signals into a
-> cautious build-readiness label with its evidence and recommended next actions.
-> It sends nothing to AI and never claims your game is ready to ship.
+> **Phase 6** preview: everything from Phases 0–5 (desktop skeleton, local
+> storage, AI provider boundary, the **Unity Debugging Buddy**, **Automated
+> Testing**, **Feedback Review**, the **Project Dashboard**, demo data, and
+> onboarding) plus a substantial expansion of Testing & QA, the Debugging
+> Buddy, and Feedback Review: **Regression Tracking**, **Performance &
+> Profiling Reports**, **Cross-Platform Test Simulation**, an **Accessibility
+> Pass**, **Version-Aware Suggestions**, a **Code Health Dashboard**, the
+> **Feedback-to-Task Converter**, and opt-in **Community Pulse Check-ins**.
+> Every new feature keeps Spiced's founding rules: nothing runs your engine,
+> nothing is sent to AI beyond a trimmed excerpt, and nothing acts without you.
 
 ---
 
@@ -135,6 +138,74 @@ Only the parsed summary, local category counts, and a trimmed excerpt are sent
 to a provider — never full feedback files and never your project files. Use the
 **mock** provider to try it offline with no key.
 
+## Testing, Debugging & Feedback expansion (Phase 6)
+
+Eight new features, all following the same rule as everything above: Spiced
+never runs your engine, profiler, or tests, and only ever interprets numbers
+and text you paste or import. Deterministic local parsing/scoring always
+happens first and works with no AI provider; the AI step only interprets
+already-correct, structured evidence.
+
+**Regression Tracking** — every debugging session and test-result failure
+gets a signature (error type + location, or the failure name) and is checked
+against a per-project history of known issues before being recorded. A repeat
+match — exact or a close, word-overlap match — surfaces as "resembles an
+issue fixed on \<date\>" so you're not re-diagnosing something you already
+fixed. Shown as a **Known Issues** panel on **Automated Testing → Functional**
+and inline on **Debugging Buddy** analyses, with **Mark resolved**/**Reopen**
+controls. Purely local — no AI involved in matching.
+
+**Performance & Profiling Reports** — paste or import fps/memory/load-time
+numbers (plain text like `Waterfall Area: fps=42, memory=850MB, load=3.2s`,
+CSV, or JSON) on the new **Automated Testing → Performance** tab. Spiced
+flags spikes locally (low fps, a memory jump versus the batch average, long
+load times), then asks your provider to phrase them plainly and suggest
+plausible (labeled-as-guesses) causes tied to each location.
+
+**Cross-Platform Test Simulation** — an optional **target hardware** picker
+on the Performance tab (Low-end PC / Mid-range PC / Handheld) that scales your
+measured fps by a documented factor per tier and flags locations that would
+likely dip below a playable frame rate. Always labeled as an estimate from
+your own numbers, not a real device test.
+
+**Accessibility Pass** — paste a small JSON checklist (HUD element colors,
+audio-caption coverage, remappable-controls/text-scaling flags) on
+**Automated Testing → Accessibility**. Spiced runs real WCAG contrast math and
+a standard simplified colorblind-simulation matrix locally, scores the
+checklist out of 100, and asks your provider for specific fixes — framed as a
+prioritized checklist, never a shaming score.
+
+**Version-Aware Suggestions** — paste a C# script into the new
+**Outdated-API check** section on **Debugging Buddy**. **Scan** runs fully
+offline and free against a small, curated table of Unity APIs Unity itself has
+marked obsolete (e.g. `WWW`, `Application.LoadLevel`, `FindObjectOfType`,
+`Rigidbody.velocity`), each with its modern replacement and a one-line
+rationale. **Analyze with AI** adds narrative framing on top of those exact
+hits. This is a curated list, not a live-updated audit of the whole Unity API.
+
+**Code Health Dashboard** — a collapsible **Code Health summary** card on
+**Debugging Buddy**. Paste one script and Spiced computes local metrics
+(function count/length, a rough branching-complexity count, repeated 4+ line
+blocks, TODO/FIXME markers) and asks your provider for a calm, non-judgmental,
+prioritized summary — explicitly scoped to the one file pasted in, not a
+whole-project static analysis.
+
+**Feedback-to-Task Converter** — the Feedback Review screen now leads with
+**theme cards** sorted by frequency (replacing a flat theme list as the
+default view), each with a representative example and a **Turn into task**
+button. Drafting is a local template, no AI call — the draft is added to a
+**Drafted tasks** list where you can **Edit**, **Accept**, **Copy** (to paste
+into your own tracker), or **Dismiss** it. Spiced never manages a task board
+itself.
+
+**Community Pulse Check-ins** — an opt-in, off-by-default panel at the bottom
+of Feedback Review. Enable it and Spiced reads recent messages from exactly
+one channel — the free **mock** source by default, or a real **Discord**
+channel (read-only, via a bot token) once you set `DISCORD_BOT_TOKEN` and
+`DISCORD_CHANNEL_ID` — then asks your provider for a light, high-level
+sentiment summary. Always states exactly what channel and how many messages
+were read; never reads DMs, never posts or reacts.
+
 ## Project Dashboard (Phase 4)
 
 The Dashboard is the first screen you see. It gives the active project a calm,
@@ -191,7 +262,7 @@ labelled bundled copy). Loading it is repeat-safe — it never creates a second
 demo project and **never reads from or modifies a project you created**. Delete
 the demo project any time; your own projects are unaffected.
 
-## Current MVP scope (Phases 0–4)
+## Current MVP scope (Phases 0–6)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
@@ -199,17 +270,24 @@ the demo project any time; your own projects are unaffected.
 - Screens: **Dashboard**, **Projects**, **Debugging Buddy**, **Automated
   Testing**, **Feedback Review**, **Settings**.
 - Local **SQLite** storage for projects, prompt usage, app settings, debug
-  sessions, test cases, test runs, and feedback batches.
+  sessions, test cases/runs, feedback batches/tasks, known issues, performance/
+  accessibility/version-check/code-health reports, and community check-ins.
 - Create and view projects locally, pick an active one, and connect a Unity
   folder with automatic validation.
 - **Unity Debugging Buddy**: deterministic local log parsing, structured AI
-  guidance, and saved debug-session history (see above).
-- **Automated Testing**: offline manual test-case authoring, editing, deletion,
-  and status tracking, a deterministic result parser (text/JSON/XML), AI-assisted
-  result review, and saved test-run history (see above).
-- **Feedback Review**: a deterministic feedback parser (text/Markdown/CSV/JSON),
-  offline heuristic classification, AI-assisted review that separates bugs from
-  design preferences, and saved feedback-batch history (see above).
+  guidance, saved debug-session history, an outdated-API scanner
+  (Version-Aware Suggestions), and a collapsible Code Health card (see above).
+- **Automated Testing**: offline manual test-case authoring/editing/deletion
+  and status tracking; a deterministic functional result parser (text/JSON/
+  XML) with AI-assisted review; a **Performance** tab (fps/memory/load-time
+  parsing, spike detection, and an optional target-hardware simulation); an
+  **Accessibility** tab (WCAG contrast + colorblind-simulation checklist); and
+  a cross-feature **Known Issues** panel (Regression Tracking) (see above).
+- **Feedback Review**: a deterministic feedback parser (text/Markdown/CSV/
+  JSON), offline heuristic classification shown as frequency-sorted theme
+  cards, AI-assisted review that separates bugs from design preferences, a
+  local Feedback-to-Task Converter, saved feedback-batch history, and an
+  opt-in, off-by-default Community Pulse Check-in panel (see above).
 - **Project Dashboard**: a fully offline, deterministic overview that synthesizes
   debugging, testing, and feedback signals into a cautious build-readiness label
   with evidence, recommended next actions, setup reminders, and a copyable local
@@ -226,14 +304,21 @@ the demo project any time; your own projects are unaffected.
 
 - No automatic file modification or code patching.
 - No real billing, no cloud accounts.
-- No Unity (or other engine) command execution, and no running of Unity tests.
+- No Unity (or other engine) command execution, no running of Unity tests, and
+  no real profiler/hardware access — Performance, Cross-Platform Simulation,
+  Accessibility, Version-Aware Suggestions, and Code Health all work from
+  numbers/code you paste or import, never from live engine introspection.
 - No sending of project files or full logs to any AI provider — only a trimmed,
   relevant excerpt.
 - No deep static analysis of the whole project; Unity folder detection is
-  shallow and non-recursive.
-- No scraping of external platforms or communities, no survey-tool connections,
-  and no posting to GitHub or other external services. Feedback comes only from
-  what you paste or import.
+  shallow and non-recursive, and Code Health / Version-Aware Suggestions only
+  ever look at the one file you paste in.
+- No scraping of external platforms, no survey-tool connections, and no
+  posting to GitHub or other external services. The one narrow exception is
+  Community Pulse Check-ins: off by default, and only after you opt in does it
+  make a read-only request to exactly one Discord channel you configure — no
+  DMs, no other channels, no posting or reacting. Feedback Review itself still
+  only works from what you paste or import.
 - Spiced never decides your game's design; it organizes feedback and suggests,
   and you decide what to act on.
 - The Project Dashboard is deterministic and offline: it sends nothing to any AI
@@ -309,6 +394,29 @@ export GEMINI_API_KEY=your-real-key
 
 Then choose the **gemini** provider in **Settings**.
 
+### Connecting Discord for Community Pulse (optional)
+
+Community Pulse Check-ins default to a free, offline mock source and stay
+off until you enable them on the **Feedback Review** screen. To read a real
+channel instead:
+
+1. Create a Discord bot and invite it to your server with permission to view
+   the channel and read message history (no other permissions are needed —
+   Spiced never posts or reacts).
+2. Add its token and the target channel's ID to `.env` (uses the same
+   never-commit secrets policy as the AI provider keys):
+
+   ```
+   DISCORD_BOT_TOKEN=your-bot-token
+   DISCORD_CHANNEL_ID=your-channel-id
+   ```
+
+3. In **Feedback Review**, check **Enable Community Pulse (opt-in)** and set
+   the source to **discord**.
+
+Uses only Python's standard library (`urllib`) for the API call — no extra
+dependency to install.
+
 ### Troubleshooting
 
 - **`OPENAI_API_KEY is not set`** — add your key to `.env` or the environment.
@@ -319,6 +427,9 @@ Then choose the **gemini** provider in **Settings**.
   a revoked/expired key.
 - **Gemini `model ... is not found / not supported`** — set `GEMINI_MODEL` to a
   supported model and confirm you installed the `[gemini]` extra.
+- **Discord "rejected DISCORD_BOT_TOKEN" / "isn't allowed to read that
+  channel"** — double-check the token and confirm the bot was actually added
+  to the server with access to that channel.
 
 ## Run
 
@@ -341,9 +452,10 @@ ruff check .    # lint
 src/spiced/
 ├── app/          # entry point + composition root (services wiring)
 ├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # usage counter, project/debugging/testing/feedback/dashboard use-cases, parsers + classifier
+├── core/         # use-cases, parsers, classifiers, and analyzers (see below), plus core/community/ (mock + Discord)
 ├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
-├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback, settings, usage)
+├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback batches/tasks,
+│                 # known issues, performance/accessibility/version-check/code-health reports, community check-ins, settings, usage)
 └── connectors/   # Unity project-folder detection (shallow, read-only)
 ```
 
