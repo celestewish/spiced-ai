@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.core.code_health import MAX_EXCERPT_CHARS as CODE_HEALTH_MAX_EXCERPT_CHARS
 from spiced.core.code_health import CodeHealthReview
 from spiced.core.code_health import ProviderNotReadyError as CodeHealthNotReadyError
 from spiced.core.debugging import (
@@ -34,6 +35,7 @@ from spiced.core.debugging import (
 )
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
+from spiced.ui.widgets.source_link import SourceLinkExpander
 
 
 class _CrashWorker(QObject):
@@ -64,6 +66,10 @@ class _CrashWorker(QObject):
                 team_mode=team_mode,
                 team_members=self._services.team_prompt_context(project) if team_mode else None,
             )
+            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
+            # no log content, file paths, or project data. No-op unless the
+            # developer has explicitly turned this on in Settings.
+            self._services.record_telemetry_event("debugging.crash_diagnosis_run")
             self.done.emit(analysis)
         except ProviderNotReadyError as exc:
             self.failed.emit(str(exc))
@@ -118,6 +124,7 @@ class _CodeHealthWorker(QObject):
                 source_filename=self._filename,
                 record_usage=self._services.usage.record_prompt,
             )
+            self._services.record_telemetry_event("debugging.code_health_check_run")
             self.done.emit(review)
         except CodeHealthNotReadyError as exc:
             self.failed.emit(str(exc))
@@ -203,6 +210,12 @@ class DebuggingScreen(QWidget):
         self._result.setFixedHeight(220)
         layout.addWidget(self._result)
 
+        # Transparent AI Reasoning (Phase C): "why am I seeing this?" for the
+        # crash diagnosis — the matched known issue's note, or the log
+        # excerpt that was actually sent, whichever applies.
+        self._source_link = SourceLinkExpander()
+        layout.addWidget(self._source_link)
+
         history_title = QLabel("Recent sessions")
         history_title.setObjectName("SectionTitle")
         layout.addWidget(history_title)
@@ -251,6 +264,9 @@ class DebuggingScreen(QWidget):
         self._version_result.setPlaceholderText("Scan results and AI review will appear here.")
         self._version_result.setFixedHeight(160)
         layout.addWidget(self._version_result)
+
+        self._version_source_link = SourceLinkExpander()
+        layout.addWidget(self._version_source_link)
 
         history_title = QLabel("Recent outdated-API checks")
         history_title.setObjectName("SectionTitle")
@@ -302,6 +318,9 @@ class DebuggingScreen(QWidget):
         self._health_result.setPlaceholderText("Your code-health summary will appear here.")
         self._health_result.setFixedHeight(160)
         body.addWidget(self._health_result)
+
+        self._health_source_link = SourceLinkExpander()
+        body.addWidget(self._health_source_link)
 
         history_title = QLabel("Recent code-health checks")
         history_title.setObjectName("SectionTitle")
@@ -435,6 +454,13 @@ class DebuggingScreen(QWidget):
         if analysis.regression_match is not None:
             text = text + "\n\nKnown-issue match:\n- " + analysis.regression_match.note
         self._result.setPlainText(text)
+        if analysis.regression_match is not None:
+            description = analysis.regression_match.note
+        elif analysis.session is not None and analysis.session.source_filename:
+            description = f"From the imported log file \"{analysis.session.source_filename}\"."
+        else:
+            description = "From the pasted crash log excerpt below."
+        self._source_link.set_source(description, analysis.parsed.excerpt)
         self._pending_filename = None
         self._set_busy(False)
         self.usage_changed.emit()
@@ -442,6 +468,7 @@ class DebuggingScreen(QWidget):
 
     def _on_failed(self, message: str) -> None:
         self._result.setPlainText(message)
+        self._source_link.set_source(None, None)
         self._set_busy(False)
 
     def _set_busy(self, busy: bool) -> None:
@@ -513,6 +540,12 @@ class DebuggingScreen(QWidget):
 
     def _on_version_done(self, review: VersionCheckReview) -> None:
         self._version_result.setPlainText(review.response_text)
+        hit_count = len(review.parsed.hits)
+        description = (
+            f"From {hit_count} deprecated-API hit(s) found by the local scan of the "
+            "pasted/imported script below."
+        )
+        self._version_source_link.set_source(description, review.parsed.excerpt)
         self._version_pending_filename = None
         self._version_analyze_btn.setEnabled(True)
         self._version_analyze_btn.setText("Analyze with AI")
@@ -521,6 +554,7 @@ class DebuggingScreen(QWidget):
 
     def _on_version_failed(self, message: str) -> None:
         self._version_result.setPlainText(message)
+        self._version_source_link.set_source(None, None)
         self._version_analyze_btn.setEnabled(True)
         self._version_analyze_btn.setText("Analyze with AI")
 
@@ -566,6 +600,16 @@ class DebuggingScreen(QWidget):
 
     def _on_health_done(self, review: CodeHealthReview) -> None:
         self._health_result.setPlainText(review.response_text)
+        excerpt = (
+            review.report.raw_excerpt
+            if review.report is not None
+            else self._health_input.toPlainText().strip()[:CODE_HEALTH_MAX_EXCERPT_CHARS]
+        )
+        self._health_source_link.set_source(
+            "From the pasted/imported script below (this excerpt, plus the local metrics "
+            "shown above, is what was sent to the AI).",
+            excerpt,
+        )
         self._health_pending_filename = None
         self._health_analyze_btn.setEnabled(True)
         self._health_analyze_btn.setText("Check code health")
@@ -574,5 +618,6 @@ class DebuggingScreen(QWidget):
 
     def _on_health_failed(self, message: str) -> None:
         self._health_result.setPlainText(message)
+        self._health_source_link.set_source(None, None)
         self._health_analyze_btn.setEnabled(True)
         self._health_analyze_btn.setText("Check code health")

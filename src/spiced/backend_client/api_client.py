@@ -66,6 +66,26 @@ class TeamSessionSummary:
     created_at: str
 
 
+@dataclass(frozen=True)
+class ChangelogEntry:
+    id: str
+    version_or_phase_label: str
+    title: str
+    body: str
+    published_at: str
+
+
+@dataclass(frozen=True)
+class RoadmapSuggestion:
+    id: str
+    author_user_id: str
+    title: str
+    body: str
+    created_at: str
+    vote_count: int
+    voted_by_me: bool
+
+
 class BackendClient:
     """Talks to the Spiced backend's ``/teams`` routes on behalf of one user."""
 
@@ -130,14 +150,40 @@ class BackendClient:
         payload = self._request("GET", f"/teams/{team_id}/projects/{project_uuid}/sessions")
         return [_session_summary(row) for row in payload]
 
-    def _request(self, method: str, path: str, json: dict | None = None):
-        if not self._token:
+    # --- Open Roadmap & Feedback Loop (Phase C) -----------------------------
+    # Viewing the changelog and suggestion board needs no login (``require_auth
+    # =False``); submitting a suggestion or voting requires the same
+    # Supabase-authenticated account as Team Mode.
+
+    def list_changelog(self) -> list[ChangelogEntry]:
+        payload = self._request("GET", "/roadmap/changelog", require_auth=False)
+        return [_changelog_entry(row) for row in payload]
+
+    def list_suggestions(self) -> list[RoadmapSuggestion]:
+        payload = self._request("GET", "/roadmap/suggestions", require_auth=False)
+        return [_suggestion(row) for row in payload]
+
+    def create_suggestion(self, title: str, body: str) -> RoadmapSuggestion:
+        payload = self._request(
+            "POST", "/roadmap/suggestions", json={"title": title, "body": body}
+        )
+        return _suggestion(payload)
+
+    def vote_suggestion(self, suggestion_id: str) -> None:
+        self._request("POST", f"/roadmap/suggestions/{suggestion_id}/vote")
+
+    def unvote_suggestion(self, suggestion_id: str) -> None:
+        self._request("DELETE", f"/roadmap/suggestions/{suggestion_id}/vote")
+
+    def _request(self, method: str, path: str, json: dict | None = None, require_auth: bool = True):
+        if require_auth and not self._token:
             raise NotAuthenticatedError("Sign in to Spiced Team Mode first.")
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
         try:
             response = self._http.request(
                 method,
                 f"{self._base_url}{path}",
-                headers={"Authorization": f"Bearer {self._token}"},
+                headers=headers,
                 json=json,
             )
         except httpx.HTTPError as exc:
@@ -208,4 +254,26 @@ def _session_summary(row: dict) -> TeamSessionSummary:
         ended_at=row["ended_at"],
         summary_text=row["summary_text"],
         created_at=row["created_at"],
+    )
+
+
+def _changelog_entry(row: dict) -> ChangelogEntry:
+    return ChangelogEntry(
+        id=row["id"],
+        version_or_phase_label=row["version_or_phase_label"],
+        title=row["title"],
+        body=row["body"],
+        published_at=row["published_at"],
+    )
+
+
+def _suggestion(row: dict) -> RoadmapSuggestion:
+    return RoadmapSuggestion(
+        id=row["id"],
+        author_user_id=row["author_user_id"],
+        title=row["title"],
+        body=row["body"],
+        created_at=row["created_at"],
+        vote_count=row["vote_count"],
+        voted_by_me=row["voted_by_me"],
     )

@@ -38,6 +38,7 @@ from spiced.core.community_pulse import CommunityPulseResult, SourceNotReadyErro
 from spiced.core.community_pulse import ProviderNotReadyError as PulseProviderNotReadyError
 from spiced.core.feedback import SOURCE_FILE, SOURCE_PASTE, FeedbackReview, ProviderNotReadyError
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
+from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
 
@@ -77,6 +78,9 @@ class _AnalyzeWorker(QObject):
                 team_mode=team_mode,
                 team_members=self._services.team_prompt_context(project) if team_mode else None,
             )
+            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
+            # never the feedback content itself. No-op unless enabled.
+            self._services.record_telemetry_event("feedback.analysis_run")
             self.done.emit(review)
         except ProviderNotReadyError as exc:
             self.failed.emit(str(exc))
@@ -360,6 +364,13 @@ class FeedbackScreen(QWidget):
         self._result.setFixedHeight(220)
         layout.addWidget(self._result)
 
+        # Transparent AI Reasoning (Phase C): which entries/excerpt this
+        # review was actually built from. Theme cards above already carry
+        # their own per-category representative quote, so this covers the
+        # batch-level "why" rather than duplicating a link on every card.
+        self._source_link = SourceLinkExpander()
+        layout.addWidget(self._source_link)
+
     def _build_history(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Recent feedback batches")
         heading.setObjectName("SectionTitle")
@@ -411,6 +422,9 @@ class FeedbackScreen(QWidget):
         self._pulse_result.setFixedHeight(160)
         pulse_layout.addWidget(self._pulse_result)
 
+        self._pulse_source_link = SourceLinkExpander()
+        pulse_layout.addWidget(self._pulse_source_link)
+
         history_title = QLabel("Recent check-ins")
         history_title.setObjectName("SectionTitle")
         pulse_layout.addWidget(history_title)
@@ -445,6 +459,9 @@ class FeedbackScreen(QWidget):
 
     def _on_pulse_done(self, result: CommunityPulseResult) -> None:
         self._pulse_result.setPlainText(result.response_text)
+        description = f"From {result.message_count} recent messages in {result.channel_label}."
+        excerpt = result.checkin.raw_excerpt if result.checkin else None
+        self._pulse_source_link.set_source(description, excerpt)
         self._pulse_run_btn.setEnabled(True)
         self._pulse_run_btn.setText("Run pulse check-in")
         self.usage_changed.emit()
@@ -452,6 +469,7 @@ class FeedbackScreen(QWidget):
 
     def _on_pulse_failed(self, message: str) -> None:
         self._pulse_result.setPlainText(message)
+        self._pulse_source_link.set_source(None, None)
         self._pulse_run_btn.setEnabled(True)
         self._pulse_run_btn.setText("Run pulse check-in")
 
@@ -593,6 +611,12 @@ class FeedbackScreen(QWidget):
         self._result.setPlainText(review.response_text)
         self._last_batch_id = review.batch.id if review.batch else None
         self._refresh_theme_cards(review.theme_cards)
+        source_bits = [f"{review.parsed.entry_count} feedback entries"]
+        if review.batch and (review.batch.source_label or review.batch.source_filename):
+            source_bits.append(review.batch.source_label or review.batch.source_filename)
+        self._source_link.set_source(
+            f"From {' — '.join(source_bits)}.", review.parsed.excerpt
+        )
         self._pending_filename = None
         self._set_busy(False)
         self.usage_changed.emit()
@@ -600,6 +624,7 @@ class FeedbackScreen(QWidget):
 
     def _on_failed(self, message: str) -> None:
         self._result.setPlainText(message)
+        self._source_link.set_source(None, None)
         self._set_busy(False)
 
     def _set_busy(self, busy: bool) -> None:

@@ -19,6 +19,7 @@ from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.feedback import FeedbackScreen
 from spiced.ui.screens.projects import ProjectsScreen
+from spiced.ui.screens.roadmap import RoadmapScreen
 from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.testing import TestingScreen
 
@@ -28,6 +29,9 @@ NAV_ITEMS = [
     "Debugging Buddy",
     "Automated Testing",
     "Feedback Review",
+    # Roadmap sits outside the three tool pages above (Debugging/Testing/
+    # Feedback), next to Settings — per the Section 5 spec's placement call.
+    "Roadmap",
     "Settings",
 ]
 
@@ -120,6 +124,8 @@ class MainWindow(QWidget):
         self._testing_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._feedback_screen.usage_changed.connect(self._dashboard_screen.refresh)
 
+        self._roadmap_screen = RoadmapScreen(self._services)
+
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
         # Team Mode toggling changes whether the Testing screen's Build
@@ -131,6 +137,7 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._debugging_screen)
         self._stack.addWidget(self._testing_screen)
         self._stack.addWidget(self._feedback_screen)
+        self._stack.addWidget(self._roadmap_screen)
         self._stack.addWidget(self._settings_screen)
         # Recompute the dashboard whenever the user navigates to it.
         self._stack.currentChanged.connect(self._on_stack_changed)

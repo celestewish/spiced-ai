@@ -126,3 +126,70 @@ class SessionSummary(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     summary_text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class TelemetryEvent(Base):
+    """Opt-In Only Telemetry (Phase C, section 5).
+
+    No auth, and deliberately no ``user_id``/``team_id`` column at all —
+    telemetry is anonymous by design, not tied to a team or account, even if
+    the sender happens to be signed in elsewhere. ``anonymous_client_id`` is
+    a random UUID the desktop client mints once and stores locally (see
+    ``spiced.app.services.Services.record_telemetry_event``); it identifies a
+    machine, never a person. ``event_name`` is a bare event name (e.g.
+    "debugging.crash_diagnosis_run") — the schema has no field for code,
+    logs, file paths, feedback content, or any project/game content, so none
+    of that can be sent here even by mistake.
+    """
+
+    __tablename__ = "telemetry_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    anonymous_client_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ChangelogEntry(Base):
+    """Spiced's own public release notes (Open Roadmap, Phase C, stretch).
+
+    Distinct from ``core/changelog_draft.py`` planned for Phase D, which
+    drafts patch notes for the *developer's own game* — this table is
+    Spiced's release history, shown to every user on the Roadmap screen.
+    """
+
+    __tablename__ = "changelog_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    version_or_phase_label: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class RoadmapSuggestion(Base):
+    """A developer-submitted roadmap suggestion. Requires a signed-in author."""
+
+    __tablename__ = "roadmap_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    author_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class RoadmapVote(Base):
+    """One user's upvote on one suggestion. Unique per (suggestion, user)."""
+
+    __tablename__ = "roadmap_votes"
+    __table_args__ = (
+        UniqueConstraint("suggestion_id", "user_id", name="uq_roadmap_vote"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    suggestion_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("roadmap_suggestions.id"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
