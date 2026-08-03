@@ -89,6 +89,32 @@ class SettingsScreen(QWidget):
         team_note.setWordWrap(True)
         layout.addWidget(team_note)
 
+        # Opt-In Only Telemetry (off by default). Mirrors the Community
+        # Pulse opt-in pattern exactly (settings.py's community_pulse
+        # checkbox / services.community_pulse_enabled()).
+        telemetry_title = QLabel("Privacy")
+        telemetry_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(telemetry_title)
+
+        self._telemetry_toggle = QCheckBox("Help improve Spiced")
+        self._telemetry_toggle.setChecked(self._services.telemetry_opt_in_enabled())
+        self._telemetry_toggle.toggled.connect(self._on_telemetry_toggled)
+        layout.addWidget(self._telemetry_toggle)
+
+        telemetry_note = QLabel(
+            "Off by default. If you turn this on, Spiced sends anonymous counts of which "
+            "features you use — for example, a bare event name like \"Debugging Buddy: "
+            "crash diagnosis run\" plus a timestamp. Nothing else is attached: never your "
+            "code, logs, file paths, feedback content, or any project/game content, and "
+            "never your account, email, or user id, even if you're signed in above for "
+            "Small-Team Mode. A random anonymous id (not tied to you) is generated once on "
+            "this machine so events can be counted without identifying you."
+        )
+        telemetry_note.setObjectName("Muted")
+        telemetry_note.setWordWrap(True)
+        layout.addWidget(telemetry_note)
+
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
@@ -143,6 +169,10 @@ class SettingsScreen(QWidget):
                 self._team_mode_toggle.blockSignals(False)
                 return
         self._services.set_team_mode_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_telemetry_toggled(self, checked: bool) -> None:
+        self._services.set_telemetry_opt_in_enabled(checked)
         self.settings_changed.emit()
 
     def _on_plan_changed(self, _index: int) -> None:

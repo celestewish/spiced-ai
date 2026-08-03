@@ -18,7 +18,7 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 import pytest
-from app.auth import get_current_user, get_or_create_user
+from app.auth import get_current_user, get_current_user_optional, get_or_create_user
 from app.db import Base, get_db
 from app.main import app
 from fastapi import Depends, HTTPException, status
@@ -64,8 +64,15 @@ def _override_get_current_user(db: Session = Depends(get_db)):
     return get_or_create_user(db, _state.user_id, _state.email)
 
 
+def _override_get_current_user_optional(db: Session = Depends(get_db)):
+    if _state.user_id is None:
+        return None
+    return get_or_create_user(db, _state.user_id, _state.email)
+
+
 app.dependency_overrides[get_db] = _override_get_db
 app.dependency_overrides[get_current_user] = _override_get_current_user
+app.dependency_overrides[get_current_user_optional] = _override_get_current_user_optional
 
 
 @pytest.fixture
@@ -90,3 +97,18 @@ def login_as():
     yield _login
     _state.user_id = None
     _state.email = None
+
+
+@pytest.fixture
+def logout():
+    """Drop back to "not signed in" mid-test, without ending the test.
+
+    Used by tests that need to check anonymous behavior (e.g. the Roadmap's
+    public GETs) after already calling ``login_as`` earlier in the same test.
+    """
+
+    def _logout() -> None:
+        _state.user_id = None
+        _state.email = None
+
+    return _logout

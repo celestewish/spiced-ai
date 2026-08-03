@@ -53,3 +53,13 @@ def test_feedback_screen_module_imports_cleanly():
 def test_main_window_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.main_window")
     assert hasattr(module, "MainWindow")
+
+
+def test_source_link_widget_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.widgets.source_link")
+    assert hasattr(module, "SourceLinkExpander")
+
+
+def test_roadmap_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.roadmap")
+    assert hasattr(module, "RoadmapScreen")

@@ -82,3 +82,48 @@ class SessionSummaryOut(BaseModel):
     ended_at: datetime
     summary_text: str
     created_at: datetime
+
+
+class TelemetryEventCreate(BaseModel):
+    anonymous_client_id: str
+    event_name: str
+
+
+class TelemetryEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    anonymous_client_id: str
+    event_name: str
+    created_at: datetime
+
+
+class ChangelogEntryCreate(BaseModel):
+    version_or_phase_label: str
+    title: str
+    body: str
+
+
+class ChangelogEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    version_or_phase_label: str
+    title: str
+    body: str
+    published_at: datetime
+
+
+class RoadmapSuggestionCreate(BaseModel):
+    title: str
+    body: str
+
+
+class RoadmapSuggestionOut(BaseModel):
+    id: str
+    author_user_id: str
+    title: str
+    body: str
+    created_at: datetime
+    vote_count: int
+    voted_by_me: bool

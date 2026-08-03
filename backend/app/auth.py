@@ -98,3 +98,27 @@ async def get_current_user(
         )
 
     return get_or_create_user(db, user_id, email)
+
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> User | None:
+    """Like ``get_current_user``, but returns ``None`` instead of raising.
+
+    Used by the Roadmap's public endpoints (Phase C): viewing needs no
+    login at all, but a request from a signed-in developer should still be
+    recognized as theirs (e.g. to report ``voted_by_me`` on a suggestion).
+    """
+    if credentials is None or not credentials.credentials:
+        return None
+    try:
+        payload = await _fetch_supabase_user(credentials.credentials, settings)
+    except HTTPException:
+        return None
+    user_id = payload.get("id")
+    email = payload.get("email")
+    if not user_id or not email:
+        return None
+    return get_or_create_user(db, user_id, email)

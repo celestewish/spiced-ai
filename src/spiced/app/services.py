@@ -6,9 +6,11 @@ not reach into storage or provider internals directly.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
@@ -23,6 +25,7 @@ from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
+from spiced.core.roadmap_service import RoadmapService
 from spiced.core.session_summary import SessionSummaryService, now_sqlite
 from spiced.core.team_service import TeamService
 from spiced.core.testing import TestingService
@@ -52,6 +55,12 @@ COMMUNITY_PULSE_ENABLED_KEY = "community_pulse_enabled"
 # Solo-Dev Mode vs. Small-Team Mode (Phase B, section 4). Off by default —
 # solo behavior never changes unless a developer explicitly opts in.
 TEAM_MODE_ENABLED_KEY = "team_mode_enabled"
+# Opt-In Only Telemetry (Phase C, section 5). Off by default, mirroring
+# COMMUNITY_PULSE_ENABLED_KEY exactly. TELEMETRY_CLIENT_ID_KEY holds a random
+# UUID minted once on first use — never a user id or email, even if the
+# developer happens to be signed in elsewhere for Team Mode.
+TELEMETRY_OPT_IN_ENABLED_KEY = "telemetry_opt_in_enabled"
+TELEMETRY_CLIENT_ID_KEY = "telemetry_anonymous_client_id"
 
 
 class Services:
@@ -82,6 +91,9 @@ class Services:
         # new backend. Solo-Dev Mode never touches these.
         self.auth = AuthService(self._settings)
         self.teams = TeamService(self.auth, self.projects)
+        # Open Roadmap & Feedback Loop (Phase C): viewing needs no login;
+        # submitting/voting reuses this same AuthService/account system.
+        self.roadmap = RoadmapService(self.auth)
 
         # Session Summaries (Phase B): always local; optionally also posted
         # to the team backend when Team Mode is on and the active project is
@@ -132,6 +144,47 @@ class Services:
 
     def build_community_source(self) -> CommunitySource:
         return community_module.build_source(self.community_source_name())
+
+    # --- Opt-In Only Telemetry (opt-in, off by default) --------------------
+
+    def telemetry_opt_in_enabled(self) -> bool:
+        return self._settings.get(TELEMETRY_OPT_IN_ENABLED_KEY, "") == "1"
+
+    def set_telemetry_opt_in_enabled(self, enabled: bool) -> None:
+        self._settings.set(TELEMETRY_OPT_IN_ENABLED_KEY, "1" if enabled else "")
+
+    def _telemetry_client_id(self) -> str:
+        """A random UUID minted once and stored locally.
+
+        Never a user id or email — kept independent of AuthService/team
+        sign-in state on purpose, so an event can't be traced back to an
+        account even if the developer happens to be signed in elsewhere.
+        """
+        existing = self._settings.get(TELEMETRY_CLIENT_ID_KEY)
+        if existing:
+            return existing
+        new_id = str(uuid.uuid4())
+        self._settings.set(TELEMETRY_CLIENT_ID_KEY, new_id)
+        return new_id
+
+    def record_telemetry_event(self, event_name: str) -> None:
+        """Fire an anonymous feature-usage event, if the developer opted in.
+
+        A no-op when telemetry is off (the default). Never raises and never
+        blocks the caller on a slow/failed network call — the whole point is
+        that the calling action (a crash diagnosis, a test review, ...)
+        always succeeds or fails on its own terms, regardless of telemetry.
+        Only ``event_name`` (a bare event name, e.g.
+        "debugging.crash_diagnosis_run") and the anonymous client id are ever
+        sent — never code, logs, file paths, feedback content, or any
+        project/game content.
+        """
+        if not self.telemetry_opt_in_enabled():
+            return
+        try:
+            telemetry_client.post_event(self._telemetry_client_id(), event_name)
+        except Exception:
+            pass
 
     # --- Solo-Dev Mode vs. Small-Team Mode (opt-in, off by default) --------
 

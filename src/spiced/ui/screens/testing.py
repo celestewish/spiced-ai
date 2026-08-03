@@ -51,6 +51,7 @@ from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_ed
 from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
+from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
 _NO_HARDWARE = "(none — no simulation)"
@@ -85,6 +86,9 @@ class _FunctionalWorker(QObject):
                 team_mode=team_mode,
                 team_members=self._services.team_prompt_context(project) if team_mode else None,
             )
+            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
+            # no test content or project data. No-op unless enabled.
+            self._services.record_telemetry_event("testing.test_review_run")
             self.done.emit(review)
         except ProviderNotReadyError as exc:
             self.failed.emit(str(exc))
@@ -193,6 +197,7 @@ class _PerformanceWorker(QObject):
                 source_filename=self._source_filename,
                 record_usage=self._services.usage.record_prompt,
             )
+            self._services.record_telemetry_event("testing.performance_review_run")
             self.done.emit(review)
         except PerformanceNotReadyError as exc:
             self.failed.emit(str(exc))
@@ -447,6 +452,11 @@ class TestingScreen(QWidget):
         self._result.setFixedHeight(200)
         layout.addWidget(self._result)
 
+        # Transparent AI Reasoning (Phase C): matched known issue(s), or the
+        # raw results excerpt that was actually sent.
+        self._source_link = SourceLinkExpander()
+        layout.addWidget(self._source_link)
+
         history_title = QLabel("Recent test runs")
         history_title.setObjectName("SectionTitle")
         layout.addWidget(history_title)
@@ -538,6 +548,9 @@ class TestingScreen(QWidget):
         self._perf_result.setFixedHeight(220)
         layout.addWidget(self._perf_result)
 
+        self._perf_source_link = SourceLinkExpander()
+        layout.addWidget(self._perf_source_link)
+
         history_title = QLabel("Recent performance reports")
         history_title.setObjectName("SectionTitle")
         layout.addWidget(history_title)
@@ -595,6 +608,9 @@ class TestingScreen(QWidget):
         self._access_result.setPlaceholderText("Your accessibility review will appear here.")
         self._access_result.setFixedHeight(220)
         layout.addWidget(self._access_result)
+
+        self._access_source_link = SourceLinkExpander()
+        layout.addWidget(self._access_source_link)
 
         history_title = QLabel("Recent accessibility passes")
         history_title.setObjectName("SectionTitle")
@@ -931,6 +947,11 @@ class TestingScreen(QWidget):
             lines.extend(f"- {o.match.note}" for o in matches)
             text = text + "\n" + "\n".join(lines)
         self._result.setPlainText(text)
+        if matches:
+            description = " ".join(o.match.note for o in matches)
+        else:
+            description = "From the pasted/imported test results below."
+        self._source_link.set_source(description, review.parsed.excerpt)
         self._pending_filename = None
         self._set_busy(False)
         self.usage_changed.emit()
@@ -939,6 +960,7 @@ class TestingScreen(QWidget):
 
     def _on_failed(self, message: str) -> None:
         self._result.setPlainText(message)
+        self._source_link.set_source(None, None)
         self._set_busy(False)
 
     def _set_busy(self, busy: bool) -> None:
@@ -994,6 +1016,14 @@ class TestingScreen(QWidget):
             lines = ["", "Known-issue matches:"]
             lines.extend(f"- {o.match.note}" for o in matches)
             text = text + "\n" + "\n".join(lines)
+        # Transparent AI Reasoning (Phase C): this panel is an appended
+        # timeline of multiple platform runs rather than one result card, so
+        # the "why" is shown inline instead of via a separate SourceLinkExpander.
+        if review.parsed.excerpt:
+            text += (
+                f"\n(Why: from the {platform} run's results excerpt below.)\n"
+                f"{review.parsed.excerpt}"
+            )
         self._unity_run_result.append(text)
         self.usage_changed.emit()
         self._refresh_history()
@@ -1071,6 +1101,10 @@ class TestingScreen(QWidget):
 
     def _on_perf_done(self, review: PerformanceReview) -> None:
         self._perf_result.setPlainText(review.response_text)
+        description = "From the pasted/imported performance data below."
+        if review.simulation is not None:
+            description += f" Includes a {review.simulation.tier} hardware simulation estimate."
+        self._perf_source_link.set_source(description, review.parsed.excerpt)
         self._perf_pending_filename = None
         self._perf_analyze_btn.setEnabled(True)
         self._perf_analyze_btn.setText("Analyze")
@@ -1079,6 +1113,7 @@ class TestingScreen(QWidget):
 
     def _on_perf_failed(self, message: str) -> None:
         self._perf_result.setPlainText(message)
+        self._perf_source_link.set_source(None, None)
         self._perf_analyze_btn.setEnabled(True)
         self._perf_analyze_btn.setText("Analyze")
 
@@ -1125,6 +1160,11 @@ class TestingScreen(QWidget):
 
     def _on_access_done(self, review: AccessibilityReview) -> None:
         self._access_result.setPlainText(review.response_text)
+        self._access_source_link.set_source(
+            "From the pasted/imported accessibility checklist below (real WCAG contrast "
+            "math and a colorblind-simulation check ran locally on this data).",
+            review.parsed.excerpt,
+        )
         self._access_pending_filename = None
         self._access_analyze_btn.setEnabled(True)
         self._access_analyze_btn.setText("Analyze")
@@ -1133,5 +1173,6 @@ class TestingScreen(QWidget):
 
     def _on_access_failed(self, message: str) -> None:
         self._access_result.setPlainText(message)
+        self._access_source_link.set_source(None, None)
         self._access_analyze_btn.setEnabled(True)
         self._access_analyze_btn.setText("Analyze")

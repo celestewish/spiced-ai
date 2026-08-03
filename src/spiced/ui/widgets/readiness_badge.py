@@ -5,9 +5,12 @@ non-gamified enum label plus its evidence/caveats, matching the spec's "not
 hidden behind a score" requirement. This widget is a minimal, deliberately
 small building block (label + "Why?" expander) rather than a rich card, so it
 fits as a persistent header on any screen; the Dashboard screen keeps its own
-richer readiness card. If Phase C's planned ``SourceLinkExpander`` widget
-lands, this could reasonably be unified with it — noted here rather than
-building ahead of that phase.
+richer readiness card. It shares its "label + Why? ▸/▾ toggle" behavior with
+Phase C's ``SourceLinkExpander`` via ``_ExpanderMixin`` (see
+``ui/widgets/source_link.py``) rather than duplicating that toggle logic —
+the two widgets stayed separate classes since a badge's "always has a label,
+starts collapsed but keeps its state across refreshes" shape differs from a
+source link's "hidden entirely until there's something to show" shape.
 """
 
 from __future__ import annotations
@@ -15,9 +18,10 @@ from __future__ import annotations
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from spiced.core.dashboard import ReadinessAssessment
+from spiced.ui.widgets.source_link import _ExpanderMixin
 
 
-class ReadinessBadge(QFrame):
+class ReadinessBadge(_ExpanderMixin, QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("ReadinessBadge")
@@ -31,17 +35,17 @@ class ReadinessBadge(QFrame):
         self._label.setObjectName("ReadinessLabel")
         top.addWidget(self._label)
         top.addStretch(1)
-        self._toggle = QPushButton("Why? ▸")
-        self._toggle.setObjectName("Ghost")
-        self._toggle.clicked.connect(self._on_toggle)
-        top.addWidget(self._toggle)
+        toggle = QPushButton("Why? ▸")
+        toggle.setObjectName("Ghost")
+        top.addWidget(toggle)
         layout.addLayout(top)
 
-        self._body = QLabel("")
-        self._body.setObjectName("Muted")
-        self._body.setWordWrap(True)
-        self._body.setVisible(False)
-        layout.addWidget(self._body)
+        body = QLabel("")
+        body.setObjectName("Muted")
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        self._init_expander(toggle, body, "Why? ▸", "Why? ▾")
 
     def set_readiness(
         self, readiness: ReadinessAssessment | None, *, team_linked: bool = False
@@ -62,8 +66,3 @@ class ReadinessBadge(QFrame):
                 "built yet; this label still reflects only your local data."
             )
         self._body.setText("\n".join(lines))
-
-    def _on_toggle(self) -> None:
-        expanded = not self._body.isVisible()
-        self._body.setVisible(expanded)
-        self._toggle.setText("Why? ▾" if expanded else "Why? ▸")
