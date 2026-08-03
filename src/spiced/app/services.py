@@ -11,6 +11,7 @@ from pathlib import Path
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
 from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
+from spiced.core.auth_service import AuthService
 from spiced.core.code_health import CodeHealthService
 from spiced.core.community.base import CommunitySource
 from spiced.core.community_pulse import CommunityPulseService
@@ -21,6 +22,7 @@ from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
+from spiced.core.team_service import TeamService
 from spiced.core.testing import TestingService
 from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
@@ -69,6 +71,11 @@ class Services:
         self.community_pulse = CommunityPulseService(CommunityPulseRepository(self.db))
         self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
         self.demo = DemoDataService(self.db)
+
+        # Small-Team Mode (opt-in): auth + team/project-linking against the
+        # new backend. Solo-Dev Mode never touches these.
+        self.auth = AuthService(self._settings)
+        self.teams = TeamService(self.auth, self.projects)
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.

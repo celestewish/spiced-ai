@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from spiced.connectors.unity import UnityDetectionResult, detect_unity_project
 from spiced.storage.projects import Project, ProjectRepository
 
@@ -52,3 +54,17 @@ class ProjectsService:
         paste/import only.
         """
         return self._repo.set_unity_test_run_settings(project_id, enabled, editor_path_override)
+
+    def ensure_project_uuid(self, project_id: int) -> str:
+        """Return this project's stable cross-machine id, minting one on first use.
+
+        Solo-Dev projects never call this — it only runs the first time a
+        project is linked to a Small-Team Mode team, so purely local projects
+        never gain a project_uuid.
+        """
+        project = self._repo.get(project_id)
+        if project.project_uuid:
+            return project.project_uuid
+        new_uuid = str(uuid.uuid4())
+        self._repo.set_project_uuid(project_id, new_uuid)
+        return new_uuid

@@ -193,6 +193,11 @@ PROJECT_MIGRATIONS = {
     "engine_metadata_json": "TEXT",
     "unity_test_run_enabled": "INTEGER NOT NULL DEFAULT 0",
     "unity_editor_path_override": "TEXT",
+    # Stable cross-machine identifier, minted lazily the first time a project
+    # is linked to a Small-Team Mode team (see core/team_service.py). Null
+    # for every project that has never been linked — Solo-Dev Mode never
+    # needs one.
+    "project_uuid": "TEXT",
 }
 
 
