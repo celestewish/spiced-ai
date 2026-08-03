@@ -20,6 +20,7 @@ class Project:
     engine_metadata_json: str | None = None
     unity_test_run_enabled: bool = False
     unity_editor_path_override: str | None = None
+    project_uuid: str | None = None
 
     @property
     def engine_metadata(self) -> dict:
@@ -83,6 +84,13 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
+        """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
+        self._db.execute(
+            "UPDATE projects SET project_uuid = ? WHERE id = ?", (project_uuid, project_id)
+        )
+        return self.get(project_id)
+
     def get(self, project_id: int) -> Project:
         row = self._db.query_one("SELECT * FROM projects WHERE id = ?", (project_id,))
         if row is None:
@@ -113,4 +121,5 @@ class ProjectRepository:
             unity_editor_path_override=(
                 row["unity_editor_path_override"] if "unity_editor_path_override" in keys else None
             ),
+            project_uuid=row["project_uuid"] if "project_uuid" in keys else None,
         )

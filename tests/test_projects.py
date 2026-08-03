@@ -80,3 +80,25 @@ def test_unity_test_run_settings_can_be_disabled_again():
     disabled = service.set_unity_test_run_settings(project.id, False, None)
     assert disabled.unity_test_run_enabled is False
     assert disabled.unity_editor_path_override is None
+
+
+def test_project_uuid_is_none_until_linked_to_a_team():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.project_uuid is None
+
+
+def test_ensure_project_uuid_mints_and_persists():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    minted = service.ensure_project_uuid(project.id)
+    assert minted
+    assert service.get_project(project.id).project_uuid == minted
+
+
+def test_ensure_project_uuid_is_stable_across_calls():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    first = service.ensure_project_uuid(project.id)
+    second = service.ensure_project_uuid(project.id)
+    assert first == second

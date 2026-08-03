@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core.unity_test_runner import resolve_unity_editor
+from spiced.ui.auth_dialog import AuthDialog
 
 
 class ProjectsScreen(QWidget):
@@ -108,6 +110,7 @@ class ProjectsScreen(QWidget):
         layout.addLayout(controls)
 
         self._build_unity_test_run(layout)
+        self._build_team_section(layout)
 
         self.refresh()
 
@@ -221,6 +224,168 @@ class ProjectsScreen(QWidget):
                 "Install it via Unity Hub, or set a manual path above."
             )
 
+    # --- Team Mode (opt-in) -------------------------------------------------
+
+    def _build_team_section(self, layout: QVBoxLayout) -> None:
+        section = QLabel("Team")
+        section.setObjectName("SectionTitle")
+        layout.addWidget(section)
+
+        intro = QLabel(
+            "Off by default. Sign in and link the active project to a team so "
+            "teammates can share it — everything else in Spiced stays local "
+            "unless you do this."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._team_account_status = QLabel()
+        self._team_account_status.setObjectName("Muted")
+        self._team_account_status.setWordWrap(True)
+        layout.addWidget(self._team_account_status)
+
+        account_row = QHBoxLayout()
+        account_row.setSpacing(8)
+        self._team_signin_btn = QPushButton("Sign in / Sign up")
+        self._team_signin_btn.setObjectName("Ghost")
+        self._team_signin_btn.clicked.connect(self._on_team_sign_in)
+        account_row.addWidget(self._team_signin_btn)
+        self._team_signout_btn = QPushButton("Sign out")
+        self._team_signout_btn.setObjectName("Ghost")
+        self._team_signout_btn.clicked.connect(self._on_team_sign_out)
+        account_row.addWidget(self._team_signout_btn)
+        account_row.addStretch(1)
+        layout.addLayout(account_row)
+
+        create_row = QHBoxLayout()
+        create_row.setSpacing(8)
+        self._team_name_input = QLineEdit()
+        self._team_name_input.setPlaceholderText("New team name")
+        self._team_create_btn = QPushButton("Create team")
+        self._team_create_btn.clicked.connect(self._on_team_create)
+        create_row.addWidget(self._team_name_input, 3)
+        create_row.addWidget(self._team_create_btn, 0)
+        layout.addLayout(create_row)
+
+        link_row = QHBoxLayout()
+        link_row.setSpacing(8)
+        self._team_select = QComboBox()
+        self._team_link_btn = QPushButton("Link active project")
+        self._team_link_btn.clicked.connect(self._on_team_link_project)
+        self._team_unlink_btn = QPushButton("Unlink")
+        self._team_unlink_btn.setObjectName("Ghost")
+        self._team_unlink_btn.clicked.connect(self._on_team_unlink_project)
+        link_row.addWidget(self._team_select, 3)
+        link_row.addWidget(self._team_link_btn, 0)
+        link_row.addWidget(self._team_unlink_btn, 0)
+        layout.addLayout(link_row)
+
+        self._team_link_status = QLabel()
+        self._team_link_status.setObjectName("Muted")
+        self._team_link_status.setWordWrap(True)
+        layout.addWidget(self._team_link_status)
+
+    def _on_team_sign_in(self) -> None:
+        if not self._services.auth.is_configured():
+            QMessageBox.information(
+                self,
+                "Team Mode not configured",
+                "Set SUPABASE_URL and SUPABASE_ANON_KEY in your environment or a local "
+                ".env file to use Team Mode.",
+            )
+            return
+        dialog = AuthDialog(self._services.auth, self)
+        if dialog.exec() == AuthDialog.DialogCode.Accepted:
+            self._refresh_team_section()
+
+    def _on_team_sign_out(self) -> None:
+        self._services.auth.log_out()
+        self._refresh_team_section()
+
+    def _on_team_create(self) -> None:
+        name = self._team_name_input.text().strip()
+        if not name:
+            QMessageBox.information(self, "Name needed", "Please enter a team name.")
+            return
+        try:
+            self._services.teams.create_team(name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't create team", str(exc))
+            return
+        self._team_name_input.clear()
+        self._refresh_team_section()
+
+    def _on_team_link_project(self) -> None:
+        project = self._services.active_project()
+        team_id = self._team_select.currentData()
+        if project is None or not team_id:
+            return
+        try:
+            self._services.teams.link_active_project(team_id, project.id, project.name)
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't link project", str(exc))
+            return
+        self._refresh_team_section()
+
+    def _on_team_unlink_project(self) -> None:
+        project = self._services.active_project()
+        team_id = self._team_select.currentData()
+        if project is None or not team_id or not project.project_uuid:
+            return
+        try:
+            self._services.teams.unlink_project(team_id, project.project_uuid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't unlink project", str(exc))
+            return
+        self._refresh_team_section()
+
+    def _refresh_team_section(self) -> None:
+        auth = self._services.auth
+        logged_in = auth.is_logged_in()
+        user = auth.current_user()
+        self._team_account_status.setText(
+            f"Signed in as {user.email}" if logged_in and user else "Not signed in."
+        )
+        self._team_signin_btn.setEnabled(not logged_in)
+        self._team_signout_btn.setEnabled(logged_in)
+
+        for widget in (
+            self._team_name_input,
+            self._team_create_btn,
+            self._team_select,
+            self._team_link_btn,
+            self._team_unlink_btn,
+        ):
+            widget.setEnabled(logged_in)
+
+        self._team_select.blockSignals(True)
+        self._team_select.clear()
+        if logged_in:
+            try:
+                teams = self._services.teams.list_teams()
+            except (BackendAPIError, NotAuthenticatedError) as exc:
+                self._team_link_status.setText(f"Couldn't reach the team backend: {exc}")
+                teams = []
+            for team in teams:
+                self._team_select.addItem(team.name, team.id)
+        self._team_select.blockSignals(False)
+
+        project = self._services.active_project()
+        if not logged_in:
+            self._team_link_status.setText("")
+        elif project is None:
+            self._team_link_status.setText("Select or create a project above to link it.")
+        elif project.project_uuid:
+            self._team_link_status.setText(
+                f"{project.name} has a stable team id ({project.project_uuid[:8]}…). "
+                "Pick a team above and click Link, or Unlink to remove it from that team."
+            )
+        else:
+            self._team_link_status.setText(
+                f"{project.name} isn't linked to a team yet — pick one above and click Link."
+            )
+
     def _create(self) -> None:
         name = self._name_input.text().strip()
         if not name:
@@ -308,6 +473,7 @@ class ProjectsScreen(QWidget):
         self._empty.setVisible(not items)
         self._list.setVisible(bool(items))
         self._update_detail()
+        self._refresh_team_section()
 
     def _update_detail(self) -> None:
         self._update_unity_run_status()
