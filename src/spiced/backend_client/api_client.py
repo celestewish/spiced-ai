@@ -38,6 +38,11 @@ class TeamMember:
     role: str
     joined_at: str | None
     created_at: str
+    # Best-available contact address (invite address, or the joined user's
+    # verified email) — added in Phase B for Team Mode prompt context.
+    # Defaults to None so existing call sites/fakes built before this field
+    # existed keep working.
+    email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,18 @@ class TeamProject:
     team_id: str
     project_uuid: str
     name: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class TeamSessionSummary:
+    id: str
+    team_id: str
+    project_uuid: str
+    user_id: str
+    started_at: str
+    ended_at: str
+    summary_text: str
     created_at: str
 
 
@@ -99,6 +116,20 @@ class BackendClient:
     def unlink_project(self, team_id: str, project_uuid: str) -> None:
         self._request("DELETE", f"/teams/{team_id}/projects/{project_uuid}")
 
+    def post_session_summary(
+        self, team_id: str, project_uuid: str, started_at: str, ended_at: str, summary_text: str
+    ) -> TeamSessionSummary:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/projects/{project_uuid}/sessions",
+            json={"started_at": started_at, "ended_at": ended_at, "summary_text": summary_text},
+        )
+        return _session_summary(payload)
+
+    def list_session_summaries(self, team_id: str, project_uuid: str) -> list[TeamSessionSummary]:
+        payload = self._request("GET", f"/teams/{team_id}/projects/{project_uuid}/sessions")
+        return [_session_summary(row) for row in payload]
+
     def _request(self, method: str, path: str, json: dict | None = None):
         if not self._token:
             raise NotAuthenticatedError("Sign in to Spiced Team Mode first.")
@@ -150,6 +181,7 @@ def _member(row: dict) -> TeamMember:
         team_id=row["team_id"],
         user_id=row.get("user_id"),
         invited_email=row.get("invited_email"),
+        email=row.get("email"),
         role=row["role"],
         joined_at=row.get("joined_at"),
         created_at=row["created_at"],
@@ -162,5 +194,18 @@ def _project(row: dict) -> TeamProject:
         team_id=row["team_id"],
         project_uuid=row["project_uuid"],
         name=row["name"],
+        created_at=row["created_at"],
+    )
+
+
+def _session_summary(row: dict) -> TeamSessionSummary:
+    return TeamSessionSummary(
+        id=row["id"],
+        team_id=row["team_id"],
+        project_uuid=row["project_uuid"],
+        user_id=row["user_id"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+        summary_text=row["summary_text"],
         created_at=row["created_at"],
     )

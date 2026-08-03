@@ -1,13 +1,15 @@
-"""Settings: AI provider, mock plan, and a real connection test prompt."""
+"""Settings: AI provider, mock plan, Team Mode toggle, and a connection test."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
 from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
 from spiced.core.plans import PLANS
+from spiced.ui.auth_dialog import AuthDialog
 
 
 class SettingsScreen(QWidget):
@@ -64,6 +67,28 @@ class SettingsScreen(QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
 
+        # Solo-Dev Mode vs. Small-Team Mode (off/solo by default)
+        team_title = QLabel("Team")
+        team_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(team_title)
+
+        self._team_mode_toggle = QCheckBox("Small-Team Mode")
+        self._team_mode_toggle.setChecked(self._services.team_mode_enabled())
+        self._team_mode_toggle.toggled.connect(self._on_team_mode_toggled)
+        layout.addWidget(self._team_mode_toggle)
+
+        team_note = QLabel(
+            "Solo-Dev Mode (default): everything stays local, prompts stay short and "
+            "prioritized. Small-Team Mode: when the active project is linked to a team "
+            "(Projects screen), AI replies may also suggest which teammate a finding could "
+            "be routed to — always as text in the reply, never an action Spiced takes on "
+            "its own."
+        )
+        team_note.setObjectName("Muted")
+        team_note.setWordWrap(True)
+        layout.addWidget(team_note)
+
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
@@ -96,6 +121,28 @@ class SettingsScreen(QWidget):
 
     def _on_provider_changed(self, name: str) -> None:
         self._services.set_provider_name(name)
+        self.settings_changed.emit()
+
+    def _on_team_mode_toggled(self, checked: bool) -> None:
+        if checked and not self._services.auth.is_logged_in():
+            if not self._services.auth.is_configured():
+                QMessageBox.information(
+                    self,
+                    "Team Mode not configured",
+                    "Set SUPABASE_URL and SUPABASE_ANON_KEY in your environment or a local "
+                    ".env file to use Team Mode.",
+                )
+                self._team_mode_toggle.blockSignals(True)
+                self._team_mode_toggle.setChecked(False)
+                self._team_mode_toggle.blockSignals(False)
+                return
+            dialog = AuthDialog(self._services.auth, self)
+            if dialog.exec() != AuthDialog.DialogCode.Accepted:
+                self._team_mode_toggle.blockSignals(True)
+                self._team_mode_toggle.setChecked(False)
+                self._team_mode_toggle.blockSignals(False)
+                return
+        self._services.set_team_mode_enabled(checked)
         self.settings_changed.emit()
 
     def _on_plan_changed(self, _index: int) -> None:

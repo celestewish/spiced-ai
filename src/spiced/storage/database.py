@@ -184,6 +184,26 @@ CREATE TABLE IF NOT EXISTS community_pulse_checkins (
     provider           TEXT,
     created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Session Summaries (Phase B, Team & Workflow). A compact recap of what was
+-- tested/fixed/still-open since the previous summary (or app start). Always
+-- stored locally; additionally posted to the team backend's session-summary
+-- endpoint when Team Mode is on and the project is team-linked — but only the
+-- ai_summary text and started_at/ended_at ever leave this machine, never raw
+-- session timing framed as a wellbeing signal (that stays local-only, for the
+-- later Crunch-Pattern Awareness feature).
+CREATE TABLE IF NOT EXISTS session_summaries (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL,
+    started_at     TEXT NOT NULL,
+    ended_at       TEXT NOT NULL,
+    tested_summary TEXT,
+    fixed_summary  TEXT,
+    open_summary   TEXT,
+    ai_summary     TEXT,
+    synced_to_team INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

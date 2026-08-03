@@ -128,11 +128,15 @@ class TestingService:
         source_type: str = SOURCE_PASTE,
         source_filename: str | None = None,
         record_usage=None,
+        team_mode: bool = False,
+        team_members: list[str] | None = None,
     ) -> TestReview:
         """Parse results, ask the provider for a review, and save a run.
 
         ``record_usage`` is called with the provider name after a successful
-        reply so the usage counter can increment.
+        reply so the usage counter can increment. ``team_mode``/``team_members``
+        are Small-Team Mode context (Phase B); left at their defaults, behavior
+        is identical to Solo-Dev Mode.
         """
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -143,7 +147,10 @@ class TestingService:
 
         parsed = self.parse(results_text)
         prompt = build_test_review_prompt(
-            parsed, project_name=project.name if project else None
+            parsed,
+            project_name=project.name if project else None,
+            team_mode=team_mode,
+            team_members=team_members,
         )
         response = provider.generate(prompt)
         if record_usage is not None:

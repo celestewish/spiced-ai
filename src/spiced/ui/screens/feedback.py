@@ -64,14 +64,18 @@ class _AnalyzeWorker(QObject):
     def run(self) -> None:
         try:
             provider = self._services.build_provider()
+            project = self._services.active_project()
+            team_mode = self._services.team_mode_enabled()
             review = self._services.feedback.analyze(
                 provider,
                 self._feedback_text,
-                project=self._services.active_project(),
+                project=project,
                 source_type=self._source_type,
                 source_label=self._source_label,
                 source_filename=self._source_filename,
                 record_usage=self._services.usage.record_prompt,
+                team_mode=team_mode,
+                team_members=self._services.team_prompt_context(project) if team_mode else None,
             )
             self.done.emit(review)
         except ProviderNotReadyError as exc:

@@ -55,11 +55,15 @@ class DebuggingService:
         source_type: str = SOURCE_PASTE,
         source_filename: str | None = None,
         record_usage=None,
+        team_mode: bool = False,
+        team_members: list[str] | None = None,
     ) -> DebugAnalysis:
         """Parse the log, ask the provider, and save a session if we have a project.
 
         ``record_usage`` is an optional callback invoked with the provider name
         after a successful reply, so the usage counter can increment.
+        ``team_mode``/``team_members`` are Small-Team Mode context (Phase B);
+        left at their defaults, behavior is identical to Solo-Dev Mode.
         """
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -74,6 +78,8 @@ class DebuggingService:
             parsed,
             project_name=project.name if project else None,
             unity_version=metadata.get("unity_version"),
+            team_mode=team_mode,
+            team_members=team_members,
         )
 
         response = provider.generate(prompt)

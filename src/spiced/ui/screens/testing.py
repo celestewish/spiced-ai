@@ -50,6 +50,7 @@ from spiced.core.testing import (
 from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor, run_tests
 from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
+from spiced.ui.widgets.readiness_badge import ReadinessBadge
 
 _USER_ROLE = 0x0100
 _NO_HARDWARE = "(none — no simulation)"
@@ -72,13 +73,17 @@ class _FunctionalWorker(QObject):
     def run(self) -> None:
         try:
             provider = self._services.build_provider()
+            project = self._services.active_project()
+            team_mode = self._services.team_mode_enabled()
             review = self._services.testing.analyze(
                 provider,
                 self._results_text,
-                project=self._services.active_project(),
+                project=project,
                 source_type=self._source_type,
                 source_filename=self._source_filename,
                 record_usage=self._services.usage.record_prompt,
+                team_mode=team_mode,
+                team_members=self._services.team_prompt_context(project) if team_mode else None,
             )
             self.done.emit(review)
         except ProviderNotReadyError as exc:
@@ -127,6 +132,8 @@ class _UnityRunWorker(QObject):
             self.finished.emit()
             return
 
+        team_mode = self._services.team_mode_enabled()
+        team_members = self._services.team_prompt_context(self._project) if team_mode else None
         for platform in self._platforms:
             self.platform_started.emit(platform)
             try:
@@ -144,6 +151,8 @@ class _UnityRunWorker(QObject):
                     source_type=SOURCE_UNITY_RUN,
                     source_filename=f"unity-{platform.lower()}-run.xml",
                     record_usage=self._services.usage.record_prompt,
+                    team_mode=team_mode,
+                    team_members=team_members,
                 )
                 self.platform_done.emit(platform, review)
             except ProviderNotReadyError as exc:
@@ -249,6 +258,11 @@ class TestingScreen(QWidget):
         self._context_label.setObjectName("Muted")
         self._context_label.setWordWrap(True)
         header.addWidget(self._context_label)
+        # Build Health Score (Phase 2): a persistent, always-visible header —
+        # the spec calls for this placement specifically, reusing
+        # core.dashboard.assess_readiness() rather than a new scoring model.
+        self._readiness_badge = ReadinessBadge()
+        header.addWidget(self._readiness_badge)
         outer.addLayout(header)
 
         self._tabs = QTabWidget()
@@ -604,6 +618,12 @@ class TestingScreen(QWidget):
             )
         else:
             self._context_label.setText(f"Active project: {project.name}")
+
+        summary = self._services.dashboard.summarize(project)
+        team_linked = bool(project and project.project_uuid and self._services.team_mode_enabled())
+        self._readiness_badge.set_readiness(
+            summary.readiness if summary else None, team_linked=team_linked
+        )
 
         for widget in (self._add_btn, self._title_input, self._update_status_btn):
             widget.setEnabled(has_project)
