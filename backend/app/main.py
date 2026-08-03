@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import teams
+from app.routers import sessions, teams
 
 app = FastAPI(title="Spiced Backend", version="0.0.1")
 
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 app.include_router(teams.router)
+app.include_router(sessions.router)
 
 
 @app.get("/health")

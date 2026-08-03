@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -77,6 +77,18 @@ class TeamMember(Base):
     team: Mapped[Team] = relationship(back_populates="members")
     user: Mapped[User | None] = relationship()
 
+    @property
+    def email(self) -> str | None:
+        """Best-available contact address: the invite address while pending,
+        otherwise the joined user's verified email.
+
+        ``invited_email`` is cleared once a membership resolves to a real
+        user (see ``routers.teams.invite_member``), so this falls back to
+        the related ``User`` row — used by Team Mode prompt context (Phase B)
+        to show teammates by name/email rather than a bare user id.
+        """
+        return self.invited_email or (self.user.email if self.user else None)
+
 
 class TeamProject(Base):
     """Links a client-minted ``project_uuid`` (a local Spiced project) to a team."""
@@ -91,3 +103,26 @@ class TeamProject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     team: Mapped[Team] = relationship(back_populates="projects")
+
+
+class SessionSummary(Base):
+    """A dev-session recap posted from a team-linked project (Phase B).
+
+    Only the AI-produced summary text and start/end timestamps are stored
+    here — never raw session timing framed as a wellbeing signal (how late
+    or how long someone worked). That data is Crunch-Pattern Awareness
+    material, which stays local-only by design (see the Phase B/F plan);
+    this table only ever receives what the desktop client explicitly opts
+    to share once a project is team-linked.
+    """
+
+    __tablename__ = "session_summaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    project_uuid: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    summary_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

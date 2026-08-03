@@ -111,11 +111,15 @@ class FeedbackService:
         source_label: str | None = None,
         source_filename: str | None = None,
         record_usage=None,
+        team_mode: bool = False,
+        team_members: list[str] | None = None,
     ) -> FeedbackReview:
         """Parse + classify locally, ask the provider for a review, and save a batch.
 
         ``record_usage`` is called with the provider name after a successful
-        reply so the usage counter can increment.
+        reply so the usage counter can increment. ``team_mode``/``team_members``
+        are Small-Team Mode context (Phase B); left at their defaults, behavior
+        is identical to Solo-Dev Mode.
         """
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -132,6 +136,8 @@ class FeedbackService:
             classification,
             project_name=project.name if project else None,
             source_label=source_label,
+            team_mode=team_mode,
+            team_members=team_members,
         )
         response = provider.generate(prompt)
         if record_usage is not None:

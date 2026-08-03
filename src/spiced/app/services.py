@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
 from spiced.core.auth_service import AuthService
@@ -22,6 +23,7 @@ from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
+from spiced.core.session_summary import SessionSummaryService, now_sqlite
 from spiced.core.team_service import TeamService
 from spiced.core.testing import TestingService
 from spiced.core.usage_counter import UsageCounter
@@ -36,6 +38,7 @@ from spiced.storage.feedback_tasks import FeedbackTaskRepository
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
 from spiced.storage.projects import Project, ProjectRepository
+from spiced.storage.session_summaries import SessionSummary, SessionSummaryRepository
 from spiced.storage.settings import SettingsRepository
 from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
@@ -46,6 +49,9 @@ PROVIDER_SETTING_KEY = "ai_provider"
 ACTIVE_PROJECT_SETTING_KEY = "active_project_id"
 COMMUNITY_SOURCE_SETTING_KEY = "community_source"
 COMMUNITY_PULSE_ENABLED_KEY = "community_pulse_enabled"
+# Solo-Dev Mode vs. Small-Team Mode (Phase B, section 4). Off by default —
+# solo behavior never changes unless a developer explicitly opts in.
+TEAM_MODE_ENABLED_KEY = "team_mode_enabled"
 
 
 class Services:
@@ -76,6 +82,16 @@ class Services:
         # new backend. Solo-Dev Mode never touches these.
         self.auth = AuthService(self._settings)
         self.teams = TeamService(self.auth, self.projects)
+
+        # Session Summaries (Phase B): always local; optionally also posted
+        # to the team backend when Team Mode is on and the active project is
+        # team-linked (see sync_session_summary below). ``app_started_at``
+        # anchors the very first summary's window when a project has none
+        # saved yet — later summaries chain off the previous one's ended_at.
+        self.session_summaries = SessionSummaryService(
+            SessionSummaryRepository(self.db), self.testing, self.feedback
+        )
+        self.app_started_at = now_sqlite()
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.
@@ -116,6 +132,65 @@ class Services:
 
     def build_community_source(self) -> CommunitySource:
         return community_module.build_source(self.community_source_name())
+
+    # --- Solo-Dev Mode vs. Small-Team Mode (opt-in, off by default) --------
+
+    def team_mode_enabled(self) -> bool:
+        return self._settings.get(TEAM_MODE_ENABLED_KEY, "") == "1"
+
+    def set_team_mode_enabled(self, enabled: bool) -> None:
+        self._settings.set(TEAM_MODE_ENABLED_KEY, "1" if enabled else "")
+
+    def team_prompt_context(self, project: Project | None) -> list[str] | None:
+        """Other teammates' display names/emails for AI prompt context.
+
+        Returns None whenever Team Mode doesn't apply here — solo, signed
+        out, or an unlinked project — so callers can do
+        ``team_mode=bool(context)`` without extra network-error handling.
+        Any backend problem also degrades to None rather than failing the
+        caller's primary action (e.g. a crash analysis should still work
+        even if the team roster can't be fetched right now).
+        """
+        if not self.team_mode_enabled() or project is None or not project.project_uuid:
+            return None
+        if not self.auth.is_logged_in():
+            return None
+        try:
+            team = self.teams.find_team_for_project(project.project_uuid)
+            if team is None:
+                return None
+            members = self.teams.list_other_members(team.id)
+        except (BackendAPIError, NotAuthenticatedError):
+            return None
+        labels = [m.email or m.invited_email or m.user_id for m in members]
+        return [label for label in labels if label] or None
+
+    def sync_session_summary(self, project: Project, summary: SessionSummary) -> bool:
+        """Post a saved session summary to the team backend, if applicable.
+
+        Only ever sends ``summary.ai_summary`` plus ``started_at``/``ended_at``
+        — see the docstring on storage.database's session_summaries table for
+        why nothing else about session timing is shared. Returns whether the
+        sync happened; failures are swallowed so a flaky connection never
+        blocks the (already-saved-locally) summary from being usable.
+        """
+        if not self.team_mode_enabled() or not project.project_uuid:
+            return False
+        if not self.auth.is_logged_in():
+            return False
+        try:
+            result = self.teams.post_session_summary(
+                project.project_uuid,
+                summary.started_at,
+                summary.ended_at,
+                summary.ai_summary or "",
+            )
+        except (BackendAPIError, NotAuthenticatedError):
+            return False
+        if result is None:
+            return False
+        self.session_summaries.mark_synced(summary.id)
+        return True
 
     def active_project(self) -> Project | None:
         """Return the developer's currently selected project, if still present."""

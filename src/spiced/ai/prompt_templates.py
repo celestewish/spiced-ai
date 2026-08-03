@@ -64,6 +64,34 @@ def _format_rules() -> str:
     return "\n".join(f"- {rule}" for rule in HUMAN_CONTROL_RULES)
 
 
+# --- Small-Team Mode context (Phase B, section 4) ---------------------------
+#
+# Solo-Dev Mode is the default and stays terse: every builder below keeps its
+# original prompt byte-for-byte when ``team_mode`` is left False. When a
+# developer opts into Small-Team Mode *and* the active project is linked to a
+# team, callers pass ``team_mode=True`` plus a short roster of teammates
+# (display names/emails from TeamService.list_members) so the model can add
+# routing *suggestions* — never an action Spiced performs itself. See
+# app/services.py:team_prompt_context and core/team_service.py.
+
+
+def _team_context_block(team_mode: bool, team_members: list[str] | None) -> str:
+    if not team_mode:
+        return ""
+    roster = ", ".join(team_members) if team_members else "(no other teammates on this project yet)"
+    return (
+        "\n\nSmall-Team Mode is on for this project. Team roster (context only): "
+        f"{roster}\n"
+        "Add one more section after your reply above:\n\n"
+        "Suggested routing (Team Mode only):\n"
+        "- [Finding] -> possibly a fit for [teammate], because [short reason]\n"
+        "- Write \"No specific routing suggestion.\" if nothing clearly maps to a teammate.\n\n"
+        "This routing section is only a suggestion in your text reply. Spiced does not assign, "
+        "notify, or message anyone automatically — the developer decides whether and how to "
+        "route anything."
+    )
+
+
 def _format_error(err: ParsedError) -> str:
     lines = [f"- Type: {err.error_type} ({err.category})"]
     if err.message:
@@ -93,11 +121,15 @@ def build_unity_debug_prompt(
     *,
     project_name: str | None = None,
     unity_version: str | None = None,
+    team_mode: bool = False,
+    team_members: list[str] | None = None,
 ) -> str:
     """Assemble the full Unity debugging prompt from parser output.
 
     Only the small, relevant excerpt and structured error data are included —
-    never the full log and never any project source files.
+    never the full log and never any project source files. ``team_mode`` /
+    ``team_members`` are solo-safe defaults: left off, the prompt is byte-for-
+    byte identical to Solo-Dev Mode's original output.
     """
     project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
     version_line = f"Unity version: {unity_version}" if unity_version else "Unity version: unknown"
@@ -116,6 +148,7 @@ def build_unity_debug_prompt(
         f"{parsed.excerpt}\n"
         "```\n\n"
         f"{RESPONSE_FORMAT}\n"
+        f"{_team_context_block(team_mode, team_members)}"
     )
 
 
@@ -184,11 +217,15 @@ def build_test_review_prompt(
     results: ParsedTestResults,
     *,
     project_name: str | None = None,
+    team_mode: bool = False,
+    team_members: list[str] | None = None,
 ) -> str:
     """Assemble the test-result review prompt from parser output.
 
     Only the parsed summary and a trimmed excerpt are included — never the full
-    output and never any project source files.
+    output and never any project source files. ``team_mode`` / ``team_members``
+    are solo-safe defaults: left off, the prompt is byte-for-byte identical to
+    Solo-Dev Mode's original output.
     """
     project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
     confidence_note = ""
@@ -212,6 +249,7 @@ def build_test_review_prompt(
         f"{results.excerpt}\n"
         "```\n\n"
         f"{TEST_RESPONSE_FORMAT}\n"
+        f"{_team_context_block(team_mode, team_members)}"
     )
 
 
@@ -292,11 +330,15 @@ def build_feedback_review_prompt(
     *,
     project_name: str | None = None,
     source_label: str | None = None,
+    team_mode: bool = False,
+    team_members: list[str] | None = None,
 ) -> str:
     """Assemble the feedback-review prompt from parser + classifier output.
 
     Only the parsed summary, local category counts, and a trimmed excerpt are
     included — never full feedback files and never any project source files.
+    ``team_mode`` / ``team_members`` are solo-safe defaults: left off, the
+    prompt is byte-for-byte identical to Solo-Dev Mode's original output.
     """
     project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
     source_line = (
@@ -324,6 +366,7 @@ def build_feedback_review_prompt(
         f"{parsed.excerpt}\n"
         "```\n\n"
         f"{FEEDBACK_RESPONSE_FORMAT}\n"
+        f"{_team_context_block(team_mode, team_members)}"
     )
 
 
@@ -742,6 +785,87 @@ def _format_community_messages(messages: list[CommunityMessage]) -> str:
             text = text[:197] + "..."
         lines.append(f"- {msg.author}: {text}")
     return "\n".join(lines)
+
+
+# Rules specific to Session Summaries (Phase B, section 4). Spiced only
+# recaps evidence it was handed from local repositories — it never claims to
+# have tested or fixed anything itself.
+SESSION_SUMMARY_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Base the recap strictly on the tested/fixed/open evidence given; never invent items.",
+    "Never claim you tested, fixed, or changed anything yourself — the developer and their "
+    "tools did the work; you are only recapping it.",
+    "Keep it short — a devlog-style recap, not a full report.",
+    "If a category (tested/fixed/open) has nothing in it, say so plainly rather than padding.",
+    "If the window covers very little activity, say that honestly instead of inflating it.",
+)
+
+SESSION_SUMMARY_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Session recap.
+
+Tested:
+- [item, or "Nothing tested and recorded in this window."]
+
+Fixed:
+- [item, or "Nothing marked fixed in this window."]
+
+Still open:
+- [item, or "Nothing open right now."]
+
+One-line summary:
+[a single short sentence suitable for a devlog entry]"""
+
+
+def _format_session_summary_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in SESSION_SUMMARY_RULES)
+
+
+def _format_session_bullets(label: str, items: list[str]) -> str:
+    if not items:
+        return f"- {label}: none recorded"
+    lines = [f"- {label}:"]
+    lines.extend(f"    • {item}" for item in items)
+    return "\n".join(lines)
+
+
+def build_session_summary_prompt(
+    *,
+    since: str,
+    tested: list[str],
+    fixed: list[str],
+    open_items: list[str],
+    project_name: str | None = None,
+    team_mode: bool = False,
+    team_members: list[str] | None = None,
+) -> str:
+    """Assemble the session-summary prompt from locally-gathered evidence.
+
+    ``tested``/``fixed``/``open_items`` are short plain-text lines already
+    pulled from local repositories (test runs/cases, known issues, feedback
+    tasks) by ``core.session_summary`` — never raw logs or feedback text.
+    ``team_mode`` / ``team_members`` are solo-safe defaults: left off, the
+    prompt is byte-for-byte identical to Solo-Dev Mode's output.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+
+    return (
+        "You are Spiced, a calm companion recapping an indie developer's work session. You "
+        "turn already-gathered local evidence into a short devlog-style summary. You never "
+        "claim to have done the work yourself and you never change their project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_session_summary_rules()}\n\n"
+        f"{project_line}\n"
+        f"Window: since {since}\n\n"
+        "Evidence gathered by Spiced locally (deterministic, trustworthy):\n"
+        f"{_format_session_bullets('Tested', tested)}\n"
+        f"{_format_session_bullets('Fixed', fixed)}\n"
+        f"{_format_session_bullets('Still open', open_items)}\n\n"
+        f"{SESSION_SUMMARY_RESPONSE_FORMAT}\n"
+        f"{_team_context_block(team_mode, team_members)}"
+    )
 
 
 def build_community_pulse_prompt(

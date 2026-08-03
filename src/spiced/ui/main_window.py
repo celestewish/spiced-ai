@@ -122,6 +122,9 @@ class MainWindow(QWidget):
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
+        # Team Mode toggling changes whether the Testing screen's Build
+        # Health badge shows its team-linked note.
+        self._settings_screen.settings_changed.connect(self._testing_screen.refresh)
 
         self._stack.addWidget(self._dashboard_screen)
         self._stack.addWidget(self._projects_screen)
