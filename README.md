@@ -7,18 +7,27 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> **Phase 6** preview: everything from Phases 0–5 (desktop skeleton, local
-> storage, AI provider boundary, the **Unity Debugging Buddy**, **Automated
-> Testing**, **Feedback Review**, the **Project Dashboard**, demo data, and
-> onboarding) plus a substantial expansion of Testing & QA, the Debugging
-> Buddy, and Feedback Review: **Regression Tracking**, **Performance &
-> Profiling Reports**, **Cross-Platform Test Simulation**, an **Accessibility
-> Pass**, **Version-Aware Suggestions**, a **Code Health Dashboard**, the
-> **Feedback-to-Task Converter**, opt-in **Community Pulse Check-ins**, and
-> opt-in **Run Unity Tests**. Every new feature keeps Spiced's founding rules:
-> nothing is sent to AI beyond a trimmed excerpt and nothing acts without you.
-> Run Unity Tests is the one deliberate, opt-in exception to "nothing runs
-> your engine" — everything else stays paste/import only.
+> Everything from Phases 0–6 (desktop skeleton, local storage, AI provider
+> boundary, the **Unity Debugging Buddy**, **Automated Testing**, **Feedback
+> Review**, the **Project Dashboard**, demo data, onboarding, Regression
+> Tracking, Performance & Profiling, Cross-Platform Simulation, Accessibility,
+> Version-Aware Suggestions, Code Health, Feedback-to-Task, Community Pulse,
+> and opt-in Run Unity Tests) **plus Team & Workflow, Ethics & Transparency,
+> and Automation & Pipeline** (Phases A–F): real multi-user **Small-Team
+> Mode** on a hosted backend, **Session Summaries**, a **Build Health Score**,
+> app-wide **"why am I seeing this?"** source links, **opt-in-only
+> telemetry**, an open **Roadmap**, an opt-in **Automated Build Pipeline**,
+> **Changelog Generation**, a **Store/Build Checklist**, an **Asset
+> Optimization Sweep**, **Dead Reference Detection**, **Naming Consistency**,
+> **Dependency & Plugin Update Checks**, **Auto-Generated Unit Tests**, an
+> opt-in **Pre-Commit Review** hook, **Economy/Balance Simulation**,
+> convention-based **Save/Load Integrity Testing**, **Auto-Generated Dev
+> Docs**, **Design Doc Sync**, **Scope-Creep Flagging**, and local-only
+> **Crunch-Pattern Awareness**. See [Team & Workflow, Ethics & Automation
+> (Phases A–F)](#team--workflow-ethics--automation-phases-af) below for the
+> full rundown. Every new feature keeps Spiced's founding rules: nothing is
+> sent to AI beyond a trimmed excerpt, and anything that touches your project
+> files or launches your engine is opt-in, per project, and never silent.
 
 ---
 
@@ -27,11 +36,21 @@ control of every change to your project.
 Spiced is deliberately *not* marketed as a magical, autonomous replacement for
 developers. Its design principles:
 
-- **You stay in control.** Spiced never modifies your project files on its own.
-  In this phase it performs no automatic file modification and runs no engine
-  commands.
-- **Local first.** Projects, usage, and settings live in a local SQLite database
-  on your machine. Nothing is uploaded.
+- **You stay in control.** Spiced never modifies your project files or launches
+  your engine silently. Every exception is opt-in, per project, and off by
+  default: **Run Unity Tests**, the **Automated Build Pipeline** (which also
+  writes a standard build script into your project only if none exists, and
+  only once the pipeline is enabled), **Auto-Generated Unit Tests** (written
+  to disk only after you click **Approve** on a specific file), and the
+  **Pre-Commit Review** git hook (which never overwrites a hook it didn't
+  create, and always exits 0 — a heads-up, never a blocking gate).
+- **Local first, by default.** Solo-Dev Mode is entirely local — projects,
+  usage, and settings live in a local SQLite database on your machine, and
+  nothing is uploaded. **Small-Team Mode** is the one deliberate exception:
+  once you opt in and link a project to a team, that project's shared data
+  (session summaries, team membership) flows through a hosted backend so
+  teammates can see it — see [Small-Team Mode](#small-team-mode-phase-a--b)
+  below. Solo projects are never touched by this.
 - **Explicit sharing.** Your project files are never sent to an AI provider
   without a future, explicit confirmation step. The built-in connection test
   sends only a short, fixed message — never your files.
@@ -280,16 +299,142 @@ labelled bundled copy). Loading it is repeat-safe — it never creates a second
 demo project and **never reads from or modifies a project you created**. Delete
 the demo project any time; your own projects are unaffected.
 
+## Team & Workflow, Ethics & Automation (Phases A–F)
+
+Six phases building out the feature spec's Team & Workflow, Ethics &
+Transparency, and Automation & Pipeline sections. Everything here follows the
+same rule as Phases 0–6: deterministic local logic does what it can for free
+and offline, AI only interprets already-correct evidence, and anything that
+writes a file or launches a process is opt-in and never silent.
+
+### Small-Team Mode (Phase A + B)
+
+Spiced is single-user and fully local by default. **Small-Team Mode** is a
+real, opt-in exception: a new FastAPI backend (`backend/`), hosted on
+Supabase Postgres with Supabase Auth, backs genuine multi-user accounts and
+teams — not a local simulation.
+
+- **Sign in / create a team** from the new **Team** section on **Projects**.
+  Creating an account or team is never required for solo use.
+- **Link a project to a team** to share it. Linking mints a stable
+  `project_uuid` for that project so it can be identified across machines.
+  Unlinked ("solo") projects are never touched by any of this.
+- **Solo-Dev Mode vs. Small-Team Mode** — a toggle in **Settings**. Solo output
+  stays exactly as short and prioritized as before (byte-identical prompts).
+  Team Mode adds task-assignment *suggestions* and light per-member context to
+  the crash-diagnosis, feedback-review, and test-review AI prompts — Spiced
+  never assigns work itself, only suggests in its written output.
+- **Session Summaries** — a "Summarize / end session" action in the
+  right-hand context panel recaps what was tested, fixed, and left open. Saved
+  locally always; also posted to the backend (summary text and timestamps
+  only — never framed as a wellbeing signal) when the active project is
+  team-linked, so teammates can see it.
+- **Build Health Score** — a persistent, non-gamified readiness header
+  (`Not enough data` / `Needs review` / `Stabilizing` / `Demo candidate`) on
+  the **Automated Testing** page, with an expandable "Why?" showing the
+  evidence and caveats behind it. Reuses the same cautious assessment logic as
+  the Dashboard's readiness label.
+
+### Ethics & Transparency (Phase C)
+
+- **"Why am I seeing this?"** — every AI-result card across Debugging Buddy,
+  Automated Testing, and Feedback Review now has an expandable source link
+  showing exactly what produced it: the excerpt, matched known issue, test
+  case, or feedback cluster. Nothing new is inferred — it surfaces data
+  Spiced already stored.
+- **Opt-in-only telemetry** — a "Help improve Spiced" toggle in **Settings**,
+  off by default, with an exact plain-language list of what's collected if
+  enabled: anonymous counts of which features run (a handful of instrumented
+  actions), tied to a random per-machine id — never your code, logs, file
+  paths, or feedback content, and never linked to your account even if you're
+  signed in for Small-Team Mode.
+- **Roadmap** — a new sidebar page, separate from the three tool pages. Shows
+  a public changelog (seeded from Spiced's real development history) and a
+  suggestion board. Viewing needs no account; submitting a suggestion or
+  voting uses the same sign-in as Small-Team Mode.
+
+### Automation & Pipeline (Phases D–F)
+
+**Build & release**
+
+- **Automated Build Pipeline** — opt-in per project (**Projects** screen).
+  When enabled, Spiced looks for a build-entry-point script in your project
+  and writes a standard one (clearly marked as Spiced-generated) only if none
+  exists, then triggers headless builds the same way Run Unity Tests does.
+  Scheduling is in-app only (a "run nightly while Spiced is open" setting) —
+  Spiced does not register anything with Windows Task Scheduler. Only build
+  *failures* surface a notification; a quiet, successful build stays quiet.
+- **Changelog Generation** — drafts your game's patch notes from `git log`
+  plus locally-resolved known issues, on the **Debugging Buddy** page. You
+  review and edit before copying it anywhere — Spiced never publishes it.
+- **Store / Build Checklist** — a deterministic Steam/itch.io readiness
+  checklist reachable from the Build Health Score.
+- **Asset Optimization Sweep**, **Dead Reference Detection**, and **Naming
+  Consistency Checks** — read-only recursive scans of your `Assets/` folder,
+  surfaced on **Debugging Buddy** (the latter two folded into the existing
+  Code Health card). Suggestions only; nothing is renamed, deleted, or
+  recompressed automatically.
+
+**Code & repo hygiene**
+
+- **Dependency & Plugin Update Checks** — reads `Packages/manifest.json` and
+  checks installed versions against the public Unity Package Registry
+  (read-only version lookups; no project data is ever sent).
+- **Auto-Generated Unit Tests** — point Spiced at a system, review the
+  AI-drafted NUnit tests, and click **Approve** per file before anything is
+  written to disk. Never overwrites an existing file.
+- **Pre-Commit Review** — opt-in per project. Installs a marker-tagged
+  `.git/hooks/pre-commit` that flags obvious issues (stray `Debug.Log`s,
+  leftover TODOs, merge-conflict markers) — always exits 0, and never
+  overwrites a hook it didn't create.
+- **Economy/Balance Simulation** — paste economy data (items, costs, currency
+  sources) in a documented JSON shape; a local, deterministic simulation
+  flags dominant/exploitable strategies on the **Automated Testing** page.
+- **Save/Load Integrity Testing** — convention-based: Spiced launches your
+  *built game executable* with `SPICED_LOAD_TEST_SAVE_PATH` /
+  `SPICED_LOAD_TEST_RESULT_PATH` env vars pointing at a save file and a
+  result path; your game is responsible for attempting the load and writing
+  back `{"success": bool, "error": str|null}`. Full contract in
+  [`docs/save_load_integrity_hook.md`](docs/save_load_integrity_hook.md).
+  Only works for games that add this hook.
+
+**Documentation & dev wellbeing**
+
+- **Auto-Generated Dev Docs** — scans your `.cs` scripts for classes, public
+  methods, and doc comments, and asks the AI for a living plain-language
+  summary. Versioned snapshots, regenerated on request (no background file
+  watcher) — a **Docs** section on **Debugging Buddy**.
+- **Design Doc Sync** — opt-in per project. Upload or paste your *own game's*
+  design doc (not Spiced's), and Spiced compares it against the latest Dev
+  Docs snapshot to flag drift either direction.
+- **Scope-Creep Flagging** — built on the same snapshot history, gently flags
+  when the codebase keeps growing in ways the design doc doesn't mention.
+  Paired with Design Doc Sync on the same page.
+- **Crunch-Pattern Awareness** — purely local, computed from your own session
+  summary timestamps. If a sustained pattern of late-night or very long
+  sessions shows up over the trailing week, a quiet, dismissible note appears
+  in the right-hand context panel: *"You've logged N late or long work
+  session(s) in the last 7 days."* No judgment, no action taken, and this
+  data is never sent anywhere — not even to the team backend for a
+  team-linked project.
+
 ## Current MVP scope (Phases 0–6)
 
 - Python + PySide6 desktop application (normal resizable window).
 - Three-region layout: left sidebar navigation · center chat/workspace · right
   project-context panel.
 - Screens: **Dashboard**, **Projects**, **Debugging Buddy**, **Automated
-  Testing**, **Feedback Review**, **Settings**.
+  Testing**, **Feedback Review**, **Roadmap**, **Settings**.
 - Local **SQLite** storage for projects, prompt usage, app settings, debug
   sessions, test cases/runs, feedback batches/tasks, known issues, performance/
-  accessibility/version-check/code-health reports, and community check-ins.
+  accessibility/version-check/code-health reports, community check-ins,
+  session summaries, build/asset-scan/dependency-check/changelog/economy-sim/
+  save-integrity reports, generated test drafts, and dev-docs/design-doc-sync
+  snapshots.
+- Optional **hosted backend** (`backend/`, FastAPI + Supabase Postgres +
+  Supabase Auth) powering Small-Team Mode, telemetry, and the Roadmap — never
+  required for solo use (see [Team & Workflow, Ethics & Automation
+  (Phases A–F)](#team--workflow-ethics--automation-phases-af)).
 - Create and view projects locally, pick an active one, and connect a Unity
   folder with automatic validation.
 - **Unity Debugging Buddy**: deterministic local log parsing, structured AI
@@ -322,30 +467,48 @@ the demo project any time; your own projects are unaffected.
 
 ### Not in these phases (by design)
 
-- No automatic file modification or code patching.
-- No real billing, no cloud accounts.
+- **No automatic file modification without an explicit, opt-in gate.** Every
+  place Spiced writes to your project is either a per-project toggle you turn
+  on (Build Pipeline's build script, the Pre-Commit hook) or a specific
+  per-file **Approve** click (Auto-Generated Unit Tests). Nothing is written
+  silently, and Spiced never overwrites a file or hook it didn't create.
+- **No real billing, and no cloud account is ever required.** Solo-Dev Mode
+  needs no account at all. Small-Team Mode is the one deliberate exception —
+  real accounts via Supabase Auth, entirely opt-in, only for teams that choose
+  to link a project — and there is still no billing anywhere in the app.
 - No Unity (or other engine) command execution and no real profiler/hardware
-  access, with one deliberate, opt-in exception: **Run Unity Tests**, off by
-  default per project, is the only place Spiced launches an external process.
-  Performance, Cross-Platform Simulation, Accessibility, Version-Aware
-  Suggestions, and Code Health all still work only from numbers/code you
-  paste or import, never from live engine introspection.
+  access beyond a short, deliberate, always-opt-in list: **Run Unity Tests**,
+  the **Automated Build Pipeline**, and **Save/Load Integrity Testing** (which
+  launches your *built game*, not the Editor, and only if your game
+  implements the documented hook). Performance, Cross-Platform Simulation,
+  Accessibility, Version-Aware Suggestions, Economy Simulation, and the
+  original Code Health metrics still work only from numbers/code you paste or
+  import, never from live engine introspection.
 - No sending of project files or full logs to any AI provider — only a trimmed,
-  relevant excerpt.
-- No deep static analysis of the whole project; Unity folder detection is
-  shallow and non-recursive, and Code Health / Version-Aware Suggestions only
-  ever look at the one file you paste in.
-- No scraping of external platforms, no survey-tool connections, and no
-  posting to GitHub or other external services. The one narrow exception is
-  Community Pulse Check-ins: off by default, and only after you opt in does it
-  make a read-only request to exactly one Discord channel you configure — no
-  DMs, no other channels, no posting or reacting. Feedback Review itself still
-  only works from what you paste or import.
+  relevant excerpt. Small-Team Mode's backend sync follows the same rule:
+  session summaries send only AI-produced summary text and timestamps, never
+  raw files, code, or feedback content.
+- No deep static analysis beyond specific, narrow, read-only scans: Dead
+  Reference Detection, the Asset Optimization Sweep, Naming Consistency, and
+  Auto-Generated Dev Docs each walk `Assets/` for one specific, documented
+  purpose — none of them modify anything, and Unity folder *detection* itself
+  (`connectors/unity.py`) stays shallow and non-recursive. Code Health /
+  Version-Aware Suggestions on a single pasted file are unchanged.
+- No scraping of external platforms beyond the same two narrow, opt-in
+  exceptions as before: Community Pulse Check-ins (one read-only Discord
+  channel) and the new Dependency & Plugin Update Checks (read-only public
+  package-version lookups against the Unity Package Registry — no project
+  data is ever sent). No posting to GitHub or other external services.
 - Spiced never decides your game's design; it organizes feedback and suggests,
-  and you decide what to act on.
-- The Project Dashboard is deterministic and offline: it sends nothing to any AI
-  provider, keeps no build snapshots, and never marks a project as definitively
-  ready to ship — its readiness label is a planning aid, not a verdict.
+  and you decide what to act on. Scope-Creep Flagging and Crunch-Pattern
+  Awareness are the same in spirit — informational nudges, never a gate or a
+  score, and Crunch-Pattern data never leaves your machine even in
+  Small-Team Mode.
+- The Project Dashboard and Build Health Score are deterministic and offline:
+  they send nothing to any AI provider, keep no build snapshots beyond what
+  you explicitly ran through the Build Pipeline, and never mark a project as
+  definitively ready to ship — every readiness label is a planning aid, not a
+  verdict.
 
 ## Windows-first notes
 
@@ -402,6 +565,32 @@ Spiced defaults to the `gpt-4o-mini` model. To use a different one, set
 > **Secrets policy:** never hardcode API keys. Keep them in your environment or a
 > local `.env` (git-ignored). Do not put keys in commits, logs, docs, or
 > screenshots.
+
+### Enabling Small-Team Mode (optional)
+
+Not required for solo use. To try real multi-user Team Mode, you need the
+backend running and the desktop app pointed at it:
+
+```bash
+# 1. Set up the backend (separate Python project — see backend/README.md)
+cd backend
+python -m venv .venv && .venv\Scripts\activate   # or source .venv/bin/activate
+pip install -e .
+copy .env.example .env    # fill in SUPABASE_URL, SUPABASE_ANON_KEY,
+                           # SUPABASE_SERVICE_ROLE_KEY, DATABASE_URL
+alembic upgrade head
+uvicorn app.main:app --reload
+
+# 2. Point the desktop app at Supabase + your backend (repo root .env or shell env)
+SUPABASE_URL=...
+SUPABASE_ANON_KEY=...
+SPICED_BACKEND_URL=http://127.0.0.1:8000   # defaults to this if unset
+```
+
+Then in the app: **Settings → Small-Team Mode** to switch on, sign up/in when
+prompted, create or join a team on **Projects**, and link a project to it.
+Solo projects and Solo-Dev Mode are completely unaffected if you never do
+this.
 
 ### Using Gemini instead (optional)
 
@@ -486,6 +675,10 @@ python -m spiced.app.main
 
 (After `pip install`, the `spiced` GUI script is also available.)
 
+For Small-Team Mode, also run the backend (`uvicorn app.main:app --reload`
+from `backend/` — see [Enabling Small-Team Mode](#enabling-small-team-mode-optional)
+above). Not needed for solo use.
+
 ## Develop
 
 ```bash
@@ -497,13 +690,26 @@ ruff check .    # lint
 
 ```
 src/spiced/
-├── app/          # entry point + composition root (services wiring)
-├── ui/           # PySide6 window, panels, theme, and screens
-├── core/         # use-cases, parsers, classifiers, and analyzers (see below), plus core/community/ (mock + Discord)
-├── ai/           # provider interface, OpenAI (default), mock, Gemini, prompt templates
-├── storage/      # SQLite database + repositories (projects, sessions, test cases/runs, feedback batches/tasks,
-│                 # known issues, performance/accessibility/version-check/code-health reports, community check-ins, settings, usage)
-└── connectors/   # Unity project-folder detection (shallow, read-only)
+├── app/              # entry point + composition root (services wiring)
+├── ui/               # PySide6 window, panels, theme, screens, and reusable widgets
+│                     # (source_link/SourceLinkExpander, readiness_badge/ReadinessBadge)
+├── core/             # use-cases, parsers, classifiers, and analyzers, plus:
+│                     # core/community/ (mock + Discord), session_summary, team_service,
+│                     # auth_service, build_pipeline, changelog_draft, release_checklist,
+│                     # asset_scan, dependency_check, test_generator, precommit_check/hook,
+│                     # economy_simulator, save_load_tester, dev_docs, design_doc_sync,
+│                     # scope_creep, crunch_awareness, roadmap_service
+├── ai/               # provider interface, OpenAI (default), mock, Gemini, prompt templates
+├── storage/          # SQLite database + one repository per table (see database.py's SCHEMA)
+├── connectors/       # Unity project-folder detection (shallow, read-only), plus
+│                     # unity_build (headless build trigger), unity_scan (Assets/ scanner),
+│                     # unity_docs_scan (.cs scanner), unity_package_registry (dependency checks)
+└── backend_client/   # HTTP client for the backend + Supabase Auth (config, auth_client,
+                      # api_client, telemetry_client) — only used once Small-Team Mode is on
+
+backend/              # separate FastAPI service: Supabase Postgres + Supabase Auth,
+                      # teams/session-summaries/telemetry/roadmap. See backend/README.md.
+                      # Never required for solo use.
 ```
 
 ## License
