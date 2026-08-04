@@ -14,7 +14,10 @@ from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
+from spiced.core.asset_scan import AssetScanService
 from spiced.core.auth_service import AuthService
+from spiced.core.build_pipeline import run_build_pipeline
+from spiced.core.changelog_draft import ChangelogService
 from spiced.core.code_health import CodeHealthService
 from spiced.core.community.base import CommunitySource
 from spiced.core.community_pulse import CommunityPulseService
@@ -32,6 +35,9 @@ from spiced.core.testing import TestingService
 from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
 from spiced.storage.accessibility_reports import AccessibilityReportRepository
+from spiced.storage.asset_scan_reports import AssetScanReportRepository
+from spiced.storage.build_reports import BuildReport, BuildReportRepository
+from spiced.storage.changelog_drafts import ChangelogDraftRepository
 from spiced.storage.code_health_reports import CodeHealthReportRepository
 from spiced.storage.community_pulse import CommunityPulseRepository
 from spiced.storage.database import Database
@@ -86,6 +92,11 @@ class Services:
         self.community_pulse = CommunityPulseService(CommunityPulseRepository(self.db))
         self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
         self.demo = DemoDataService(self.db)
+
+        # Build & Release Automation + Asset Pipeline (Phase D, section 6).
+        self.build_reports = BuildReportRepository(self.db)
+        self.changelog = ChangelogService(ChangelogDraftRepository(self.db), self.regression)
+        self.asset_scan = AssetScanService(AssetScanReportRepository(self.db))
 
         # Small-Team Mode (opt-in): auth + team/project-linking against the
         # new backend. Solo-Dev Mode never touches these.
@@ -244,6 +255,28 @@ class Services:
             return False
         self.session_summaries.mark_synced(summary.id)
         return True
+
+    # --- Automated Build Pipeline -------------------------------------------
+
+    def run_build(
+        self,
+        project: Project,
+        *,
+        trigger: str,
+        target_platform: str | None = None,
+        editor_override: str | None = None,
+    ) -> BuildReport:
+        """One choke point for every build trigger (manual button, the
+        in-app scheduler, and later the Phase E commit hook) so the opt-in
+        gate in ``core.build_pipeline.run_build_pipeline`` is always applied
+        the same way, no matter who's asking."""
+        return run_build_pipeline(
+            project,
+            self.build_reports,
+            trigger=trigger,
+            target_platform=target_platform,
+            editor_override=editor_override,
+        )
 
     def active_project(self) -> Project | None:
         """Return the developer's currently selected project, if still present."""

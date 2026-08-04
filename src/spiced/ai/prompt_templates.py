@@ -9,6 +9,7 @@ than guessing from raw text.
 
 from __future__ import annotations
 
+from spiced.connectors.unity_scan import OversizedAssetFinding
 from spiced.core.accessibility_parser import ParsedAccessibility
 from spiced.core.code_health_analyzer import LONG_FUNCTION_LINES, CodeHealthMetrics
 from spiced.core.community.base import CommunityMessage
@@ -891,4 +892,225 @@ def build_community_pulse_prompt(
         "Messages (already trimmed):\n"
         f"{_format_community_messages(messages)}\n\n"
         f"{COMMUNITY_PULSE_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Changelog Generation (Phase D, section 6). Spiced drafts
+# patch notes from the developer's own git history + locally-resolved known
+# issues; it never publishes anything and the developer reviews/edits first.
+CHANGELOG_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Base the draft strictly on the commit messages and resolved-issue titles given; never "
+    "invent changes that aren't reflected in that evidence.",
+    "Group related commits into short, player-facing bullet points rather than listing every "
+    "commit verbatim — commit messages are for developers, patch notes are for players.",
+    "Skip purely internal commits (formatting, dependency bumps, CI/build tooling) unless "
+    "nothing else is available.",
+    "Never claim you tested, verified, or shipped anything — you are only drafting notes from "
+    "history the developer already has.",
+    "Never claim you published, posted, or released this anywhere.",
+    "If the commit history is thin, vague, or hard to turn into player-facing notes, say so "
+    "plainly rather than padding with generic phrasing.",
+)
+
+CHANGELOG_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section short:
+
+Here's a draft changelog from your recent history.
+
+Highlights:
+- [Player-facing bullet, grouped from related commits]
+
+Fixes:
+- [Player-facing bullet for bug fixes, drawing on resolved known issues where relevant]
+
+Other changes:
+- [Anything notable that isn't a highlight or fix]
+
+What I would double-check:
+- [Anything in the commit history that was too vague to turn into a confident bullet]"""
+
+
+def _format_changelog_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in CHANGELOG_RULES)
+
+
+def build_changelog_prompt(
+    *,
+    git_log_excerpt: str,
+    commit_range: str,
+    resolved_issue_titles: list[str],
+    project_name: str | None = None,
+) -> str:
+    """Assemble the changelog-draft prompt from the game project's own git log.
+
+    Only a trimmed, already-local ``git log`` excerpt and known-issue titles
+    are included — never source diffs or file contents, and never anything
+    from Spiced's own repository.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    issues_block = (
+        "\n".join(f"- {title}" for title in resolved_issue_titles)
+        if resolved_issue_titles
+        else "- (none resolved in this window)"
+    )
+    log_block = git_log_excerpt.strip() or "(no commits found in this window)"
+
+    return (
+        "You are Spiced, a calm companion drafting patch notes for an indie Unity developer "
+        "from their own game project's git history. The developer reviews and edits this draft "
+        "before using it anywhere — you never publish anything.\n\n"
+        "Follow these rules:\n"
+        f"{_format_changelog_rules()}\n\n"
+        f"{project_line}\n"
+        f"Commit range: {commit_range}\n\n"
+        "Git log read locally from the game project (one-line-per-commit, oldest rules may "
+        "still apply — do not ask for the full diff):\n"
+        "```\n"
+        f"{log_block}\n"
+        "```\n\n"
+        "Known issues Spiced has tracked as resolved in this window (deterministic, local):\n"
+        f"{issues_block}\n\n"
+        f"{CHANGELOG_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Asset Optimization Sweep (Phase D). The findings are
+# already deterministic (a local file-size/extension scan and a GUID
+# cross-reference); the AI only turns them into a plain-language, prioritized
+# summary. Spiced never resizes, recompresses, or deletes anything itself.
+ASSET_SCAN_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the scan findings as ground truth; do not recompute or second-guess the numbers.",
+    "Frame findings as prioritized, optional suggestions — never claim you changed, "
+    "recompressed, resized, or deleted anything, because you did not and cannot.",
+    "For orphaned/unused assets, repeat the caveat that this is a best-effort signal: an asset "
+    "loaded dynamically (Resources.Load, Addressables) or from a package would not be detected.",
+    "If a category (oversized files, orphaned assets) has nothing in it, say so plainly rather "
+    "than padding.",
+)
+
+ASSET_SCAN_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section \
+short:
+
+Here's the asset sweep.
+
+Oversized or uncompressed files:
+- [File, size, and a plain-language suggestion — or "None found." if the list is empty]
+
+Possibly orphaned assets:
+- [File — or "None found." if the list is empty]
+
+What this does not know:
+[A short, honest reminder that "orphaned" is best-effort, not certainty]
+
+Suggested next steps:
+- [Step 1]
+- [Step 2]"""
+
+
+def _format_asset_scan_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in ASSET_SCAN_RULES)
+
+
+def _format_oversized_findings(findings: list[OversizedAssetFinding]) -> str:
+    if not findings:
+        return "- None found by the local scan."
+    lines = []
+    for f in findings[:20]:
+        mb = f.size_bytes / (1024 * 1024)
+        lines.append(f"- [{f.kind}] {f.path} ({mb:.1f} MB): {f.reason}")
+    if len(findings) > 20:
+        lines.append(f"- ...and {len(findings) - 20} more (showing the largest 20).")
+    return "\n".join(lines)
+
+
+def _format_orphaned_assets(paths: list[str]) -> str:
+    if not paths:
+        return "- None found by the local scan."
+    return "\n".join(f"- {p}" for p in paths)
+
+
+def build_asset_scan_prompt(
+    oversized: list[OversizedAssetFinding],
+    orphaned_assets: list[str],
+    *,
+    orphan_caveat: str,
+    project_name: str | None = None,
+) -> str:
+    """Assemble the asset-sweep prompt from the deterministic local scan.
+
+    Only file paths, sizes, and short reasons are included — never file
+    contents, and Spiced never reads anything outside the project's own
+    ``Assets/`` folder.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion giving an indie Unity developer a read-only asset "
+        "health sweep. You never modify, recompress, resize, or delete anything.\n\n"
+        "Follow these rules:\n"
+        f"{_format_asset_scan_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Oversized/uncompressed-format findings from the local scan (deterministic, trustworthy):\n"
+        f"{_format_oversized_findings(oversized)}\n\n"
+        "Possibly-orphaned assets from the local scan "
+        f"({orphan_caveat}):\n"
+        f"{_format_orphaned_assets(orphaned_assets)}\n\n"
+        f"{ASSET_SCAN_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Store Page / Build Checklist's optional AI commentary
+# (Phase D). The checklist items are a small, deterministic, static dataset;
+# the AI only adds a brief, honest narrative gloss on top.
+RELEASE_CHECKLIST_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the checklist items as ground truth; do not invent additional platform-specific "
+    "numeric limits Spiced hasn't already listed.",
+    "Explicitly repeat that platform requirements can change, and the developer should verify "
+    "current specifics against the platform's own docs before shipping.",
+    "Never claim you changed, submitted, or published anything on the developer's behalf.",
+    "Keep this brief — this is a gloss on an already-complete checklist, not a new one.",
+)
+
+RELEASE_CHECKLIST_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping it short:
+
+Here's a quick read on your {platform} checklist.
+
+Worth prioritizing first:
+- [1-3 items from the checklist that matter most to tackle early, and why]
+
+Easy to overlook:
+- [1-2 items developers commonly forget, if any stand out from the list]
+
+Reminder:
+[A short, honest note that platform specifics change — verify against current docs]"""
+
+
+def _format_release_checklist_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in RELEASE_CHECKLIST_RULES)
+
+
+def build_release_checklist_prompt(checklist, *, project_name: str | None = None) -> str:
+    """Assemble the optional AI-commentary prompt for a ``ReleaseChecklist``.
+
+    The checklist itself (``core.release_checklist.build_checklist``) is a
+    small, deterministic, static dataset that works with no provider at all
+    — this prompt only adds a brief narrative gloss on top of it.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    items_block = "\n".join(f"- {item.text}" for item in checklist.items)
+    return (
+        "You are Spiced, a calm companion helping an indie Unity developer think through a "
+        f"{checklist.platform_label} release checklist. You never submit or publish anything "
+        "yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_release_checklist_rules()}\n\n"
+        f"{project_line}\n"
+        f"Platform: {checklist.platform_label}\n\n"
+        "Checklist items (deterministic, static — Spiced computed these locally, not the AI):\n"
+        f"{items_block}\n\n"
+        f"{RELEASE_CHECKLIST_RESPONSE_FORMAT.format(platform=checklist.platform_label)}\n"
     )

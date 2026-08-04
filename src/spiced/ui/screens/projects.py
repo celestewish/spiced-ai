@@ -20,8 +20,11 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
+from spiced.connectors import unity_build
 from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.ui.auth_dialog import AuthDialog
+
+_HHMM_PLACEHOLDER = "HH:MM, 24h (e.g. 02:00)"
 
 
 class ProjectsScreen(QWidget):
@@ -110,6 +113,7 @@ class ProjectsScreen(QWidget):
         layout.addLayout(controls)
 
         self._build_unity_test_run(layout)
+        self._build_build_pipeline(layout)
         self._build_team_section(layout)
 
         self.refresh()
@@ -222,6 +226,135 @@ class ProjectsScreen(QWidget):
             self._unity_run_status.setText(
                 f"Unity {required_version} isn't installed (or Unity Hub wasn't found). "
                 "Install it via Unity Hub, or set a manual path above."
+            )
+
+    # --- Automated Build Pipeline opt-in -------------------------------------
+
+    def _build_build_pipeline(self, layout: QVBoxLayout) -> None:
+        section = QLabel("Build Pipeline")
+        section.setObjectName("SectionTitle")
+        layout.addWidget(section)
+
+        intro = QLabel(
+            "Off by default. When enabled, Spiced writes a standard Editor build script into "
+            "this project (only if one doesn't already exist) and can trigger a headless build "
+            "for it — from the Testing screen, or nightly while Spiced is open. The nightly "
+            "schedule only fires while Spiced is running: it does not register anything with "
+            "Windows Task Scheduler, so a build won't happen on a day Spiced isn't open."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._build_pipeline_toggle = QCheckBox(
+            "Allow Spiced to write/trigger this project's build script"
+        )
+        self._build_pipeline_toggle.toggled.connect(self._on_build_pipeline_toggle)
+        layout.addWidget(self._build_pipeline_toggle)
+
+        platform_row = QHBoxLayout()
+        platform_row.addWidget(QLabel("Default target platform:"))
+        self._build_platform_input = QComboBox()
+        self._build_platform_input.addItems(list(unity_build.BUILD_TARGETS))
+        self._build_platform_input.currentTextChanged.connect(self._on_build_platform_changed)
+        platform_row.addWidget(self._build_platform_input)
+        platform_row.addStretch(1)
+        layout.addLayout(platform_row)
+
+        schedule_row = QHBoxLayout()
+        self._build_schedule_toggle = QCheckBox("Run a build nightly while Spiced is open, at:")
+        self._build_schedule_toggle.toggled.connect(self._on_build_schedule_toggle)
+        schedule_row.addWidget(self._build_schedule_toggle)
+        self._build_schedule_time_input = QLineEdit()
+        self._build_schedule_time_input.setPlaceholderText(_HHMM_PLACEHOLDER)
+        self._build_schedule_time_input.setFixedWidth(140)
+        self._build_schedule_time_input.editingFinished.connect(self._on_build_schedule_time_changed)
+        schedule_row.addWidget(self._build_schedule_time_input)
+        schedule_row.addStretch(1)
+        layout.addLayout(schedule_row)
+
+        self._build_pipeline_status = QLabel()
+        self._build_pipeline_status.setObjectName("Muted")
+        self._build_pipeline_status.setWordWrap(True)
+        layout.addWidget(self._build_pipeline_status)
+
+    def _on_build_pipeline_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        platform = self._build_platform_input.currentText()
+        self._services.projects.set_build_pipeline_settings(project.id, checked, platform)
+        self._update_build_pipeline_status()
+
+    def _on_build_platform_changed(self, platform: str) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        self._services.projects.set_build_pipeline_settings(
+            project.id, self._build_pipeline_toggle.isChecked(), platform
+        )
+
+    def _on_build_schedule_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        time_text = self._build_schedule_time_input.text().strip() or None
+        self._services.projects.set_build_schedule(project.id, checked, time_text)
+        self._update_build_pipeline_status()
+
+    def _on_build_schedule_time_changed(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        time_text = self._build_schedule_time_input.text().strip() or None
+        self._services.projects.set_build_schedule(
+            project.id, self._build_schedule_toggle.isChecked(), time_text
+        )
+        self._update_build_pipeline_status()
+
+    def _update_build_pipeline_status(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = project.build_pipeline_enabled if project else False
+
+        self._build_pipeline_toggle.blockSignals(True)
+        self._build_pipeline_toggle.setChecked(bool(enabled))
+        self._build_pipeline_toggle.blockSignals(False)
+        self._build_pipeline_toggle.setEnabled(has_project)
+
+        self._build_platform_input.blockSignals(True)
+        if project and project.build_target_platform:
+            idx = self._build_platform_input.findText(project.build_target_platform)
+            if idx >= 0:
+                self._build_platform_input.setCurrentIndex(idx)
+        self._build_platform_input.blockSignals(False)
+        self._build_platform_input.setEnabled(has_project)
+
+        schedule_enabled = project.build_schedule_enabled if project else False
+        self._build_schedule_toggle.blockSignals(True)
+        self._build_schedule_toggle.setChecked(bool(schedule_enabled))
+        self._build_schedule_toggle.blockSignals(False)
+        self._build_schedule_toggle.setEnabled(has_project)
+
+        self._build_schedule_time_input.blockSignals(True)
+        schedule_time = (project.build_schedule_time if project else "") or ""
+        self._build_schedule_time_input.setText(schedule_time)
+        self._build_schedule_time_input.blockSignals(False)
+        self._build_schedule_time_input.setEnabled(has_project)
+
+        if not has_project:
+            self._build_pipeline_status.setText("")
+        elif not enabled:
+            self._build_pipeline_status.setText(
+                "Not enabled. Turn this on to write/trigger a build script from Testing."
+            )
+        elif not project.path:
+            self._build_pipeline_status.setText(
+                "Connect a Unity folder above before Spiced can build this project."
+            )
+        else:
+            self._build_pipeline_status.setText(
+                f"Enabled. Builds are written under {project.path}\\Builds\\."
             )
 
     # --- Team Mode (opt-in) -------------------------------------------------
@@ -477,6 +610,7 @@ class ProjectsScreen(QWidget):
 
     def _update_detail(self) -> None:
         self._update_unity_run_status()
+        self._update_build_pipeline_status()
         project = self._services.active_project()
         if project is None:
             self._detail.setText("Select or create a project to connect a Unity folder.")

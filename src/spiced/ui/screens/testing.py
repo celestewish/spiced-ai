@@ -35,11 +35,20 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.connectors import unity_build
 from spiced.core.accessibility import AccessibilityReview
 from spiced.core.accessibility import ProviderNotReadyError as AccessibilityNotReadyError
+from spiced.core.build_pipeline import BuildNotEnabledError, BuildUnavailableError
 from spiced.core.hardware_simulation import available_tiers
 from spiced.core.performance import PerformanceReview
 from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
+from spiced.core.release_checklist import (
+    PLATFORM_LABELS,
+    PLATFORMS,
+    ReleaseChecklist,
+    analyze_checklist,
+    build_checklist,
+)
 from spiced.core.testing import (
     SOURCE_FILE,
     SOURCE_PASTE,
@@ -48,6 +57,7 @@ from spiced.core.testing import (
     TestReview,
 )
 from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor, run_tests
+from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
@@ -56,6 +66,21 @@ from spiced.ui.widgets.source_link import SourceLinkExpander
 _USER_ROLE = 0x0100
 _NO_HARDWARE = "(none — no simulation)"
 _BOTH_PLATFORMS = "Both"
+
+
+def _path_size_bytes(path_str: str | None) -> int | None:
+    """Best-effort total size of a build output file/folder, or None."""
+    if not path_str:
+        return None
+    path = Path(path_str)
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        if path.is_dir():
+            return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    except OSError:
+        return None
+    return None
 
 
 class _FunctionalWorker(QObject):
@@ -236,6 +261,57 @@ class _AccessibilityWorker(QObject):
             self.failed.emit(f"Something went wrong during analysis: {exc}")
 
 
+class _BuildWorker(QObject):
+    done = Signal(object)  # BuildReport
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, target_platform: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._target_platform = target_platform
+
+    def run(self) -> None:
+        try:
+            report = self._services.run_build(
+                self._project, trigger=TRIGGER_MANUAL, target_platform=self._target_platform
+            )
+            self.done.emit(report)
+        except (BuildNotEnabledError, BuildUnavailableError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while building: {exc}")
+
+
+class _ChecklistAIWorker(QObject):
+    done = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, services: Services, checklist: ReleaseChecklist) -> None:
+        super().__init__()
+        self._services = services
+        self._checklist = checklist
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            if not provider.is_available():
+                self.failed.emit(
+                    f"The {provider.display_name()} provider isn't ready. The checklist above "
+                    "still works with no provider — add its API key to a local .env file, or "
+                    "switch to the Mock provider in Settings, for an AI take."
+                )
+                return
+            project = self._services.active_project()
+            text = analyze_checklist(
+                provider, self._checklist, project_name=project.name if project else None
+            )
+            self._services.usage.record_prompt(provider.name)
+            self.done.emit(text)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong: {exc}")
+
+
 class TestingScreen(QWidget):
     usage_changed = Signal()
 
@@ -249,6 +325,7 @@ class TestingScreen(QWidget):
         self._selected_issue_id: int | None = None
         self._perf_pending_filename: str | None = None
         self._access_pending_filename: str | None = None
+        self._last_checklist: ReleaseChecklist | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -266,8 +343,16 @@ class TestingScreen(QWidget):
         # Build Health Score (Phase 2): a persistent, always-visible header —
         # the spec calls for this placement specifically, reusing
         # core.dashboard.assess_readiness() rather than a new scoring model.
+        badge_row = QHBoxLayout()
         self._readiness_badge = ReadinessBadge()
-        header.addWidget(self._readiness_badge)
+        badge_row.addWidget(self._readiness_badge, 1)
+        # Store Page / Build Checklist (Phase D): reachable right from the
+        # Build Health Score area, per spec, rather than only buried in a tab.
+        self._ready_to_ship_btn = QPushButton("Ready to Ship checklist")
+        self._ready_to_ship_btn.setObjectName("Ghost")
+        self._ready_to_ship_btn.clicked.connect(self._on_open_ready_to_ship)
+        badge_row.addWidget(self._ready_to_ship_btn)
+        header.addLayout(badge_row)
         outer.addLayout(header)
 
         self._tabs = QTabWidget()
@@ -275,8 +360,13 @@ class TestingScreen(QWidget):
         self._tabs.addTab(self._build_functional_tab(), "Functional")
         self._tabs.addTab(self._build_performance_tab(), "Performance")
         self._tabs.addTab(self._build_accessibility_tab(), "Accessibility")
+        self._release_tab_index = self._tabs.addTab(self._build_release_tab(), "Build & Release")
 
         self.refresh()
+
+    def _on_open_ready_to_ship(self) -> None:
+        self._tabs.setCurrentIndex(self._release_tab_index)
+        self._on_show_checklist()
 
     def _scrollable(self) -> tuple[QWidget, QVBoxLayout]:
         container = QWidget()
@@ -622,6 +712,110 @@ class TestingScreen(QWidget):
 
         return container
 
+    # --- Build & Release tab (Automated Build Pipeline + Store Checklist) --
+
+    def _build_release_tab(self) -> QWidget:
+        container, layout = self._scrollable()
+        self._build_build_pipeline_section(layout)
+        self._build_checklist_section(layout)
+        return container
+
+    def _build_build_pipeline_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Build Pipeline")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Opt-in per project (Projects screen). When enabled, Spiced writes a standard "
+            "Editor build script into this project if one doesn't already exist, then triggers "
+            "a headless build here or nightly while Spiced is open (in-app scheduler only — "
+            "no Windows Task Scheduler entry is ever registered). A quiet success never "
+            "interrupts you; only a failure does.\n"
+            "Note: if Spiced found and reused your own existing build script instead of "
+            "writing one, it can only tell success from failure if that script writes back "
+            "Spiced's small result file — otherwise a real success may show here as \"no "
+            "result file\" until the script adopts that convention (see the build log)."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._build_status = QLabel()
+        self._build_status.setObjectName("Muted")
+        self._build_status.setWordWrap(True)
+        layout.addWidget(self._build_status)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Target platform:"))
+        self._build_platform_input = QComboBox()
+        self._build_platform_input.addItems(list(unity_build.BUILD_TARGETS))
+        row.addWidget(self._build_platform_input)
+        row.addStretch(1)
+        self._build_run_btn = QPushButton("Run build now")
+        self._build_run_btn.clicked.connect(self._on_run_build)
+        row.addWidget(self._build_run_btn)
+        layout.addLayout(row)
+
+        self._build_result = QTextEdit()
+        self._build_result.setReadOnly(True)
+        self._build_result.setPlaceholderText("Build output will appear here.")
+        self._build_result.setFixedHeight(140)
+        layout.addWidget(self._build_result)
+
+        history_title = QLabel("Recent builds")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._build_history = QListWidget()
+        self._build_history.setFixedHeight(120)
+        layout.addWidget(self._build_history)
+
+        stable_row = QHBoxLayout()
+        self._stable_status = QLabel()
+        self._stable_status.setObjectName("Muted")
+        self._stable_status.setWordWrap(True)
+        stable_row.addWidget(self._stable_status, 1)
+        self._mark_stable_btn = QPushButton("Mark latest successful build stable")
+        self._mark_stable_btn.setObjectName("Ghost")
+        self._mark_stable_btn.clicked.connect(self._on_mark_stable)
+        stable_row.addWidget(self._mark_stable_btn)
+        layout.addLayout(stable_row)
+
+    def _build_checklist_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Store Page / Build Checklist")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "A small, deterministic \"ready to ship\" checklist per store — works fully "
+            "offline, no AI needed. Platform specifics change over time, so every checklist "
+            "ends with a reminder to verify against the platform's current docs."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Platform:"))
+        self._checklist_platform_input = QComboBox()
+        for platform in PLATFORMS:
+            self._checklist_platform_input.addItem(PLATFORM_LABELS[platform], platform)
+        row.addWidget(self._checklist_platform_input)
+        row.addStretch(1)
+        self._checklist_btn = QPushButton("Show checklist")
+        self._checklist_btn.clicked.connect(self._on_show_checklist)
+        row.addWidget(self._checklist_btn)
+        self._checklist_ai_btn = QPushButton("Get AI take")
+        self._checklist_ai_btn.setObjectName("Ghost")
+        self._checklist_ai_btn.clicked.connect(self._on_checklist_ai)
+        row.addWidget(self._checklist_ai_btn)
+        layout.addLayout(row)
+
+        self._checklist_result = QTextEdit()
+        self._checklist_result.setReadOnly(True)
+        self._checklist_result.setPlaceholderText("Click \"Show checklist\" to see it.")
+        self._checklist_result.setFixedHeight(220)
+        layout.addWidget(self._checklist_result)
+
     # --- Refresh & state ---------------------------------------------------
 
     def refresh(self) -> None:
@@ -650,6 +844,8 @@ class TestingScreen(QWidget):
         self._refresh_perf_history()
         self._refresh_access_history()
         self._refresh_unity_run_status()
+        self._refresh_build_pipeline_status()
+        self._refresh_build_history()
         self._update_edit_buttons()
 
     def _update_edit_buttons(self) -> None:
@@ -1176,3 +1372,166 @@ class TestingScreen(QWidget):
         self._access_source_link.set_source(None, None)
         self._access_analyze_btn.setEnabled(True)
         self._access_analyze_btn.setText("Analyze")
+
+    # --- Build Pipeline handlers ---------------------------------------------
+
+    def _refresh_build_pipeline_status(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._build_status.setText("Select a project to use the Build Pipeline.")
+            self._build_run_btn.setEnabled(False)
+            return
+        if not project.build_pipeline_enabled:
+            self._build_status.setText(
+                "Not enabled for this project. Turn on the Build Pipeline opt-in on the "
+                "Projects screen."
+            )
+            self._build_run_btn.setEnabled(False)
+            return
+        if not project.path:
+            self._build_status.setText("Connect a Unity folder for this project first.")
+            self._build_run_btn.setEnabled(False)
+            return
+        self._build_status.setText(f"Ready. Builds are written under {project.path}\\Builds\\.")
+        self._build_run_btn.setEnabled(True)
+        if project.build_target_platform:
+            idx = self._build_platform_input.findText(project.build_target_platform)
+            if idx >= 0:
+                self._build_platform_input.setCurrentIndex(idx)
+
+    def _refresh_build_history(self) -> None:
+        self._build_history.clear()
+        project = self._services.active_project()
+        reports = (
+            self._services.build_reports.list_for_project(project.id, limit=10)
+            if project
+            else []
+        )
+        for r in reports:
+            status = "succeeded" if r.succeeded else ("failed" if r.succeeded is False else "…")
+            stable = " · stable" if r.marked_stable else ""
+            label = f"[{r.created_at}] {r.trigger} · {r.target_platform or '?'} · {status}{stable}"
+            item = QListWidgetItem(label)
+            item.setData(_USER_ROLE, r.id)
+            self._build_history.addItem(item)
+        stable = (
+            self._services.build_reports.latest_stable_for_project(project.id)
+            if project
+            else None
+        )
+        if stable:
+            self._stable_status.setText(
+                f"Stable build: [{stable.created_at}] {stable.output_path or '(no output path)'}"
+            )
+        else:
+            self._stable_status.setText(
+                "No build marked stable yet — used as the changelog's default starting point."
+            )
+
+    def _on_run_build(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        platform = self._build_platform_input.currentText()
+        self._build_run_btn.setEnabled(False)
+        self._build_result.setPlainText(
+            "Launching Unity to build — this can take a while, especially on a first build…"
+        )
+
+        self._thread = QThread()
+        self._worker = _BuildWorker(self._services, project, platform)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_build_done)
+        self._worker.failed.connect(self._on_build_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_build_done(self, report: BuildReport) -> None:
+        self._build_run_btn.setEnabled(True)
+        if report.succeeded:
+            self._build_result.setPlainText(
+                f"Build succeeded.\nOutput: {report.output_path or '(unknown path)'}"
+            )
+        else:
+            self._build_result.setPlainText(
+                f"Build failed.\n\n{report.log_tail or '(no log captured)'}"
+            )
+        self._refresh_build_history()
+
+    def _on_build_failed(self, message: str) -> None:
+        self._build_run_btn.setEnabled(True)
+        self._build_result.setPlainText(message)
+
+    def _on_mark_stable(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        latest = self._services.build_reports.latest_for_project(project.id)
+        if latest is None or not latest.succeeded:
+            QMessageBox.information(
+                self,
+                "No successful build yet",
+                "Run a successful build first, then mark it stable.",
+            )
+            return
+        self._services.build_reports.mark_stable(latest.id)
+        self._refresh_build_history()
+
+    # --- Store Page / Build Checklist handlers --------------------------------
+
+    def _current_checklist(self) -> ReleaseChecklist:
+        platform = self._checklist_platform_input.currentData()
+        build_size = None
+        project = self._services.active_project()
+        if project is not None:
+            latest = self._services.build_reports.latest_for_project(project.id)
+            if latest is not None:
+                build_size = _path_size_bytes(latest.output_path)
+        return build_checklist(platform, build_size_bytes=build_size)
+
+    def _on_show_checklist(self) -> None:
+        checklist = self._current_checklist()
+        self._last_checklist = checklist
+        lines = [f"{checklist.platform_label} checklist:", ""]
+        for item in checklist.items:
+            line = f"- {item.text}"
+            if item.note:
+                line += f"\n    ({item.note})"
+            lines.append(line)
+        lines.append("")
+        lines.append(checklist.verify_note)
+        self._checklist_result.setPlainText("\n".join(lines))
+
+    def _on_checklist_ai(self) -> None:
+        checklist = self._last_checklist or self._current_checklist()
+        self._last_checklist = checklist
+        self._checklist_ai_btn.setEnabled(False)
+        self._checklist_ai_btn.setText("Thinking…")
+
+        self._thread = QThread()
+        self._worker = _ChecklistAIWorker(self._services, checklist)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_checklist_ai_done)
+        self._worker.failed.connect(self._on_checklist_ai_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_checklist_ai_done(self, text: str) -> None:
+        self._checklist_ai_btn.setEnabled(True)
+        self._checklist_ai_btn.setText("Get AI take")
+        current = self._checklist_result.toPlainText()
+        self._checklist_result.setPlainText(f"{current}\n\n--- AI take ---\n{text}")
+        self.usage_changed.emit()
+
+    def _on_checklist_ai_failed(self, message: str) -> None:
+        self._checklist_ai_btn.setEnabled(True)
+        self._checklist_ai_btn.setText("Get AI take")
+        current = self._checklist_result.toPlainText()
+        self._checklist_result.setPlainText(f"{current}\n\n{message}")

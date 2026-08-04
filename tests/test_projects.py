@@ -102,3 +102,51 @@ def test_ensure_project_uuid_is_stable_across_calls():
     first = service.ensure_project_uuid(project.id)
     second = service.ensure_project_uuid(project.id)
     assert first == second
+
+
+def test_build_pipeline_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.build_pipeline_enabled is False
+    assert project.build_target_platform is None
+
+
+def test_build_pipeline_settings_can_be_enabled_with_platform():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    updated = service.set_build_pipeline_settings(project.id, True, "StandaloneWindows64")
+    assert updated.build_pipeline_enabled is True
+    assert updated.build_target_platform == "StandaloneWindows64"
+
+
+def test_build_pipeline_settings_can_be_disabled_again():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    service.set_build_pipeline_settings(project.id, True, "StandaloneWindows64")
+    disabled = service.set_build_pipeline_settings(project.id, False, None)
+    assert disabled.build_pipeline_enabled is False
+    assert disabled.build_target_platform is None
+
+
+def test_build_schedule_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.build_schedule_enabled is False
+    assert project.build_schedule_time is None
+
+
+def test_build_schedule_can_be_enabled_with_a_time():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    updated = service.set_build_schedule(project.id, True, "02:00")
+    assert updated.build_schedule_enabled is True
+    assert updated.build_schedule_time == "02:00"
+
+
+def test_build_schedule_can_be_disabled_again():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    service.set_build_schedule(project.id, True, "02:00")
+    disabled = service.set_build_schedule(project.id, False, None)
+    assert disabled.build_schedule_enabled is False
+    assert disabled.build_schedule_time is None

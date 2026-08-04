@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.context_panel import ContextPanel
 from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
@@ -60,6 +61,17 @@ class MainWindow(QWidget):
 
         self._nav_buttons[0].setChecked(True)
         self._stack.setCurrentIndex(0)
+
+        # Automated Build Pipeline (Phase D): in-app-only nightly scheduler.
+        # Lives for as long as this window does; a failure is a quiet Context
+        # Panel note, a success (or failure) also refreshes Testing's history.
+        self._build_scheduler = BuildScheduler(self._services, self)
+        self._build_scheduler.build_failed.connect(self._context.show_build_failure)
+        self._build_scheduler.build_report_saved.connect(self._testing_screen.refresh)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._build_scheduler.stop()
+        super().closeEvent(event)
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
