@@ -19,11 +19,13 @@ to back it up or remove it manually instead.
 from __future__ import annotations
 
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 HOOK_MARKER = "# spiced-precommit-hook"
+GIT_TIMEOUT_S = 10
 
 _HOOK_TEMPLATE = """#!/bin/sh
 {marker}
@@ -37,7 +39,8 @@ exit 0
 
 
 class NotAGitRepoError(RuntimeError):
-    """Raised when the target folder has no ``.git`` directory."""
+    """Raised when git doesn't recognize the target folder (or one of its
+    parent folders) as a working tree -- or git itself isn't runnable."""
 
 
 class ForeignHookExistsError(RuntimeError):
@@ -50,12 +53,61 @@ class HookInstallResult:
     installed: bool
 
 
-def hooks_dir(project_path: str | Path) -> Path:
-    return Path(project_path) / ".git" / "hooks"
+def _run_git(args: list[str], cwd: str | Path) -> subprocess.CompletedProcess[str] | None:
+    """Run a git subcommand with ``cwd`` as the working directory.
+
+    Returns ``None`` (never raises) if git itself can't be run at all --
+    not installed, or timed out -- so callers can treat that the same as
+    "not a git repo" instead of crashing.
+    """
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def is_git_repo(project_path: str | Path) -> bool:
-    return (Path(project_path) / ".git").is_dir()
+    """True iff git recognizes ``project_path`` as being inside a working
+    tree. Delegates to git itself (``git rev-parse --is-inside-work-tree``)
+    rather than guessing from the filesystem, so this correctly handles
+    worktrees/submodules (where ``.git`` is a file, not a directory) and a
+    Unity folder that's nested inside a parent repo rather than being the
+    repo root itself -- a plain ``(project_path / ".git").is_dir()`` check
+    gets both of those wrong.
+    """
+    result = _run_git(["rev-parse", "--is-inside-work-tree"], project_path)
+    return result is not None and result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def hooks_dir(project_path: str | Path) -> Path:
+    """Resolve the real git hooks directory for ``project_path`` via
+    ``git rev-parse --git-path hooks``.
+
+    This (rather than a manual ``<project_path>/.git/hooks`` join) is what
+    git itself uses, so it stays correct for worktrees, submodules, and
+    relocated ``.git`` dirs, and also for a Unity folder that's a
+    subdirectory of the actual repo root. ``--git-path`` can print either a
+    path relative to ``project_path`` or an absolute one depending on the
+    repo layout -- joining it onto ``project_path`` and resolving handles
+    both, since joining an absolute path onto a base path discards the base.
+
+    Raises ``NotAGitRepoError`` if git can't resolve one.
+    """
+    result = _run_git(["rev-parse", "--git-path", "hooks"], project_path)
+    if result is None or result.returncode != 0:
+        raise NotAGitRepoError(
+            f"{project_path} doesn't look like a git repository -- make sure git is installed "
+            "and this folder (or one of its parent folders) has been initialized with "
+            "`git init`."
+        )
+    output = result.stdout.strip()
+    return (Path(project_path) / output).resolve()
 
 
 def is_spiced_hook(hook_path: Path) -> bool:
@@ -75,13 +127,16 @@ def install_hook(
 ) -> HookInstallResult:
     """Write ``.git/hooks/pre-commit``, refusing to clobber a foreign hook.
 
-    Raises ``NotAGitRepoError`` if there's no ``.git`` folder, and
-    ``ForeignHookExistsError`` if a pre-commit hook already exists and
-    wasn't written by Spiced.
+    Raises ``NotAGitRepoError`` if git doesn't recognize ``project_path`` as
+    a working tree, and ``ForeignHookExistsError`` if a pre-commit hook
+    already exists and wasn't written by Spiced.
     """
     root = Path(project_path)
     if not is_git_repo(root):
-        raise NotAGitRepoError(f"{root} doesn't look like a git repository (no .git folder).")
+        raise NotAGitRepoError(
+            f"{root} doesn't look like a git repository -- make sure git is installed and "
+            "this folder (or one of its parent folders) has been initialized with `git init`."
+        )
 
     hooks = hooks_dir(root)
     hooks.mkdir(parents=True, exist_ok=True)
@@ -102,8 +157,14 @@ def install_hook(
 
 def uninstall_hook(project_path: str | Path) -> bool:
     """Remove a Spiced-installed hook. Returns False (no-op) for a foreign or
-    missing hook — never deletes a hook Spiced didn't write."""
-    hook_path = hooks_dir(project_path) / "pre-commit"
+    missing hook, or if the project isn't (or is no longer) a git repository
+    — never deletes a hook Spiced didn't write, and never raises just
+    because there's nothing there to remove."""
+    try:
+        hooks = hooks_dir(project_path)
+    except NotAGitRepoError:
+        return False
+    hook_path = hooks / "pre-commit"
     if not hook_path.is_file() or not is_spiced_hook(hook_path):
         return False
     hook_path.unlink()

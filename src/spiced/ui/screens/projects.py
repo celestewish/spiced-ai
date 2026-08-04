@@ -475,8 +475,8 @@ class ProjectsScreen(QWidget):
             self._precommit_status.setText("Not enabled. Check the box above, then Install hook.")
         else:
             self._precommit_status.setText(
-                "Enabled. Click \"Install hook\" to add it to this project's .git/hooks/, or "
-                "\"Remove hook\" to take it back out."
+                "Enabled. Click \"Install hook\" to add it to this project's git hooks "
+                "directory, or \"Remove hook\" to take it back out."
             )
 
     # --- Design Doc Sync opt-in ----------------------------------------------

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -77,6 +77,7 @@ from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_ed
 from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
+from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -310,7 +311,10 @@ class _BuildWorker(QObject):
     def run(self) -> None:
         try:
             report = self._services.run_build(
-                self._project, trigger=TRIGGER_MANUAL, target_platform=self._target_platform
+                self._project,
+                trigger=TRIGGER_MANUAL,
+                target_platform=self._target_platform,
+                editor_override=self._project.unity_editor_path_override,
             )
             self.done.emit(report)
         except (BuildNotEnabledError, BuildUnavailableError) as exc:
@@ -432,8 +436,6 @@ class TestingScreen(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
-        self._thread: QThread | None = None
-        self._worker: QObject | None = None
         self._pending_filename: str | None = None
         self._selected_case_id: int | None = None
         self._selected_issue_id: int | None = None
@@ -1435,15 +1437,14 @@ class TestingScreen(QWidget):
         self._set_busy(True)
         self._result.setPlainText("Reading the results and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _FunctionalWorker(self._services, results_text, source_type, filename)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_done)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _FunctionalWorker(self._services, results_text, source_type, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_done(self, review: TestReview) -> None:
         text = review.response_text
@@ -1501,16 +1502,15 @@ class TestingScreen(QWidget):
             "Launching Unity — this can take a while, especially on a first run…"
         )
 
-        self._thread = QThread()
-        self._worker = _UnityRunWorker(self._services, project, editor.path, platforms)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.platform_started.connect(self._on_unity_platform_started)
-        self._worker.platform_done.connect(self._on_unity_platform_done)
-        self._worker.platform_failed.connect(self._on_unity_platform_failed)
-        self._worker.finished.connect(self._on_unity_run_finished)
-        self._worker.finished.connect(self._thread.quit)
-        self._thread.start()
+        worker = _UnityRunWorker(self._services, project, editor.path, platforms)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.platform_started.connect(self._on_unity_platform_started)
+        worker.platform_done.connect(self._on_unity_platform_done)
+        worker.platform_failed.connect(self._on_unity_platform_failed)
+        worker.finished.connect(self._on_unity_run_finished)
+        worker.finished.connect(thread.quit)
+        thread.start()
 
     def _on_unity_platform_started(self, platform: str) -> None:
         self._unity_run_result.append(f"\n--- Running {platform} tests… ---")
@@ -1593,17 +1593,16 @@ class TestingScreen(QWidget):
         self._perf_analyze_btn.setText("Analyzing…")
         self._perf_result.setPlainText("Reading the numbers and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _PerformanceWorker(
+        worker = _PerformanceWorker(
             self._services, text, source_type, filename, target_hardware
         )
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_perf_done)
-        self._worker.failed.connect(self._on_perf_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_perf_done)
+        worker.failed.connect(self._on_perf_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_perf_done(self, review: PerformanceReview) -> None:
         self._perf_result.setPlainText(review.response_text)
@@ -1654,15 +1653,14 @@ class TestingScreen(QWidget):
         self._access_analyze_btn.setText("Analyzing…")
         self._access_result.setPlainText("Running the checklist and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _AccessibilityWorker(self._services, text, source_type, filename)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_access_done)
-        self._worker.failed.connect(self._on_access_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _AccessibilityWorker(self._services, text, source_type, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_access_done)
+        worker.failed.connect(self._on_access_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_access_done(self, review: AccessibilityReview) -> None:
         self._access_result.setPlainText(review.response_text)
@@ -1751,15 +1749,14 @@ class TestingScreen(QWidget):
             "Launching Unity to build — this can take a while, especially on a first build…"
         )
 
-        self._thread = QThread()
-        self._worker = _BuildWorker(self._services, project, platform)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_build_done)
-        self._worker.failed.connect(self._on_build_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _BuildWorker(self._services, project, platform)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_build_done)
+        worker.failed.connect(self._on_build_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_build_done(self, report: BuildReport) -> None:
         self._build_run_btn.setEnabled(True)
@@ -1823,15 +1820,14 @@ class TestingScreen(QWidget):
         self._checklist_ai_btn.setEnabled(False)
         self._checklist_ai_btn.setText("Thinking…")
 
-        self._thread = QThread()
-        self._worker = _ChecklistAIWorker(self._services, checklist)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_checklist_ai_done)
-        self._worker.failed.connect(self._on_checklist_ai_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _ChecklistAIWorker(self._services, checklist)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_checklist_ai_done)
+        worker.failed.connect(self._on_checklist_ai_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_checklist_ai_done(self, text: str) -> None:
         self._checklist_ai_btn.setEnabled(True)
@@ -1878,15 +1874,14 @@ class TestingScreen(QWidget):
         self._save_result.setPlainText(
             "Running the game once per save file — this can take a while…"
         )
-        self._thread = QThread()
-        self._worker = _SaveIntegrityWorker(self._services, project, exe_path, folder)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_save_check_done)
-        self._worker.failed.connect(self._on_save_check_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _SaveIntegrityWorker(self._services, project, exe_path, folder)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_save_check_done)
+        worker.failed.connect(self._on_save_check_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_save_check_done(self, run: SaveIntegrityRun) -> None:
         self._save_run_btn.setEnabled(True)
@@ -1954,15 +1949,14 @@ class TestingScreen(QWidget):
         self._testgen_approve_btn.setEnabled(False)
         self._testgen_status.setText("")
 
-        self._thread = QThread()
-        self._worker = _TestGenerationWorker(self._services, project, source, label)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_testgen_done)
-        self._worker.failed.connect(self._on_testgen_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _TestGenerationWorker(self._services, project, source, label)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_testgen_done)
+        worker.failed.connect(self._on_testgen_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_testgen_done(self, result: TestGenerationResult) -> None:
         self._testgen_generate_btn.setEnabled(True)
@@ -2056,15 +2050,14 @@ class TestingScreen(QWidget):
         self._economy_ai_btn.setText("Thinking…")
         self._economy_result.setPlainText("Simulating and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _EconomySimulationAIWorker(self._services, project, data)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_economy_ai_done)
-        self._worker.failed.connect(self._on_economy_ai_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _EconomySimulationAIWorker(self._services, project, data)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_economy_ai_done)
+        worker.failed.connect(self._on_economy_ai_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_economy_ai_done(self, review: EconomySimulationReview) -> None:
         self._economy_ai_btn.setEnabled(True)

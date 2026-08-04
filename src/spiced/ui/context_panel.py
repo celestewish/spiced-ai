@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QFrame, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from spiced.app.services import Services
 from spiced.core.crunch_awareness import detect_crunch_pattern
 from spiced.core.session_summary import ProviderNotReadyError, SessionSummaryResult
+from spiced.ui.thread_utils import launch_worker
 
 
 class _SessionSummaryWorker(QObject):
@@ -52,8 +53,6 @@ class ContextPanel(QFrame):
         super().__init__()
         self.setObjectName("ContextPanel")
         self._services = services
-        self._thread: QThread | None = None
-        self._worker: QObject | None = None
         # Crunch-Pattern Awareness (Phase F): dismissed for the current app
         # session only — see _build_crunch_awareness_section below for why
         # persisting the dismissal across restarts is left as a documented
@@ -150,15 +149,14 @@ class ContextPanel(QFrame):
         self._end_session_btn.setText("Summarizing…")
         self._session_status.setText("Gathering what changed and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _SessionSummaryWorker(self._services)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_session_done)
-        self._worker.failed.connect(self._on_session_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _SessionSummaryWorker(self._services)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_session_done)
+        worker.failed.connect(self._on_session_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_session_done(self, result: SessionSummaryResult, synced: bool) -> None:
         self._end_session_btn.setEnabled(True)

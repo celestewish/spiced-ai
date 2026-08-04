@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,6 +38,7 @@ from spiced.core.community_pulse import CommunityPulseResult, SourceNotReadyErro
 from spiced.core.community_pulse import ProviderNotReadyError as PulseProviderNotReadyError
 from spiced.core.feedback import SOURCE_FILE, SOURCE_PASTE, FeedbackReview, ProviderNotReadyError
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
+from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
@@ -119,8 +120,6 @@ class FeedbackScreen(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
-        self._thread: QThread | None = None
-        self._worker: QObject | None = None
         self._pending_filename: str | None = None
         self._last_batch_id: int | None = None
 
@@ -447,15 +446,14 @@ class FeedbackScreen(QWidget):
         self._pulse_run_btn.setText("Reading…")
         self._pulse_result.setPlainText("Reading recent messages and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _PulseWorker(self._services)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_pulse_done)
-        self._worker.failed.connect(self._on_pulse_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _PulseWorker(self._services)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_pulse_done)
+        worker.failed.connect(self._on_pulse_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_pulse_done(self, result: CommunityPulseResult) -> None:
         self._pulse_result.setPlainText(result.response_text)
@@ -595,17 +593,16 @@ class FeedbackScreen(QWidget):
         self._set_busy(True)
         self._result.setPlainText("Reading the feedback and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _AnalyzeWorker(
+        worker = _AnalyzeWorker(
             self._services, text, source_type, label, self._pending_filename
         )
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_done)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_done(self, review: FeedbackReview) -> None:
         self._result.setPlainText(review.response_text)

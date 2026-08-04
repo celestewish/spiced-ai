@@ -86,6 +86,13 @@ class ProjectsService:
         """
         return self._repo.set_precommit_review_settings(project_id, enabled)
 
+    def set_design_doc_sync_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of Design Doc Sync.
+
+        Off by default, same opt-in shape as the other per-project toggles.
+        """
+        return self._repo.set_design_doc_sync_settings(project_id, enabled)
+
     def ensure_project_uuid(self, project_id: int) -> str:
         """Return this project's stable cross-machine id, minting one on first use.
 
