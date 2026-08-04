@@ -3,6 +3,14 @@
 Computes deterministic metrics on one pasted/imported script (works fully
 offline, no provider needed), then optionally asks the selected provider to
 turn them into a calm, non-judgmental, prioritized summary.
+
+Phase D folds two more, project-wide checks into this same dashboard —
+Naming/Organization Consistency and Dead Reference Detection — reusing the
+recursive ``Assets/`` scan in ``connectors.unity_scan`` (shared with the
+Asset Optimization Sweep). Both stay purely local/deterministic, matching the
+spec's "flags outliers, never enforces" and "best-effort, not certainty"
+framing: no AI call, no new report table, computed fresh each time since a
+recursive folder walk is cheap and always reflects the project's current state.
 """
 
 from __future__ import annotations
@@ -11,6 +19,12 @@ from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
 from spiced.ai.prompt_templates import build_code_health_prompt
+from spiced.connectors.unity_scan import (
+    NamingConventionResult,
+    ReferenceScanResult,
+    infer_naming_convention,
+    scan_references,
+)
 from spiced.core.code_health_analyzer import CodeHealthMetrics, analyze_code_health
 from spiced.storage.code_health_reports import CodeHealthReport, CodeHealthReportRepository
 from spiced.storage.projects import Project
@@ -28,6 +42,10 @@ class CodeHealthReview:
 
 class ProviderNotReadyError(RuntimeError):
     """Raised when the selected provider has no usable credentials."""
+
+
+class NoUnityFolderError(RuntimeError):
+    """Raised when the project has no connected folder to scan."""
 
 
 class CodeHealthService:
@@ -80,6 +98,23 @@ class CodeHealthService:
 
     def history(self, project_id: int, limit: int = 20) -> list[CodeHealthReport]:
         return self._reports.list_for_project(project_id, limit=limit)
+
+    # --- Naming Consistency + Dead Reference Detection (Phase D) -----------
+    # Project-wide, read-only, deterministic — no AI call, see module docstring.
+
+    def scan_naming_convention(self, project: Project) -> NamingConventionResult:
+        if not project.path:
+            raise NoUnityFolderError(
+                "Connect a Unity folder for this project first (Projects screen)."
+            )
+        return infer_naming_convention(project.path)
+
+    def scan_dead_references(self, project: Project) -> ReferenceScanResult:
+        if not project.path:
+            raise NoUnityFolderError(
+                "Connect a Unity folder for this project first (Projects screen)."
+            )
+        return scan_references(project.path)
 
 
 def _summarize(response_text: str, limit: int = 240) -> str:

@@ -87,6 +87,7 @@ class ContextPanel(QFrame):
         layout.addWidget(self._usage_pill)
 
         self._build_session_section(layout)
+        self._build_build_alert_section(layout)
 
         layout.addStretch(1)
 
@@ -180,6 +181,34 @@ class ContextPanel(QFrame):
             first_line = next((line for line in blurb if line.strip()), "")
             lines.append(f"[{s.created_at}]{synced_note} {first_line}")
         self._recent_sessions.setText("\n".join(lines))
+
+    # --- Build alerts (Automated Build Pipeline, Phase D) -------------------
+    #
+    # Per spec, only a build *failure* interrupts the developer — a
+    # successful scheduled/commit build stays quiet. This label starts
+    # hidden and only appears when ``show_build_failure`` is called (see
+    # ``ui/build_scheduler.py``, which wires this up for the nightly
+    # scheduler; the Testing screen's manual "Run build now" button shows
+    # its own failure inline instead, since the developer is looking right
+    # at it when it happens).
+
+    def _build_build_alert_section(self, layout: QVBoxLayout) -> None:
+        self._build_alert = QLabel("")
+        self._build_alert.setObjectName("Muted")
+        self._build_alert.setWordWrap(True)
+        self._build_alert.setVisible(False)
+        layout.addWidget(self._build_alert)
+
+    def show_build_failure(self, project_name: str, message: str) -> None:
+        trimmed = (message or "").strip().splitlines()
+        first_line = next((line for line in trimmed if line.strip()), "").strip()
+        detail = first_line or "see Testing for details."
+        self._build_alert.setText(f"⚠ Scheduled build failed for {project_name}: {detail}")
+        self._build_alert.setVisible(True)
+
+    def clear_build_alert(self) -> None:
+        self._build_alert.setVisible(False)
+        self._build_alert.setText("")
 
     # --- Refresh -------------------------------------------------------------
 

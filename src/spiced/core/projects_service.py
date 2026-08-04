@@ -55,6 +55,27 @@ class ProjectsService:
         """
         return self._repo.set_unity_test_run_settings(project_id, enabled, editor_path_override)
 
+    def set_build_pipeline_settings(
+        self, project_id: int, enabled: bool, target_platform: str | None = None
+    ) -> Project:
+        """Opt a project in/out of Spiced writing/triggering its build script.
+
+        Off by default, same opt-in shape as ``set_unity_test_run_settings``.
+        Only when enabled does Spiced ever write a build script into the
+        project or launch a headless build for it.
+        """
+        return self._repo.set_build_pipeline_settings(project_id, enabled, target_platform)
+
+    def set_build_schedule(
+        self, project_id: int, enabled: bool, schedule_time: str | None = None
+    ) -> Project:
+        """Set the in-app-only nightly build schedule ("HH:MM", 24h local time).
+
+        Only ever checked by a QTimer while Spiced is running — never
+        registers anything with the OS scheduler.
+        """
+        return self._repo.set_build_schedule(project_id, enabled, schedule_time)
+
     def ensure_project_uuid(self, project_id: int) -> str:
         """Return this project's stable cross-machine id, minting one on first use.
 

@@ -204,6 +204,51 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     synced_to_team INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Automated Build Pipeline (Phase D, section 6). One row per headless Unity
+-- build Spiced triggered — manually, from the in-app scheduler, or (later,
+-- once Phase E's pre-commit hook exists) from a commit. Always read back
+-- regardless of the run's exit code, same philosophy as unity_test_runner.
+CREATE TABLE IF NOT EXISTS build_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL,
+    trigger         TEXT NOT NULL,  -- 'manual' | 'scheduled' | 'commit'
+    target_platform TEXT,
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    succeeded       INTEGER,
+    log_tail        TEXT,
+    output_path     TEXT,
+    marked_stable   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Changelog Generation (Phase D). Spiced's read of the *user's game*'s own
+-- git history + locally-resolved known issues, drafted into patch notes the
+-- developer reviews/edits before copying out anywhere. Distinct from the
+-- Roadmap's changelog (Phase C), which is Spiced's own release notes.
+CREATE TABLE IF NOT EXISTS changelog_drafts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_commit_range TEXT,
+    raw_git_log_excerpt TEXT,
+    ai_draft_text       TEXT,
+    edited_text         TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Asset Optimization Sweep (Phase D). A saved read-only pass over the
+-- project's Assets/ folder: oversized/uncompressed files and orphaned-asset
+-- suggestions, plus an optional AI summary. Never modifies anything.
+CREATE TABLE IF NOT EXISTS asset_scan_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    ai_summary    TEXT,
+    provider      TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
@@ -218,6 +263,16 @@ PROJECT_MIGRATIONS = {
     # for every project that has never been linked — Solo-Dev Mode never
     # needs one.
     "project_uuid": "TEXT",
+    # Automated Build Pipeline (Phase D): off by default, same opt-in shape as
+    # unity_test_run_enabled. Only when this is explicitly on does Spiced ever
+    # write a build script into the project or launch a headless build.
+    "build_pipeline_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "build_target_platform": "TEXT",
+    # In-app-only nightly scheduler (QTimer while Spiced is running — no OS
+    # Task Scheduler entry is ever registered). build_schedule_time is a
+    # "HH:MM" 24-hour local-time string.
+    "build_schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "build_schedule_time": "TEXT",
 }
 
 

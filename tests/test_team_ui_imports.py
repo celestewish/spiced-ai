@@ -63,3 +63,8 @@ def test_source_link_widget_module_imports_cleanly():
 def test_roadmap_screen_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.screens.roadmap")
     assert hasattr(module, "RoadmapScreen")
+
+
+def test_build_scheduler_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.build_scheduler")
+    assert hasattr(module, "BuildScheduler")

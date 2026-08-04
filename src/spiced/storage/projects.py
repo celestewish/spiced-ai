@@ -21,6 +21,10 @@ class Project:
     unity_test_run_enabled: bool = False
     unity_editor_path_override: str | None = None
     project_uuid: str | None = None
+    build_pipeline_enabled: bool = False
+    build_target_platform: str | None = None
+    build_schedule_enabled: bool = False
+    build_schedule_time: str | None = None
 
     @property
     def engine_metadata(self) -> dict:
@@ -84,6 +88,37 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_build_pipeline_settings(
+        self, project_id: int, enabled: bool, target_platform: str | None
+    ) -> Project:
+        """Opt a project in/out of Spiced writing/triggering its build script.
+
+        Off by default, same shape as ``set_unity_test_run_settings``. Only
+        when ``enabled`` is True does anything downstream write a file into
+        the project or launch a headless Unity build.
+        """
+        self._db.execute(
+            "UPDATE projects SET build_pipeline_enabled = ?, build_target_platform = ? "
+            "WHERE id = ?",
+            (1 if enabled else 0, target_platform or None, project_id),
+        )
+        return self.get(project_id)
+
+    def set_build_schedule(
+        self, project_id: int, enabled: bool, schedule_time: str | None
+    ) -> Project:
+        """Set the in-app-only nightly build schedule ("HH:MM", 24h local time).
+
+        Only ever checked by a QTimer while Spiced is open — never registers
+        anything with the OS scheduler.
+        """
+        self._db.execute(
+            "UPDATE projects SET build_schedule_enabled = ?, build_schedule_time = ? "
+            "WHERE id = ?",
+            (1 if enabled else 0, schedule_time or None, project_id),
+        )
+        return self.get(project_id)
+
     def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
         """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
         self._db.execute(
@@ -122,4 +157,16 @@ class ProjectRepository:
                 row["unity_editor_path_override"] if "unity_editor_path_override" in keys else None
             ),
             project_uuid=row["project_uuid"] if "project_uuid" in keys else None,
+            build_pipeline_enabled=(
+                bool(row["build_pipeline_enabled"]) if "build_pipeline_enabled" in keys else False
+            ),
+            build_target_platform=(
+                row["build_target_platform"] if "build_target_platform" in keys else None
+            ),
+            build_schedule_enabled=(
+                bool(row["build_schedule_enabled"]) if "build_schedule_enabled" in keys else False
+            ),
+            build_schedule_time=(
+                row["build_schedule_time"] if "build_schedule_time" in keys else None
+            ),
         )
