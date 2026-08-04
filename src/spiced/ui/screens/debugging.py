@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -58,6 +58,7 @@ from spiced.core.dev_docs import ProviderNotReadyError as DevDocsNotReadyError
 from spiced.core.scope_creep import detect_scope_creep
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
+from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 
@@ -389,8 +390,6 @@ class DebuggingScreen(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
-        self._thread: QThread | None = None
-        self._worker: QObject | None = None
         self._pending_filename: str | None = None
         self._version_pending_filename: str | None = None
         self._health_pending_filename: str | None = None
@@ -636,15 +635,14 @@ class DebuggingScreen(QWidget):
             "Scanning Assets/ for naming patterns and references — this can take a moment on "
             "a large project…"
         )
-        self._thread = QThread()
-        self._worker = _ProjectHealthScanWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_project_scan_done)
-        self._worker.failed.connect(self._on_project_scan_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _ProjectHealthScanWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_project_scan_done)
+        worker.failed.connect(self._on_project_scan_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_project_scan_done(self, naming, refs) -> None:
         self._project_scan_btn.setEnabled(True)
@@ -866,15 +864,14 @@ class DebuggingScreen(QWidget):
         self._dev_docs_btn.setText("Generating…")
         self._dev_docs_result.setPlainText("Scanning scripts and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _DevDocsWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_dev_docs_done)
-        self._worker.failed.connect(self._on_dev_docs_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _DevDocsWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_dev_docs_done)
+        worker.failed.connect(self._on_dev_docs_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_dev_docs_done(self, result: DevDocsResult) -> None:
         self._dev_docs_btn.setEnabled(True)
@@ -1020,15 +1017,14 @@ class DebuggingScreen(QWidget):
         self._design_drift_btn.setText("Checking…")
         self._design_drift_result.setPlainText("Comparing your design doc against Dev Docs…")
 
-        self._thread = QThread()
-        self._worker = _DesignDocSyncWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_design_drift_done)
-        self._worker.failed.connect(self._on_design_drift_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _DesignDocSyncWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_design_drift_done)
+        worker.failed.connect(self._on_design_drift_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _scope_creep_message(self, project) -> str | None:
         """Scope-Creep Flagging: pure local computation over the Dev Docs
@@ -1223,15 +1219,14 @@ class DebuggingScreen(QWidget):
         self._set_busy(True)
         self._result.setPlainText("Reading the log and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _CrashWorker(self._services, log_text, source_type, filename)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_done)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _CrashWorker(self._services, log_text, source_type, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_done(self, analysis: DebugAnalysis) -> None:
         text = analysis.response_text
@@ -1312,15 +1307,14 @@ class DebuggingScreen(QWidget):
         self._version_analyze_btn.setText("Analyzing…")
         self._version_result.setPlainText("Reading the script and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _VersionCheckWorker(self._services, code_text, filename)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_version_done)
-        self._worker.failed.connect(self._on_version_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _VersionCheckWorker(self._services, code_text, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_version_done)
+        worker.failed.connect(self._on_version_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_version_done(self, review: VersionCheckReview) -> None:
         self._version_result.setPlainText(review.response_text)
@@ -1372,15 +1366,14 @@ class DebuggingScreen(QWidget):
         self._health_analyze_btn.setText("Checking…")
         self._health_result.setPlainText("Reading the file and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _CodeHealthWorker(self._services, code_text, filename)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_health_done)
-        self._worker.failed.connect(self._on_health_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _CodeHealthWorker(self._services, code_text, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_health_done)
+        worker.failed.connect(self._on_health_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_health_done(self, review: CodeHealthReview) -> None:
         self._health_result.setPlainText(review.response_text)
@@ -1441,15 +1434,14 @@ class DebuggingScreen(QWidget):
         self._current_changelog_draft_id = None
         self._changelog_text.setPlainText("Reading git log and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _ChangelogWorker(self._services, project, since_date)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_changelog_done)
-        self._worker.failed.connect(self._on_changelog_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _ChangelogWorker(self._services, project, since_date)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_changelog_done)
+        worker.failed.connect(self._on_changelog_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_changelog_done(self, result: ChangelogResult) -> None:
         self._changelog_draft_btn.setEnabled(True)
@@ -1503,15 +1495,14 @@ class DebuggingScreen(QWidget):
         self._asset_scan_result.setPlainText(
             "Scanning Assets/ — this can take a moment on a large project…"
         )
-        self._thread = QThread()
-        self._worker = _AssetScanWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_asset_scan_done)
-        self._worker.failed.connect(self._on_asset_scan_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _AssetScanWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_asset_scan_done)
+        worker.failed.connect(self._on_asset_scan_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_asset_scan_done(self, findings: AssetScanFindings) -> None:
         self._asset_scan_btn.setEnabled(True)
@@ -1532,15 +1523,14 @@ class DebuggingScreen(QWidget):
         self._asset_scan_ai_btn.setText("Thinking…")
         self._asset_scan_result.setPlainText("Scanning and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _AssetScanAIWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_asset_scan_ai_done)
-        self._worker.failed.connect(self._on_asset_scan_ai_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _AssetScanAIWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_asset_scan_ai_done)
+        worker.failed.connect(self._on_asset_scan_ai_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_asset_scan_ai_done(self, review: AssetScanReview) -> None:
         self._asset_scan_ai_btn.setEnabled(True)
@@ -1594,15 +1584,14 @@ class DebuggingScreen(QWidget):
         self._dependency_check_result.setPlainText(
             "Reading manifest.json and querying the Unity Package Registry…"
         )
-        self._thread = QThread()
-        self._worker = _DependencyCheckWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_dependency_check_done)
-        self._worker.failed.connect(self._on_dependency_check_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _DependencyCheckWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_dependency_check_done)
+        worker.failed.connect(self._on_dependency_check_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_dependency_check_done(self, findings: DependencyCheckFindings) -> None:
         self._dependency_check_btn.setEnabled(True)
@@ -1623,15 +1612,14 @@ class DebuggingScreen(QWidget):
         self._dependency_check_ai_btn.setText("Thinking…")
         self._dependency_check_result.setPlainText("Checking dependencies and thinking it through…")
 
-        self._thread = QThread()
-        self._worker = _DependencyCheckAIWorker(self._services, project)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_dependency_check_ai_done)
-        self._worker.failed.connect(self._on_dependency_check_ai_failed)
-        self._worker.done.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.start()
+        worker = _DependencyCheckAIWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_dependency_check_ai_done)
+        worker.failed.connect(self._on_dependency_check_ai_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_dependency_check_ai_done(self, review: DependencyCheckReview) -> None:
         self._dependency_check_ai_btn.setEnabled(True)

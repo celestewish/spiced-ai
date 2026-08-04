@@ -62,7 +62,11 @@ def _fake_report(succeeded: bool, log_tail: str | None = None) -> BuildReport:
 def test_worker_stays_quiet_on_success(monkeypatch, tmp_path):
     services = _services(tmp_path)
     project = services.projects.create_project("Moonlit Depths")
-    monkeypatch.setattr(services, "run_build", lambda project, trigger: _fake_report(True))
+    monkeypatch.setattr(
+        services,
+        "run_build",
+        lambda project, trigger, editor_override=None: _fake_report(True),
+    )
 
     worker = _ScheduledBuildWorker(services, [project.id])
     calls = []
@@ -76,7 +80,9 @@ def test_worker_reports_failure_with_log_tail(monkeypatch, tmp_path):
     services = _services(tmp_path)
     project = services.projects.create_project("Moonlit Depths")
     monkeypatch.setattr(
-        services, "run_build", lambda project, trigger: _fake_report(False, "boom: NRE")
+        services,
+        "run_build",
+        lambda project, trigger, editor_override=None: _fake_report(False, "boom: NRE"),
     )
 
     worker = _ScheduledBuildWorker(services, [project.id])
@@ -95,7 +101,7 @@ def test_worker_handles_gate_error_without_crashing(monkeypatch, tmp_path):
     services = _services(tmp_path)
     project = services.projects.create_project("Moonlit Depths")
 
-    def raise_not_enabled(project, trigger):
+    def raise_not_enabled(project, trigger, editor_override=None):
         raise BuildNotEnabledError("not enabled")
 
     monkeypatch.setattr(services, "run_build", raise_not_enabled)
@@ -118,6 +124,29 @@ def test_worker_skips_projects_that_no_longer_exist(tmp_path):
     worker.build_done.connect(lambda name, ok, msg: calls.append((name, ok, msg)))
     worker.run()
     assert calls == []
+
+
+def test_worker_passes_project_editor_override_through_to_run_build(monkeypatch, tmp_path):
+    """Bug fix: the scheduled build path used to call ``run_build`` without
+    the project's configured Unity Editor path override, so Automated Build
+    Pipeline silently ignored it even though Run Unity Tests honored it."""
+    services = _services(tmp_path)
+    project = services.projects.create_project("Moonlit Depths")
+    services.projects.set_unity_test_run_settings(project.id, True, "/custom/Unity.exe")
+    project = services.projects.get_project(project.id)
+
+    captured = {}
+
+    def fake_run_build(project, trigger, editor_override=None):
+        captured["editor_override"] = editor_override
+        return _fake_report(True)
+
+    monkeypatch.setattr(services, "run_build", fake_run_build)
+
+    worker = _ScheduledBuildWorker(services, [project.id])
+    worker.run()
+
+    assert captured["editor_override"] == "/custom/Unity.exe"
 
 
 # --- BuildScheduler due-project detection ------------------------------------
@@ -179,7 +208,7 @@ def test_check_due_projects_waits_while_a_batch_is_already_running(monkeypatch, 
     scheduler.stop()
     started_batches = []
     monkeypatch.setattr(scheduler, "_start_batch", started_batches.append)
-    scheduler._thread = object()  # simulate a batch already in flight
+    scheduler._batch_running = True  # simulate a batch already in flight
 
     scheduler._check_due_projects()
 

@@ -17,11 +17,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from spiced.app.services import Services
 from spiced.core.build_pipeline import BuildNotEnabledError, BuildUnavailableError
 from spiced.storage.build_reports import TRIGGER_SCHEDULED
+from spiced.ui.thread_utils import launch_worker
 
 # Once a minute is plenty of resolution for a "HH:MM" schedule.
 _CHECK_INTERVAL_MS = 60_000
@@ -43,7 +44,11 @@ class _ScheduledBuildWorker(QObject):
             except KeyError:
                 continue
             try:
-                report = self._services.run_build(project, trigger=TRIGGER_SCHEDULED)
+                report = self._services.run_build(
+                    project,
+                    trigger=TRIGGER_SCHEDULED,
+                    editor_override=project.unity_editor_path_override,
+                )
             except (BuildNotEnabledError, BuildUnavailableError) as exc:
                 self.build_done.emit(project.name, False, str(exc))
                 continue
@@ -68,8 +73,11 @@ class BuildScheduler(QObject):
         super().__init__(parent)
         self._services = services
         self._last_fired: dict[int, date] = {}
-        self._thread: QThread | None = None
-        self._worker: QObject | None = None
+        # Guards _check_due_projects re-entrancy (only one batch at a time) --
+        # separate from thread/worker lifetime bookkeeping, which
+        # launch_worker owns via self._active_threads/_active_workers so a
+        # still-running QThread never loses its only Python reference.
+        self._batch_running = False
         self._timer = QTimer(self)
         self._timer.setInterval(_CHECK_INTERVAL_MS)
         self._timer.timeout.connect(self._check_due_projects)
@@ -79,7 +87,7 @@ class BuildScheduler(QObject):
         self._timer.stop()
 
     def _check_due_projects(self) -> None:
-        if self._thread is not None:
+        if self._batch_running:
             return  # a scheduled batch is already running; check again next tick
         now = datetime.now()
         current_hhmm = now.strftime("%H:%M")
@@ -99,14 +107,14 @@ class BuildScheduler(QObject):
         self._start_batch(due_ids)
 
     def _start_batch(self, project_ids: list[int]) -> None:
-        self._thread = QThread()
-        self._worker = _ScheduledBuildWorker(self._services, project_ids)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.build_done.connect(self._on_build_done)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.finished.connect(self._thread.quit)
-        self._thread.start()
+        self._batch_running = True
+        worker = _ScheduledBuildWorker(self._services, project_ids)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.build_done.connect(self._on_build_done)
+        worker.finished.connect(self._on_finished)
+        worker.finished.connect(thread.quit)
+        thread.start()
 
     def _on_build_done(self, project_name: str, succeeded: bool, message: str) -> None:
         self.build_report_saved.emit()
@@ -114,5 +122,4 @@ class BuildScheduler(QObject):
             self.build_failed.emit(project_name, message)
 
     def _on_finished(self) -> None:
-        self._thread = None
-        self._worker = None
+        self._batch_running = False

@@ -165,3 +165,21 @@ def test_precommit_review_settings_can_be_enabled_and_disabled():
     assert enabled.precommit_review_enabled is True
     disabled = service.set_precommit_review_settings(project.id, False)
     assert disabled.precommit_review_enabled is False
+
+
+def test_design_doc_sync_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.design_doc_sync_enabled is False
+
+
+def test_design_doc_sync_settings_can_be_enabled_and_disabled():
+    """Regression test: ProjectsService had no set_design_doc_sync_settings
+    passthrough, so toggling this on the Projects screen raised
+    AttributeError instead of persisting."""
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    enabled = service.set_design_doc_sync_settings(project.id, True)
+    assert enabled.design_doc_sync_enabled is True
+    disabled = service.set_design_doc_sync_settings(project.id, False)
+    assert disabled.design_doc_sync_enabled is False
