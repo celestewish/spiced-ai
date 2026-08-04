@@ -40,6 +40,16 @@ class UnityDetectionResult:
         return data
 
 
+def manifest_path_for(project_path: str | Path) -> Path:
+    """The standard location of a Unity project's package manifest.
+
+    A single, shared place this path gets constructed, so every feature that
+    reads ``Packages/manifest.json`` (project detection, Dependency & Plugin
+    Update Checks) agrees on where it lives rather than re-deriving it.
+    """
+    return Path(project_path) / "Packages" / "manifest.json"
+
+
 def detect_unity_project(folder: str | Path) -> UnityDetectionResult:
     """Inspect a folder and report whether it looks like a Unity project.
 
@@ -70,7 +80,7 @@ def detect_unity_project(folder: str | Path) -> UnityDetectionResult:
     is_valid = has_assets and has_project_settings
 
     manifest_path: str | None = None
-    manifest = path / "Packages" / "manifest.json"
+    manifest = manifest_path_for(path)
     if manifest.is_file():
         manifest_path = str(manifest)
 
@@ -108,3 +118,26 @@ def read_manifest_dependencies(manifest_path: str | Path) -> list[str]:
         return []
     deps = data.get("dependencies", {})
     return sorted(deps.keys()) if isinstance(deps, dict) else []
+
+
+def read_manifest_versions(manifest_path: str | Path) -> dict[str, str]:
+    """Return {package name: declared version string} from a Unity manifest.
+
+    Like ``read_manifest_dependencies`` but keeps the version string too,
+    needed by Dependency & Plugin Update Checks to compare against the
+    public Unity Package Registry. Best-effort and non-recursive; entries
+    with a non-string name or version (malformed manifest) are skipped
+    rather than raising.
+    """
+    try:
+        data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    deps = data.get("dependencies", {})
+    if not isinstance(deps, dict):
+        return {}
+    return {
+        name: version
+        for name, version in deps.items()
+        if isinstance(name, str) and isinstance(version, str)
+    }

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.connectors import unity_build
+from spiced.core.precommit_hook import ForeignHookExistsError, NotAGitRepoError
 from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.ui.auth_dialog import AuthDialog
 
@@ -114,6 +115,7 @@ class ProjectsScreen(QWidget):
 
         self._build_unity_test_run(layout)
         self._build_build_pipeline(layout)
+        self._build_precommit_review(layout)
         self._build_team_section(layout)
 
         self.refresh()
@@ -355,6 +357,115 @@ class ProjectsScreen(QWidget):
         else:
             self._build_pipeline_status.setText(
                 f"Enabled. Builds are written under {project.path}\\Builds\\."
+            )
+
+    # --- Pre-Commit Review opt-in -------------------------------------------
+
+    def _build_precommit_review(self, layout: QVBoxLayout) -> None:
+        section = QLabel("Pre-Commit Review")
+        section.setObjectName("SectionTitle")
+        layout.addWidget(section)
+
+        intro = QLabel(
+            "Off by default. When enabled, click \"Install hook\" to add a .git/hooks/"
+            "pre-commit script to this project that flags obvious TODOs, stray Debug.Log/"
+            "print statements, leftover merge-conflict markers, and very large staged files "
+            "on every commit — local and instant, no AI or network call. It's a heads-up "
+            "only: the hook always lets the commit through, never blocks it. Spiced will "
+            "never overwrite a pre-commit hook it didn't create — if one already exists, "
+            "you'll be asked to back it up or remove it yourself first."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._precommit_toggle = QCheckBox("Allow Spiced to install a pre-commit hook")
+        self._precommit_toggle.toggled.connect(self._on_precommit_toggle)
+        layout.addWidget(self._precommit_toggle)
+
+        row = QHBoxLayout()
+        self._precommit_install_btn = QPushButton("Install hook")
+        self._precommit_install_btn.clicked.connect(self._on_precommit_install)
+        row.addWidget(self._precommit_install_btn)
+        self._precommit_uninstall_btn = QPushButton("Remove hook")
+        self._precommit_uninstall_btn.setObjectName("Ghost")
+        self._precommit_uninstall_btn.clicked.connect(self._on_precommit_uninstall)
+        row.addWidget(self._precommit_uninstall_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self._precommit_status = QLabel()
+        self._precommit_status.setObjectName("Muted")
+        self._precommit_status.setWordWrap(True)
+        layout.addWidget(self._precommit_status)
+
+    def _on_precommit_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        self._services.projects.set_precommit_review_settings(project.id, checked)
+        self._update_precommit_status()
+
+    def _on_precommit_install(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.path:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project with a connected folder above."
+            )
+            return
+        if not project.precommit_review_enabled:
+            QMessageBox.information(
+                self, "Turn this on first", "Check the box above before installing the hook."
+            )
+            return
+        try:
+            result = self._services.install_precommit_hook(project)
+        except NotAGitRepoError as exc:
+            QMessageBox.warning(self, "Not a git repository", str(exc))
+            return
+        except ForeignHookExistsError as exc:
+            QMessageBox.warning(self, "An existing hook is already there", str(exc))
+            return
+        QMessageBox.information(
+            self, "Hook installed", f"Installed at {result.hook_path}."
+        )
+        self._update_precommit_status()
+
+    def _on_precommit_uninstall(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.path:
+            return
+        removed = self._services.uninstall_precommit_hook(project)
+        message = (
+            "Removed the Spiced-installed hook."
+            if removed
+            else "No Spiced-installed hook was found to remove."
+        )
+        QMessageBox.information(self, "Pre-Commit Review", message)
+        self._update_precommit_status()
+
+    def _update_precommit_status(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = project.precommit_review_enabled if project else False
+
+        self._precommit_toggle.blockSignals(True)
+        self._precommit_toggle.setChecked(bool(enabled))
+        self._precommit_toggle.blockSignals(False)
+        self._precommit_toggle.setEnabled(has_project)
+        self._precommit_install_btn.setEnabled(has_project)
+        self._precommit_uninstall_btn.setEnabled(has_project)
+
+        if not has_project:
+            self._precommit_status.setText("")
+        elif not project.path:
+            self._precommit_status.setText("Connect a Unity folder above first.")
+        elif not enabled:
+            self._precommit_status.setText("Not enabled. Check the box above, then Install hook.")
+        else:
+            self._precommit_status.setText(
+                "Enabled. Click \"Install hook\" to add it to this project's .git/hooks/, or "
+                "\"Remove hook\" to take it back out."
             )
 
     # --- Team Mode (opt-in) -------------------------------------------------
@@ -611,6 +722,7 @@ class ProjectsScreen(QWidget):
     def _update_detail(self) -> None:
         self._update_unity_run_status()
         self._update_build_pipeline_status()
+        self._update_precommit_status()
         project = self._services.active_project()
         if project is None:
             self._detail.setText("Select or create a project to connect a Unity folder.")
