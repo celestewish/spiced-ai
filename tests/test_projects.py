@@ -150,3 +150,18 @@ def test_build_schedule_can_be_disabled_again():
     disabled = service.set_build_schedule(project.id, False, None)
     assert disabled.build_schedule_enabled is False
     assert disabled.build_schedule_time is None
+
+
+def test_precommit_review_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.precommit_review_enabled is False
+
+
+def test_precommit_review_settings_can_be_enabled_and_disabled():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    enabled = service.set_precommit_review_settings(project.id, True)
+    assert enabled.precommit_review_enabled is True
+    disabled = service.set_precommit_review_settings(project.id, False)
+    assert disabled.precommit_review_enabled is False

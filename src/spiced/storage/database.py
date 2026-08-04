@@ -249,6 +249,75 @@ CREATE TABLE IF NOT EXISTS asset_scan_reports (
     provider      TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Dependency & Plugin Update Checks (Phase E, section 6). A saved pass
+-- comparing Packages/manifest.json against the public Unity Package
+-- Registry (read-only network lookups by package name only), plus an
+-- optional AI summary.
+CREATE TABLE IF NOT EXISTS dependency_check_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    ai_summary    TEXT,
+    provider      TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Auto-Generated Unit Tests (Phase E). One row per AI-drafted NUnit test
+-- file. ``approved``/``written_path`` stay NULL/0 until the developer clicks
+-- "Approve" on that specific draft — Spiced never writes to disk before then.
+CREATE TABLE IF NOT EXISTS generated_test_drafts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL,
+    system_label    TEXT,
+    source_excerpt  TEXT,
+    draft_text      TEXT,
+    provider        TEXT,
+    approved        INTEGER NOT NULL DEFAULT 0,
+    written_path    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Pre-Commit Review (Phase E). An optional log of past local pre-commit
+-- checks (never required for the hook itself to work — the hook always
+-- exits 0 whether or not Spiced's GUI/DB is even reachable).
+CREATE TABLE IF NOT EXISTS precommit_reviews (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    file_count    INTEGER NOT NULL DEFAULT 0,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Economy/Balance Simulation (Phase E). A saved deterministic Monte-Carlo-
+-- style simulation over developer-supplied economy data (see
+-- core.economy_simulator for the documented input schema), plus an optional
+-- AI plain-language summary.
+CREATE TABLE IF NOT EXISTS economy_simulation_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    input_json    TEXT,
+    findings_json TEXT,
+    ai_summary    TEXT,
+    provider      TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Save/Load Integrity Testing (Phase E). One row per run across a folder of
+-- save files: launches the project's own built executable (not the Unity
+-- Editor) with SPICED_LOAD_TEST_SAVE_PATH / SPICED_LOAD_TEST_RESULT_PATH env
+-- vars per save; only works for games implementing that hook (see
+-- core.save_load_tester / docs/save_load_integrity_hook.md).
+CREATE TABLE IF NOT EXISTS save_integrity_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL,
+    executable_path TEXT,
+    saves_folder    TEXT,
+    results_json    TEXT,
+    passed_count    INTEGER NOT NULL DEFAULT 0,
+    failed_count    INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
@@ -273,6 +342,10 @@ PROJECT_MIGRATIONS = {
     # "HH:MM" 24-hour local-time string.
     "build_schedule_enabled": "INTEGER NOT NULL DEFAULT 0",
     "build_schedule_time": "TEXT",
+    # Pre-Commit Review (Phase E): off by default, same opt-in shape as the
+    # other per-project toggles. Only when explicitly on does the Projects
+    # screen install a .git/hooks/pre-commit script into the project.
+    "precommit_review_enabled": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

@@ -76,6 +76,16 @@ class ProjectsService:
         """
         return self._repo.set_build_schedule(project_id, enabled, schedule_time)
 
+    def set_precommit_review_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of Spiced installing a .git/hooks/pre-commit script.
+
+        Off by default, same opt-in shape as the other per-project toggles.
+        This alone never touches the filesystem — see
+        ``core.precommit_hook.install_hook`` for the actual install step,
+        which the Projects screen calls separately once this is on.
+        """
+        return self._repo.set_precommit_review_settings(project_id, enabled)
+
     def ensure_project_uuid(self, project_id: int) -> str:
         """Return this project's stable cross-machine id, minting one on first use.
 

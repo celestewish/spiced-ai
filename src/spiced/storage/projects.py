@@ -25,6 +25,7 @@ class Project:
     build_target_platform: str | None = None
     build_schedule_enabled: bool = False
     build_schedule_time: str | None = None
+    precommit_review_enabled: bool = False
 
     @property
     def engine_metadata(self) -> dict:
@@ -119,6 +120,19 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_precommit_review_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of Spiced installing a .git/hooks/pre-commit script.
+
+        Off by default, same shape as the other per-project opt-ins. Only
+        when ``enabled`` is True does the Projects screen offer to install
+        the hook — this setter alone never touches the filesystem.
+        """
+        self._db.execute(
+            "UPDATE projects SET precommit_review_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, project_id),
+        )
+        return self.get(project_id)
+
     def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
         """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
         self._db.execute(
@@ -168,5 +182,10 @@ class ProjectRepository:
             ),
             build_schedule_time=(
                 row["build_schedule_time"] if "build_schedule_time" in keys else None
+            ),
+            precommit_review_enabled=(
+                bool(row["precommit_review_enabled"])
+                if "precommit_review_enabled" in keys
+                else False
             ),
         )

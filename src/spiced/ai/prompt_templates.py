@@ -9,14 +9,17 @@ than guessing from raw text.
 
 from __future__ import annotations
 
+from spiced.connectors.unity_package_registry import PackageCheckResult
 from spiced.connectors.unity_scan import OversizedAssetFinding
 from spiced.core.accessibility_parser import ParsedAccessibility
 from spiced.core.code_health_analyzer import LONG_FUNCTION_LINES, CodeHealthMetrics
 from spiced.core.community.base import CommunityMessage
+from spiced.core.economy_simulator import EconomySimulationFindings
 from spiced.core.feedback_classifier import FeedbackClassification
 from spiced.core.feedback_parser import ParsedFeedback
 from spiced.core.hardware_simulation import HardwareSimulationResult
 from spiced.core.performance_parser import ParsedPerformance
+from spiced.core.precommit_check import PrecommitFinding
 from spiced.core.test_result_parser import ParsedTestResults
 from spiced.core.unity_log_parser import ParsedError, ParsedLog
 from spiced.core.version_check_parser import ParsedVersionCheck
@@ -1113,4 +1116,300 @@ def build_release_checklist_prompt(checklist, *, project_name: str | None = None
         "Checklist items (deterministic, static — Spiced computed these locally, not the AI):\n"
         f"{items_block}\n\n"
         f"{RELEASE_CHECKLIST_RESPONSE_FORMAT.format(platform=checklist.platform_label)}\n"
+    )
+
+
+# Rules specific to Dependency & Plugin Update Checks (Phase E, section 6).
+# The version comparison against the public Unity Package Registry is already
+# deterministic; the AI only adds plain-language framing and flags packages
+# that are commonly known to have breaking-change patterns between majors.
+DEPENDENCY_CHECK_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat each package's installed/latest version and checked/outdated status as ground "
+    "truth; do not recompute or second-guess the version comparison.",
+    "For packages you don't have specific, well-known knowledge about, do not invent update "
+    "risk — just note the version gap plainly.",
+    "Clearly separate packages that couldn't be checked (network failure, private package) "
+    "from ones confirmed up to date or outdated.",
+    "Never claim you changed, updated, or installed anything — the developer updates "
+    "packages themselves via the Unity Package Manager.",
+    "If nothing is outdated and everything was checked, say so plainly rather than padding.",
+)
+
+DEPENDENCY_CHECK_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Here's the dependency check.
+
+Outdated packages:
+- [package, installed -> latest, and a short plain-language note — or "None found." if empty]
+
+Packages that couldn't be checked:
+- [package and why — or "All packages were checked." if empty]
+
+Worth a closer look before updating:
+- [Only for packages you have well-known cause to flag as a bigger jump/breaking-change risk; "
+"otherwise "Nothing stands out beyond the normal changelog-reading you'd do anyway."]
+
+What this does not cover:
+[A short reminder that this only checks Unity Package Manager registry dependencies listed in \
+manifest.json — not Asset Store plugins or manually-dropped scripts]"""
+
+
+def _format_dependency_check_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in DEPENDENCY_CHECK_RULES)
+
+
+def _format_dependency_check_results(results: list[PackageCheckResult]) -> str:
+    if not results:
+        return "- No dependencies declared in Packages/manifest.json."
+    lines = []
+    for r in results:
+        if not r.checked:
+            note = r.note or "unknown reason"
+            lines.append(f"- {r.name} ({r.installed_version}): not checked — {note}")
+        elif r.outdated:
+            lines.append(f"- {r.name}: {r.installed_version} -> {r.latest_version} (outdated)")
+        elif r.outdated is False:
+            lines.append(
+                f"- {r.name}: {r.installed_version} (up to date, latest is {r.latest_version})"
+            )
+        else:
+            lines.append(
+                f"- {r.name}: {r.installed_version} vs {r.latest_version} "
+                "(versions found but not directly comparable)"
+            )
+    return "\n".join(lines)
+
+
+def build_dependency_check_prompt(
+    results: list[PackageCheckResult], *, project_name: str | None = None
+) -> str:
+    """Assemble the dependency-check prompt from the deterministic registry comparison.
+
+    Only package names and version strings are included — never any project
+    source files, and the registry lookups themselves never uploaded
+    anything beyond the public package names.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion helping an indie Unity developer keep their "
+        "project's packages current. You never install, update, or change anything yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_dependency_check_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Package versions compared by Spiced locally against the public Unity Package Registry "
+        "(deterministic, trustworthy):\n"
+        f"{_format_dependency_check_results(results)}\n\n"
+        f"{DEPENDENCY_CHECK_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Auto-Generated Unit Tests (Phase E, section 6). Spiced
+# drafts NUnit test code the developer reviews/edits; it never writes to disk
+# itself, and never claims a draft was written, approved, or run.
+TEST_GENERATION_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Write real, compilable NUnit 3 C# test code (using UnityEngine.TestTools / "
+    "NUnit.Framework as appropriate) targeting the pasted code, not placeholder stubs.",
+    "Cover the obvious happy path plus at least one edge case or failure case per public "
+    "method, but do not invent behavior the pasted code doesn't actually have.",
+    "Put the test code in a single ```csharp fenced code block so it can be extracted cleanly.",
+    "Name the test class clearly after the system under test, ending in \"Tests\".",
+    "Briefly note, outside the code block, any assumption you had to make because the pasted "
+    "excerpt didn't show enough context (e.g. a missing dependency or constructor).",
+    "Never claim you wrote this to disk, ran it, or that it's part of the test suite yet — the "
+    "developer reviews and explicitly approves before anything is written anywhere.",
+    "Never claim you changed any other file.",
+)
+
+TEST_GENERATION_RESPONSE_FORMAT = """Structure your reply exactly like this:
+
+Here's a draft test file for {system_label}.
+
+```csharp
+[full NUnit test class]
+```
+
+Assumptions I made:
+- [Only if something about the pasted code was unclear or incomplete; otherwise "None — the \
+pasted code was self-contained enough to test directly."]
+
+Before you approve this:
+[A short, honest reminder to review the draft and adjust it before saving — this hasn't been \
+written anywhere or run yet]"""
+
+
+def _format_test_generation_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in TEST_GENERATION_RULES)
+
+
+def build_test_generation_prompt(
+    source_excerpt: str, *, system_label: str | None = None, project_name: str | None = None
+) -> str:
+    """Assemble the test-generation prompt from a pasted/imported script excerpt.
+
+    Only the trimmed excerpt the developer explicitly supplied is included —
+    never any other project file, and Spiced never writes anything from this
+    call; writing only happens later, from an explicit per-file Approve click.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    label = system_label or "this system"
+    return (
+        "You are Spiced, a calm companion drafting unit tests for an indie Unity developer. "
+        "You never write files yourself — the developer reviews, edits, and explicitly "
+        "approves before anything is saved anywhere.\n\n"
+        "Follow these rules:\n"
+        f"{_format_test_generation_rules()}\n\n"
+        f"{project_line}\n"
+        f"System: {label}\n\n"
+        "Source code the developer supplied (already trimmed; do not ask for the full file):\n"
+        "```\n"
+        f"{source_excerpt}\n"
+        "```\n\n"
+        f"{TEST_GENERATION_RESPONSE_FORMAT.format(system_label=label)}\n"
+    )
+
+
+# Rules specific to Pre-Commit Review's optional AI pass (Phase E, section 6).
+# The local findings are already deterministic; the AI only adds a brief,
+# calm gloss. This is a heads-up shown alongside `git commit` output, never a
+# blocking gate — the prompt must not read as a pass/fail verdict.
+PRECOMMIT_REVIEW_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the local findings as ground truth; do not invent additional issues beyond them.",
+    "Keep this very short — it's a heads-up printed alongside a git commit, not a report.",
+    "Never tell the developer the commit is blocked or that they must fix anything — this is "
+    "informational only; the commit already succeeded or will proceed regardless.",
+    "Never claim you changed, fixed, or reverted anything.",
+    "If there's nothing worth commenting on beyond the findings themselves, say so briefly "
+    "rather than padding.",
+)
+
+PRECOMMIT_REVIEW_RESPONSE_FORMAT = """Keep this to 2-4 short lines total, no headers needed.
+
+[A brief, calm gloss on the findings below — or "Nothing stands out beyond what's listed above."]"""
+
+
+def _format_precommit_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in PRECOMMIT_REVIEW_RULES)
+
+
+def _format_precommit_findings(findings: list[PrecommitFinding]) -> str:
+    if not findings:
+        return "- No local findings."
+    lines = []
+    for f in findings[:30]:
+        where = f"{f.file}:{f.line}" if f.line is not None else f.file
+        lines.append(f"- [{f.kind}] {where} — {f.message}")
+    if len(findings) > 30:
+        lines.append(f"- ...and {len(findings) - 30} more (showing the first 30).")
+    return "\n".join(lines)
+
+
+def build_precommit_review_prompt(findings: list[PrecommitFinding], *, file_count: int) -> str:
+    """Assemble the very short optional AI gloss for one pre-commit review pass.
+
+    Only file paths/line numbers/short messages from the local deterministic
+    scan are included — never full file contents, and this call never blocks
+    or fails a commit regardless of what it returns.
+    """
+    return (
+        "You are Spiced, a calm companion giving an indie developer a very brief heads-up "
+        "alongside a git commit. You never block or fail the commit and never change anything "
+        "yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_precommit_rules()}\n\n"
+        f"Staged files checked: {file_count}\n\n"
+        "Local findings from Spiced's deterministic pre-commit scan (ground truth):\n"
+        f"{_format_precommit_findings(findings)}\n\n"
+        f"{PRECOMMIT_REVIEW_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Economy/Balance Simulation (Phase E, section 6). The
+# simulation numbers are already deterministic (a local greedy Monte-Carlo-
+# style pass); the AI only turns them into a plain-language explanation of
+# what a "dominant strategy" finding actually means for the developer's
+# economy design.
+ECONOMY_SIMULATION_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the simulation's pick rates and dominant-strategy findings as ground truth; do not "
+    "recompute or second-guess the numbers.",
+    "Explain what a dominant strategy means in plain terms: nearly every simulated playthrough "
+    "picked this item first once it unlocked, because its value-per-cost badly outclasses the "
+    "alternatives at that point — not a claim about whether players will find it fun.",
+    "Repeat, explicitly, that this models one currency and one value axis with a simple greedy "
+    "chooser — it cannot see diminishing returns, multiple currencies, crafting chains, or "
+    "player skill, so treat findings as worth a look, not a verdict.",
+    "Never claim you changed any balance numbers or files — the developer decides what, if "
+    "anything, to adjust.",
+    "If nothing was flagged as dominant or never-purchased, say so plainly rather than padding.",
+)
+
+ECONOMY_SIMULATION_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Here's the economy simulation read.
+
+Dominant strategies:
+- [item, from what level, and a plain-language "why" — or "None found — no single item \
+dominated every simulated playthrough." if empty]
+
+Items nobody bought:
+- [item — or "Every item got bought in at least one playthrough." if empty]
+
+What this does not know:
+[A short, honest reminder that this models one currency/value axis with a simple greedy \
+chooser, not real player behavior or fun]
+
+Worth considering:
+- [1-2 grounded, non-prescriptive thoughts tied directly to the findings above]"""
+
+
+def _format_economy_simulation_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in ECONOMY_SIMULATION_RULES)
+
+
+def _format_economy_findings(findings: EconomySimulationFindings) -> str:
+    lines = [f"- Simulated playthroughs: {findings.playthroughs}"]
+    if findings.dominant_strategies:
+        lines.append("- Dominant strategies (picked first in nearly every playthrough):")
+        for d in findings.dominant_strategies:
+            lines.append(
+                f"    • {d.item_name} (unlocks at level {d.from_level}): "
+                f"{d.pick_rate * 100:.0f}% of playthroughs"
+            )
+    else:
+        lines.append("- Dominant strategies: none found.")
+    if findings.never_purchased:
+        lines.append(f"- Never purchased in any playthrough: {', '.join(findings.never_purchased)}")
+    else:
+        lines.append("- Never purchased: every item was bought in at least one playthrough.")
+    return "\n".join(lines)
+
+
+def build_economy_simulation_prompt(
+    findings: EconomySimulationFindings, *, project_name: str | None = None
+) -> str:
+    """Assemble the economy-simulation prompt from the deterministic local sim.
+
+    Only the computed pick rates/findings are included — never the raw item
+    list or any other project data beyond what the developer already pasted
+    in to run the simulation.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion helping an indie developer read the results of a "
+        "local economy/balance simulation. You never change any numbers or files yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_economy_simulation_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Simulation results computed by Spiced locally (deterministic, trustworthy):\n"
+        f"{_format_economy_findings(findings)}\n\n"
+        f"{ECONOMY_SIMULATION_RESPONSE_FORMAT}\n"
     )

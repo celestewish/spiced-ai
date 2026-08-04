@@ -12,6 +12,7 @@ parser and AI review as a pasted result.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -39,6 +40,13 @@ from spiced.connectors import unity_build
 from spiced.core.accessibility import AccessibilityReview
 from spiced.core.accessibility import ProviderNotReadyError as AccessibilityNotReadyError
 from spiced.core.build_pipeline import BuildNotEnabledError, BuildUnavailableError
+from spiced.core.economy_simulator import (
+    ECONOMY_SCHEMA_DOC,
+    EconomySimulationFindings,
+    EconomySimulationReview,
+    InvalidEconomyDataError,
+)
+from spiced.core.economy_simulator import ProviderNotReadyError as EconomyNotReadyError
 from spiced.core.hardware_simulation import available_tiers
 from spiced.core.performance import PerformanceReview
 from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
@@ -49,6 +57,15 @@ from spiced.core.release_checklist import (
     analyze_checklist,
     build_checklist,
 )
+from spiced.core.save_load_tester import (
+    SAVE_PATH_ENV_VAR,
+    STATUS_PASSED,
+    NoExecutableError,
+    NoSavesFolderError,
+    SaveIntegrityRun,
+)
+from spiced.core.test_generator import ProviderNotReadyError as TestGenNotReadyError
+from spiced.core.test_generator import TestGenerationResult
 from spiced.core.testing import (
     SOURCE_FILE,
     SOURCE_PASTE,
@@ -81,6 +98,25 @@ def _path_size_bytes(path_str: str | None) -> int | None:
     except OSError:
         return None
     return None
+
+
+def _format_economy_findings(findings: EconomySimulationFindings) -> str:
+    lines = [f"Simulated playthroughs: {findings.playthroughs}", "", "Dominant strategies:"]
+    if findings.dominant_strategies:
+        for d in findings.dominant_strategies:
+            lines.append(
+                f"- {d.item_name} (unlocks at level {d.from_level}): "
+                f"{d.pick_rate * 100:.0f}% of playthroughs"
+            )
+    else:
+        lines.append("- None found.")
+    lines.append("")
+    lines.append("Never purchased in any playthrough:")
+    if findings.never_purchased:
+        lines.extend(f"- {name}" for name in findings.never_purchased)
+    else:
+        lines.append("- Every item was bought in at least one playthrough.")
+    return "\n".join(lines)
 
 
 class _FunctionalWorker(QObject):
@@ -312,6 +348,84 @@ class _ChecklistAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
+class _TestGenerationWorker(QObject):
+    done = Signal(object)  # TestGenerationResult
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, source_code: str, system_label: str | None
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._source_code = source_code
+        self._system_label = system_label
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.test_generator.generate_draft(
+                provider,
+                self._project,
+                self._source_code,
+                system_label=self._system_label,
+                record_usage=self._services.usage.record_prompt,
+            )
+            self.done.emit(result)
+        except TestGenNotReadyError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while drafting tests: {exc}")
+
+
+class _SaveIntegrityWorker(QObject):
+    done = Signal(object)  # SaveIntegrityRun
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, executable_path: str, saves_folder: str
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._executable_path = executable_path
+        self._saves_folder = saves_folder
+
+    def run(self) -> None:
+        try:
+            run = self._services.save_load_tester.run(
+                self._project, self._executable_path, self._saves_folder
+            )
+            self.done.emit(run)
+        except (NoExecutableError, NoSavesFolderError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while testing saves: {exc}")
+
+
+class _EconomySimulationAIWorker(QObject):
+    done = Signal(object)  # EconomySimulationReview
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, data: dict) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._data = data
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            review = self._services.economy_simulator.analyze(
+                provider, self._project, self._data, record_usage=self._services.usage.record_prompt
+            )
+            self.done.emit(review)
+        except (EconomyNotReadyError, InvalidEconomyDataError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong: {exc}")
+
+
 class TestingScreen(QWidget):
     usage_changed = Signal()
 
@@ -326,6 +440,7 @@ class TestingScreen(QWidget):
         self._perf_pending_filename: str | None = None
         self._access_pending_filename: str | None = None
         self._last_checklist: ReleaseChecklist | None = None
+        self._current_test_draft: TestGenerationResult | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -361,6 +476,7 @@ class TestingScreen(QWidget):
         self._tabs.addTab(self._build_performance_tab(), "Performance")
         self._tabs.addTab(self._build_accessibility_tab(), "Accessibility")
         self._release_tab_index = self._tabs.addTab(self._build_release_tab(), "Build & Release")
+        self._tabs.addTab(self._build_economy_tab(), "Economy Simulation")
 
         self.refresh()
 
@@ -392,6 +508,8 @@ class TestingScreen(QWidget):
         self._build_unity_run(layout)
         self._build_analyze(layout)
         self._build_known_issues(layout)
+        self._build_save_compatibility(layout)
+        self._build_test_generation(layout)
         return container
 
     def _build_case_form(self, layout: QVBoxLayout) -> None:
@@ -587,6 +705,195 @@ class TestingScreen(QWidget):
         self._reopen_btn.clicked.connect(self._on_mark_open)
         row.addWidget(self._reopen_btn)
         layout.addLayout(row)
+
+    # --- Save Compatibility (Save/Load Integrity Testing) ------------------
+
+    def _build_save_compatibility(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Save Compatibility")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Launches your project's built game executable (not the Unity Editor) once per "
+            "save file in a folder you pick, passing "
+            f"{SAVE_PATH_ENV_VAR} and a result-file path as environment variables. "
+            "This only works for games that implement Spiced's small reporting hook — see "
+            "docs/save_load_integrity_hook.md for the exact contract. Without that hook, every "
+            "save will show as \"couldn't tell\", not a real pass or fail."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        exe_row = QHBoxLayout()
+        exe_row.addWidget(QLabel("Game executable:"))
+        self._save_exe_input = QLineEdit()
+        self._save_exe_input.setPlaceholderText("Path to your built game's .exe")
+        exe_row.addWidget(self._save_exe_input, 1)
+        self._save_exe_browse_btn = QPushButton("Browse…")
+        self._save_exe_browse_btn.clicked.connect(self._on_browse_save_exe)
+        exe_row.addWidget(self._save_exe_browse_btn)
+        layout.addLayout(exe_row)
+
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Saves folder:"))
+        self._save_folder_input = QLineEdit()
+        self._save_folder_input.setPlaceholderText("Folder containing old save files")
+        folder_row.addWidget(self._save_folder_input, 1)
+        self._save_folder_browse_btn = QPushButton("Browse…")
+        self._save_folder_browse_btn.clicked.connect(self._on_browse_save_folder)
+        folder_row.addWidget(self._save_folder_browse_btn)
+        layout.addLayout(folder_row)
+
+        run_row = QHBoxLayout()
+        run_row.addStretch(1)
+        self._save_run_btn = QPushButton("Run save compatibility check")
+        self._save_run_btn.clicked.connect(self._on_run_save_check)
+        run_row.addWidget(self._save_run_btn)
+        layout.addLayout(run_row)
+
+        self._save_result = QTextEdit()
+        self._save_result.setReadOnly(True)
+        self._save_result.setPlaceholderText("Per-save results will appear here.")
+        self._save_result.setFixedHeight(160)
+        layout.addWidget(self._save_result)
+
+        history_title = QLabel("Recent save-compatibility runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._save_history = QTextEdit()
+        self._save_history.setReadOnly(True)
+        self._save_history.setFixedHeight(90)
+        layout.addWidget(self._save_history)
+
+    # --- Auto-Generated Unit Tests ------------------------------------------
+
+    def _build_test_generation(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Generate tests for this system")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Paste a C# script (or import a file) and Spiced drafts NUnit test code for it. "
+            "The draft is shown below for you to review and edit — nothing is written to your "
+            "project until you click \"Approve & write file\" on this specific draft."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        label_row = QHBoxLayout()
+        label_row.addWidget(QLabel("System name (optional):"))
+        self._testgen_label_input = QLineEdit()
+        self._testgen_label_input.setPlaceholderText("e.g. InventorySystem")
+        label_row.addWidget(self._testgen_label_input, 1)
+        layout.addLayout(label_row)
+
+        self._testgen_input = QPlainTextEdit()
+        self._testgen_input.setPlaceholderText("Paste the C# script to generate tests for…")
+        self._testgen_input.setFixedHeight(120)
+        layout.addWidget(self._testgen_input)
+
+        row = QHBoxLayout()
+        self._testgen_import_btn = QPushButton("Import script…")
+        self._testgen_import_btn.clicked.connect(self._on_testgen_import)
+        row.addWidget(self._testgen_import_btn)
+        row.addStretch(1)
+        self._testgen_generate_btn = QPushButton("Generate draft")
+        self._testgen_generate_btn.clicked.connect(self._on_testgen_generate)
+        row.addWidget(self._testgen_generate_btn)
+        layout.addLayout(row)
+
+        draft_label = QLabel("Draft (editable before approving):")
+        draft_label.setObjectName("Muted")
+        layout.addWidget(draft_label)
+        self._testgen_draft = QPlainTextEdit()
+        self._testgen_draft.setPlaceholderText("The AI-drafted NUnit test code will appear here.")
+        self._testgen_draft.setFixedHeight(200)
+        layout.addWidget(self._testgen_draft)
+
+        self._testgen_notes = QTextEdit()
+        self._testgen_notes.setReadOnly(True)
+        self._testgen_notes.setPlaceholderText("Assumptions the AI made will appear here.")
+        self._testgen_notes.setFixedHeight(70)
+        layout.addWidget(self._testgen_notes)
+
+        approve_row = QHBoxLayout()
+        approve_row.addStretch(1)
+        self._testgen_approve_btn = QPushButton("Approve & write file")
+        self._testgen_approve_btn.setEnabled(False)
+        self._testgen_approve_btn.clicked.connect(self._on_testgen_approve)
+        approve_row.addWidget(self._testgen_approve_btn)
+        layout.addLayout(approve_row)
+
+        self._testgen_status = QLabel()
+        self._testgen_status.setObjectName("Muted")
+        self._testgen_status.setWordWrap(True)
+        layout.addWidget(self._testgen_status)
+
+        history_title = QLabel("Recent drafts")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._testgen_history = QTextEdit()
+        self._testgen_history.setReadOnly(True)
+        self._testgen_history.setFixedHeight(90)
+        layout.addWidget(self._testgen_history)
+
+    # --- Economy Simulation tab ---------------------------------------------
+
+    def _build_economy_tab(self) -> QWidget:
+        container, layout = self._scrollable()
+
+        heading = QLabel("Economy / Balance Simulation")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Only useful for projects with a buy-with-currency progression system (items, "
+            "costs, unlock levels). Paste economy data in the format below and Spiced runs a "
+            "local, deterministic simulation across many simulated playthroughs, flagging any "
+            "item that turns out to be the mathematically dominant choice."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        schema_label = QLabel(ECONOMY_SCHEMA_DOC)
+        schema_label.setObjectName("Muted")
+        schema_label.setWordWrap(True)
+        layout.addWidget(schema_label)
+
+        self._economy_input = QPlainTextEdit()
+        self._economy_input.setPlaceholderText("Paste economy JSON here…")
+        self._economy_input.setFixedHeight(140)
+        layout.addWidget(self._economy_input)
+
+        row = QHBoxLayout()
+        self._economy_simulate_btn = QPushButton("Simulate (local, free)")
+        self._economy_simulate_btn.clicked.connect(self._on_economy_simulate)
+        row.addWidget(self._economy_simulate_btn)
+        row.addStretch(1)
+        self._economy_ai_btn = QPushButton("Get AI summary")
+        self._economy_ai_btn.setObjectName("Ghost")
+        self._economy_ai_btn.clicked.connect(self._on_economy_ai)
+        row.addWidget(self._economy_ai_btn)
+        layout.addLayout(row)
+
+        self._economy_result = QTextEdit()
+        self._economy_result.setReadOnly(True)
+        self._economy_result.setPlaceholderText("Simulation results will appear here.")
+        self._economy_result.setFixedHeight(220)
+        layout.addWidget(self._economy_result)
+
+        history_title = QLabel("Recent simulations")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._economy_history = QTextEdit()
+        self._economy_history.setReadOnly(True)
+        self._economy_history.setFixedHeight(90)
+        layout.addWidget(self._economy_history)
+
+        return container
 
     # --- Performance tab -------------------------------------------------
 
@@ -846,6 +1153,9 @@ class TestingScreen(QWidget):
         self._refresh_unity_run_status()
         self._refresh_build_pipeline_status()
         self._refresh_build_history()
+        self._refresh_save_history()
+        self._refresh_testgen_history()
+        self._refresh_economy_history()
         self._update_edit_buttons()
 
     def _update_edit_buttons(self) -> None:
@@ -1535,3 +1845,258 @@ class TestingScreen(QWidget):
         self._checklist_ai_btn.setText("Get AI take")
         current = self._checklist_result.toPlainText()
         self._checklist_result.setPlainText(f"{current}\n\n{message}")
+
+    # --- Save Compatibility handlers ----------------------------------------
+
+    def _on_browse_save_exe(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose your built game executable", "", "Executable (*.exe);;All files (*)"
+        )
+        if path:
+            self._save_exe_input.setText(path)
+
+    def _on_browse_save_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Choose a folder of save files")
+        if folder:
+            self._save_folder_input.setText(folder)
+
+    def _on_run_save_check(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        exe_path = self._save_exe_input.text().strip()
+        folder = self._save_folder_input.text().strip()
+        if not exe_path or not folder:
+            QMessageBox.information(
+                self, "Missing info", "Set both the game executable and the saves folder above."
+            )
+            return
+        self._save_run_btn.setEnabled(False)
+        self._save_result.setPlainText(
+            "Running the game once per save file — this can take a while…"
+        )
+        self._thread = QThread()
+        self._worker = _SaveIntegrityWorker(self._services, project, exe_path, folder)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_save_check_done)
+        self._worker.failed.connect(self._on_save_check_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_save_check_done(self, run: SaveIntegrityRun) -> None:
+        self._save_run_btn.setEnabled(True)
+        lines = [f"{run.passed_count} passed / {run.failed_count} not passed:"]
+        for r in run.results:
+            marker = "OK" if r.status == STATUS_PASSED else r.status.upper()
+            detail = f" — {r.error}" if r.error else ""
+            lines.append(f"  [{marker}] {r.save_file}{detail}")
+        self._save_result.setPlainText("\n".join(lines))
+        self._refresh_save_history()
+
+    def _on_save_check_failed(self, message: str) -> None:
+        self._save_run_btn.setEnabled(True)
+        self._save_result.setPlainText(message)
+
+    def _refresh_save_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._save_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        reports = self._services.save_load_tester.history(project.id, limit=5)
+        if not reports:
+            self._save_history.setPlainText(
+                "No save-compatibility runs saved for this project yet."
+            )
+            return
+        lines = [
+            f"[{r.created_at}] {r.passed_count} passed / {r.failed_count} not passed "
+            f"· {r.saves_folder}"
+            for r in reports
+        ]
+        self._save_history.setPlainText("\n".join(lines))
+
+    # --- Auto-Generated Unit Tests handlers ---------------------------------
+
+    def _on_testgen_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import a script", "", "C# scripts (*.cs);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            QMessageBox.warning(self, "Couldn't read file", str(exc))
+            return
+        self._testgen_input.setPlainText(text)
+        if not self._testgen_label_input.text().strip():
+            self._testgen_label_input.setText(Path(path).stem)
+
+    def _on_testgen_generate(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        source = self._testgen_input.toPlainText().strip()
+        if not source:
+            QMessageBox.information(self, "Nothing to draft from", "Paste a script above first.")
+            return
+        label = self._testgen_label_input.text().strip() or None
+        self._testgen_generate_btn.setEnabled(False)
+        self._testgen_generate_btn.setText("Thinking…")
+        self._testgen_approve_btn.setEnabled(False)
+        self._testgen_status.setText("")
+
+        self._thread = QThread()
+        self._worker = _TestGenerationWorker(self._services, project, source, label)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_testgen_done)
+        self._worker.failed.connect(self._on_testgen_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_testgen_done(self, result: TestGenerationResult) -> None:
+        self._testgen_generate_btn.setEnabled(True)
+        self._testgen_generate_btn.setText("Generate draft")
+        self._current_test_draft = result
+        self._testgen_draft.setPlainText(result.draft.draft_text or "")
+        self._testgen_notes.setPlainText(result.response_text)
+        self._testgen_approve_btn.setEnabled(True)
+        self._testgen_status.setText(
+            "Draft saved for review. Edit the code above if you like, then Approve to write it."
+        )
+        self.usage_changed.emit()
+        self._refresh_testgen_history()
+
+    def _on_testgen_failed(self, message: str) -> None:
+        self._testgen_generate_btn.setEnabled(True)
+        self._testgen_generate_btn.setText("Generate draft")
+        self._testgen_status.setText(message)
+
+    def _on_testgen_approve(self) -> None:
+        project = self._services.active_project()
+        if project is None or self._current_test_draft is None:
+            return
+        edited = self._testgen_draft.toPlainText()
+        try:
+            draft = self._services.test_generator.approve_and_write(
+                project, self._current_test_draft.draft.id, edited_text=edited
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't write file", str(exc))
+            return
+        self._testgen_status.setText(f"Written to {draft.written_path}.")
+        self._testgen_approve_btn.setEnabled(False)
+        self._refresh_testgen_history()
+
+    def _refresh_testgen_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._testgen_history.setPlainText(
+                "Drafts are saved once you select an active project."
+            )
+            return
+        drafts = self._services.test_generator.history(project.id, limit=5)
+        if not drafts:
+            self._testgen_history.setPlainText("No test drafts generated for this project yet.")
+            return
+        lines = []
+        for d in drafts:
+            status = f"written to {d.written_path}" if d.approved else "not yet approved"
+            lines.append(f"[{d.created_at}] {d.system_label or '(unnamed system)'} · {status}")
+        self._testgen_history.setPlainText("\n".join(lines))
+
+    # --- Economy Simulation handlers ----------------------------------------
+
+    def _current_economy_data(self) -> dict | None:
+        text = self._economy_input.toPlainText().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to simulate", "Paste economy JSON above first."
+            )
+            return None
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(self, "Invalid JSON", str(exc))
+            return None
+        return data
+
+    def _on_economy_simulate(self) -> None:
+        data = self._current_economy_data()
+        if data is None:
+            return
+        try:
+            findings = self._services.economy_simulator.simulate(data)
+        except InvalidEconomyDataError as exc:
+            self._economy_result.setPlainText(f"That doesn't match the expected format: {exc}")
+            return
+        self._economy_result.setPlainText(_format_economy_findings(findings))
+
+    def _on_economy_ai(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        data = self._current_economy_data()
+        if data is None:
+            return
+        self._economy_ai_btn.setEnabled(False)
+        self._economy_ai_btn.setText("Thinking…")
+        self._economy_result.setPlainText("Simulating and thinking it through…")
+
+        self._thread = QThread()
+        self._worker = _EconomySimulationAIWorker(self._services, project, data)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_economy_ai_done)
+        self._worker.failed.connect(self._on_economy_ai_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_economy_ai_done(self, review: EconomySimulationReview) -> None:
+        self._economy_ai_btn.setEnabled(True)
+        self._economy_ai_btn.setText("Get AI summary")
+        text = _format_economy_findings(review.findings)
+        if review.response_text:
+            text += f"\n\n--- AI summary ---\n{review.response_text}"
+        self._economy_result.setPlainText(text)
+        self.usage_changed.emit()
+        self._refresh_economy_history()
+
+    def _on_economy_ai_failed(self, message: str) -> None:
+        self._economy_ai_btn.setEnabled(True)
+        self._economy_ai_btn.setText("Get AI summary")
+        self._economy_result.setPlainText(message)
+
+    def _refresh_economy_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._economy_history.setPlainText(
+                "AI-summarized simulations are saved once you select an active project."
+            )
+            return
+        reports = self._services.economy_simulator.history(project.id, limit=5)
+        if not reports:
+            self._economy_history.setPlainText(
+                "No AI-summarized simulations saved yet (a local-only simulation isn't saved)."
+            )
+            return
+        lines = []
+        for r in reports:
+            f = r.findings
+            dominant_count = len(f.get("dominant_strategies", []))
+            lines.append(f"[{r.created_at}] {dominant_count} dominant strategy finding(s)")
+        self._economy_history.setPlainText("\n".join(lines))

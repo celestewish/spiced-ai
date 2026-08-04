@@ -24,13 +24,18 @@ from spiced.core.community_pulse import CommunityPulseService
 from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
 from spiced.core.demo_data import DemoDataService
+from spiced.core.dependency_check import DependencyCheckService
+from spiced.core.economy_simulator import EconomySimulationService
 from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
+from spiced.core.precommit_hook import HookInstallResult, install_hook, uninstall_hook
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
 from spiced.core.roadmap_service import RoadmapService
+from spiced.core.save_load_tester import SaveLoadTesterService
 from spiced.core.session_summary import SessionSummaryService, now_sqlite
 from spiced.core.team_service import TeamService
+from spiced.core.test_generator import TestGeneratorService
 from spiced.core.testing import TestingService
 from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
@@ -42,11 +47,16 @@ from spiced.storage.code_health_reports import CodeHealthReportRepository
 from spiced.storage.community_pulse import CommunityPulseRepository
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
+from spiced.storage.dependency_check_reports import DependencyCheckReportRepository
+from spiced.storage.economy_simulation_reports import EconomySimulationReportRepository
 from spiced.storage.feedback_batches import FeedbackBatchRepository
 from spiced.storage.feedback_tasks import FeedbackTaskRepository
+from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
+from spiced.storage.precommit_reviews import PrecommitReviewRepository
 from spiced.storage.projects import Project, ProjectRepository
+from spiced.storage.save_integrity_reports import SaveIntegrityReportRepository
 from spiced.storage.session_summaries import SessionSummary, SessionSummaryRepository
 from spiced.storage.settings import SettingsRepository
 from spiced.storage.test_cases import TestCaseRepository
@@ -115,6 +125,15 @@ class Services:
             SessionSummaryRepository(self.db), self.testing, self.feedback
         )
         self.app_started_at = now_sqlite()
+
+        # Code & Repo Hygiene + Systems & Balance (Phase E, section 6).
+        self.dependency_check = DependencyCheckService(DependencyCheckReportRepository(self.db))
+        self.test_generator = TestGeneratorService(GeneratedTestDraftRepository(self.db))
+        self.precommit_reviews = PrecommitReviewRepository(self.db)
+        self.economy_simulator = EconomySimulationService(
+            EconomySimulationReportRepository(self.db)
+        )
+        self.save_load_tester = SaveLoadTesterService(SaveIntegrityReportRepository(self.db))
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.
@@ -277,6 +296,19 @@ class Services:
             target_platform=target_platform,
             editor_override=editor_override,
         )
+
+    # --- Pre-Commit Review (opt-in per project) -----------------------------
+
+    def install_precommit_hook(self, project: Project) -> HookInstallResult:
+        """Install the .git/hooks/pre-commit script for a project that has
+        opted in. Raises NotAGitRepoError / ForeignHookExistsError (see
+        core.precommit_hook) — this is a thin pass-through, not a new gate;
+        the caller (Projects screen) is expected to have already checked
+        ``project.precommit_review_enabled`` before calling this."""
+        return install_hook(project.path)
+
+    def uninstall_precommit_hook(self, project: Project) -> bool:
+        return uninstall_hook(project.path)
 
     def active_project(self) -> Project | None:
         """Return the developer's currently selected project, if still present."""

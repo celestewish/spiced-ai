@@ -40,6 +40,10 @@ from spiced.core.debugging import (
     DebugAnalysis,
     ProviderNotReadyError,
 )
+from spiced.core.dependency_check import DependencyCheckFindings, DependencyCheckReview
+from spiced.core.dependency_check import NoManifestError as DependencyNoManifestError
+from spiced.core.dependency_check import NoUnityFolderError as DependencyNoUnityFolderError
+from spiced.core.dependency_check import ProviderNotReadyError as DependencyNotReadyError
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
 from spiced.ui.widgets.source_link import SourceLinkExpander
@@ -249,6 +253,75 @@ class _AssetScanAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
+def _format_dependency_findings(findings: DependencyCheckFindings) -> str:
+    if not findings.results:
+        return "No dependencies declared in Packages/manifest.json."
+    lines = []
+    for r in findings.results:
+        if not r.checked:
+            lines.append(f"[not checked] {r.name} ({r.installed_version}): {r.note or ''}")
+        elif r.outdated:
+            lines.append(f"[outdated] {r.name}: {r.installed_version} -> {r.latest_version}")
+        elif r.outdated is False:
+            lines.append(f"[up to date] {r.name}: {r.installed_version}")
+        else:
+            lines.append(
+                f"[unclear] {r.name}: {r.installed_version} vs {r.latest_version} "
+                "(not directly comparable)"
+            )
+    lines.append("")
+    lines.append(
+        f"{findings.outdated_count} outdated, {findings.unchecked_count} couldn't be checked, "
+        f"{len(findings.results)} total."
+    )
+    return "\n".join(lines)
+
+
+class _DependencyCheckWorker(QObject):
+    done = Signal(object)  # DependencyCheckFindings
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            findings = self._services.dependency_check.check(self._project)
+            self.done.emit(findings)
+        except (DependencyNoUnityFolderError, DependencyNoManifestError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while checking dependencies: {exc}")
+
+
+class _DependencyCheckAIWorker(QObject):
+    done = Signal(object)  # DependencyCheckReview
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            review = self._services.dependency_check.analyze(
+                provider, self._project, record_usage=self._services.usage.record_prompt
+            )
+            self.done.emit(review)
+        except (
+            DependencyNotReadyError,
+            DependencyNoUnityFolderError,
+            DependencyNoManifestError,
+        ) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong: {exc}")
+
+
 class DebuggingScreen(QWidget):
     usage_changed = Signal()
 
@@ -289,6 +362,7 @@ class DebuggingScreen(QWidget):
         self._build_code_health(layout)
         self._build_changelog(layout)
         self._build_asset_health(layout)
+        self._build_dependency_check(layout)
 
         self.refresh()
 
@@ -636,6 +710,50 @@ class DebuggingScreen(QWidget):
         self._asset_scan_history.setFixedHeight(80)
         layout.addWidget(self._asset_scan_history)
 
+    # --- Dependencies (Dependency & Plugin Update Checks) --------------------
+
+    def _build_dependency_check(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Dependencies")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Reads this project's Packages/manifest.json and checks each package's version "
+            "against the public Unity Package Registry — a read-only network lookup by "
+            "package name only, nothing about your project is ever sent. Works offline (it "
+            "just reports packages it couldn't check) and never installs or changes anything."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._dependency_check_btn = QPushButton("Check dependencies (local + registry)")
+        self._dependency_check_btn.clicked.connect(self._on_dependency_check)
+        row.addWidget(self._dependency_check_btn)
+        row.addStretch(1)
+        self._dependency_check_ai_btn = QPushButton("Get AI summary")
+        self._dependency_check_ai_btn.setObjectName("Ghost")
+        self._dependency_check_ai_btn.clicked.connect(self._on_dependency_check_ai)
+        row.addWidget(self._dependency_check_ai_btn)
+        layout.addLayout(row)
+
+        self._dependency_check_result = QTextEdit()
+        self._dependency_check_result.setReadOnly(True)
+        self._dependency_check_result.setPlaceholderText(
+            "Dependency check results will appear here."
+        )
+        self._dependency_check_result.setFixedHeight(180)
+        layout.addWidget(self._dependency_check_result)
+
+        history_title = QLabel("Recent AI-summarized dependency checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._dependency_check_history = QTextEdit()
+        self._dependency_check_history.setReadOnly(True)
+        self._dependency_check_history.setFixedHeight(80)
+        layout.addWidget(self._dependency_check_history)
+
     def _on_toggle_health(self) -> None:
         expanded = not self._health_body.isVisible()
         self._health_body.setVisible(expanded)
@@ -666,6 +784,7 @@ class DebuggingScreen(QWidget):
         self._refresh_changelog_status()
         self._refresh_changelog_history()
         self._refresh_asset_scan_history()
+        self._refresh_dependency_check_history()
 
     def _refresh_history(self) -> None:
         project = self._services.active_project()
@@ -1102,3 +1221,94 @@ class DebuggingScreen(QWidget):
                 f"{orphan_count} possibly orphaned"
             )
         self._asset_scan_history.setPlainText("\n".join(lines))
+
+    # --- Dependency check handlers -------------------------------------------
+
+    def _on_dependency_check(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._dependency_check_btn.setEnabled(False)
+        self._dependency_check_result.setPlainText(
+            "Reading manifest.json and querying the Unity Package Registry…"
+        )
+        self._thread = QThread()
+        self._worker = _DependencyCheckWorker(self._services, project)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_dependency_check_done)
+        self._worker.failed.connect(self._on_dependency_check_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_dependency_check_done(self, findings: DependencyCheckFindings) -> None:
+        self._dependency_check_btn.setEnabled(True)
+        self._dependency_check_result.setPlainText(_format_dependency_findings(findings))
+
+    def _on_dependency_check_failed(self, message: str) -> None:
+        self._dependency_check_btn.setEnabled(True)
+        self._dependency_check_result.setPlainText(message)
+
+    def _on_dependency_check_ai(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._dependency_check_ai_btn.setEnabled(False)
+        self._dependency_check_ai_btn.setText("Thinking…")
+        self._dependency_check_result.setPlainText("Checking dependencies and thinking it through…")
+
+        self._thread = QThread()
+        self._worker = _DependencyCheckAIWorker(self._services, project)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_dependency_check_ai_done)
+        self._worker.failed.connect(self._on_dependency_check_ai_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_dependency_check_ai_done(self, review: DependencyCheckReview) -> None:
+        self._dependency_check_ai_btn.setEnabled(True)
+        self._dependency_check_ai_btn.setText("Get AI summary")
+        text = _format_dependency_findings(review.findings)
+        if review.response_text:
+            text += f"\n\n--- AI summary ---\n{review.response_text}"
+        self._dependency_check_result.setPlainText(text)
+        self.usage_changed.emit()
+        self._refresh_dependency_check_history()
+
+    def _on_dependency_check_ai_failed(self, message: str) -> None:
+        self._dependency_check_ai_btn.setEnabled(True)
+        self._dependency_check_ai_btn.setText("Get AI summary")
+        self._dependency_check_result.setPlainText(message)
+
+    def _refresh_dependency_check_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._dependency_check_history.setPlainText(
+                "AI-summarized checks are saved once you select an active project."
+            )
+            return
+        reports = self._services.dependency_check.history(project.id, limit=5)
+        if not reports:
+            self._dependency_check_history.setPlainText(
+                "No AI-summarized dependency checks saved yet (a local-only check isn't saved)."
+            )
+            return
+        lines = []
+        for r in reports:
+            results = r.findings.get("results", [])
+            outdated_count = sum(1 for x in results if x.get("outdated"))
+            unchecked_count = sum(1 for x in results if not x.get("checked"))
+            lines.append(
+                f"[{r.created_at}] {outdated_count} outdated · {unchecked_count} not checked · "
+                f"{len(results)} total"
+            )
+        self._dependency_check_history.setPlainText("\n".join(lines))
