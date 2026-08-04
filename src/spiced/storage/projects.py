@@ -26,6 +26,7 @@ class Project:
     build_schedule_enabled: bool = False
     build_schedule_time: str | None = None
     precommit_review_enabled: bool = False
+    design_doc_sync_enabled: bool = False
 
     @property
     def engine_metadata(self) -> dict:
@@ -133,6 +134,20 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_design_doc_sync_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of Design Doc Sync (Phase F, section 6).
+
+        Off by default, same shape as the other per-project opt-ins (per
+        spec, explicitly opt-in). This setter alone only flips the flag —
+        the Debugging Buddy screen is what actually shows/hides the Design
+        Drift section based on it.
+        """
+        self._db.execute(
+            "UPDATE projects SET design_doc_sync_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, project_id),
+        )
+        return self.get(project_id)
+
     def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
         """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
         self._db.execute(
@@ -186,6 +201,11 @@ class ProjectRepository:
             precommit_review_enabled=(
                 bool(row["precommit_review_enabled"])
                 if "precommit_review_enabled" in keys
+                else False
+            ),
+            design_doc_sync_enabled=(
+                bool(row["design_doc_sync_enabled"])
+                if "design_doc_sync_enabled" in keys
                 else False
             ),
         )

@@ -116,6 +116,7 @@ class ProjectsScreen(QWidget):
         self._build_unity_test_run(layout)
         self._build_build_pipeline(layout)
         self._build_precommit_review(layout)
+        self._build_design_doc_sync(layout)
         self._build_team_section(layout)
 
         self.refresh()
@@ -468,6 +469,63 @@ class ProjectsScreen(QWidget):
                 "\"Remove hook\" to take it back out."
             )
 
+    # --- Design Doc Sync opt-in ----------------------------------------------
+
+    def _build_design_doc_sync(self, layout: QVBoxLayout) -> None:
+        section = QLabel("Design Doc Sync")
+        section.setObjectName("SectionTitle")
+        layout.addWidget(section)
+
+        intro = QLabel(
+            "Off by default. When enabled, the Debugging Buddy page's Design Drift section "
+            "lets you upload or paste your own game's design doc for this project and compare "
+            "it against Spiced's Auto-Generated Dev Docs — flagging drift either direction as "
+            "a heads-up to reconcile the doc or rein in scope, never a verdict."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._design_doc_sync_toggle = QCheckBox(
+            "Enable Design Doc Sync for this project"
+        )
+        self._design_doc_sync_toggle.toggled.connect(self._on_design_doc_sync_toggle)
+        layout.addWidget(self._design_doc_sync_toggle)
+
+        self._design_doc_sync_status = QLabel()
+        self._design_doc_sync_status.setObjectName("Muted")
+        self._design_doc_sync_status.setWordWrap(True)
+        layout.addWidget(self._design_doc_sync_status)
+
+    def _on_design_doc_sync_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        self._services.projects.set_design_doc_sync_settings(project.id, checked)
+        self._update_design_doc_sync_status()
+
+    def _update_design_doc_sync_status(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = project.design_doc_sync_enabled if project else False
+
+        self._design_doc_sync_toggle.blockSignals(True)
+        self._design_doc_sync_toggle.setChecked(bool(enabled))
+        self._design_doc_sync_toggle.blockSignals(False)
+        self._design_doc_sync_toggle.setEnabled(has_project)
+
+        if not has_project:
+            self._design_doc_sync_status.setText("")
+        elif not enabled:
+            self._design_doc_sync_status.setText(
+                "Not enabled. Turn this on to use Design Drift on the Debugging Buddy page."
+            )
+        else:
+            self._design_doc_sync_status.setText(
+                "Enabled. Upload or paste your design doc on the Debugging Buddy page's "
+                "Design Drift section."
+            )
+
     # --- Team Mode (opt-in) -------------------------------------------------
 
     def _build_team_section(self, layout: QVBoxLayout) -> None:
@@ -723,6 +781,7 @@ class ProjectsScreen(QWidget):
         self._update_unity_run_status()
         self._update_build_pipeline_status()
         self._update_precommit_status()
+        self._update_design_doc_sync_status()
         project = self._services.active_project()
         if project is None:
             self._detail.setText("Select or create a project to connect a Unity folder.")

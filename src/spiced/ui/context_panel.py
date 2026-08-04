@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QFrame, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from spiced.app.services import Services
+from spiced.core.crunch_awareness import detect_crunch_pattern
 from spiced.core.session_summary import ProviderNotReadyError, SessionSummaryResult
 
 
@@ -53,6 +54,11 @@ class ContextPanel(QFrame):
         self._services = services
         self._thread: QThread | None = None
         self._worker: QObject | None = None
+        # Crunch-Pattern Awareness (Phase F): dismissed for the current app
+        # session only — see _build_crunch_awareness_section below for why
+        # persisting the dismissal across restarts is left as a documented
+        # nice-to-have rather than built now.
+        self._crunch_dismissed = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -87,6 +93,7 @@ class ContextPanel(QFrame):
         layout.addWidget(self._usage_pill)
 
         self._build_session_section(layout)
+        self._build_crunch_awareness_section(layout)
         self._build_build_alert_section(layout)
 
         layout.addStretch(1)
@@ -182,6 +189,56 @@ class ContextPanel(QFrame):
             lines.append(f"[{s.created_at}]{synced_note} {first_line}")
         self._recent_sessions.setText("\n".join(lines))
 
+    # --- Crunch-Pattern Awareness (Phase F, Dev Wellbeing) -------------------
+    #
+    # Purely local: reuses the same session_summaries history the Session
+    # section above already reads, via core.crunch_awareness.
+    # detect_crunch_pattern -- no new capture mechanism, no AI call, and
+    # (hard privacy rule, see that module's docstring) no path to
+    # TeamService/BackendClient, even for team-linked projects. A quiet,
+    # dismissible note: dismissing hides it for the rest of this app run.
+    # Persisting the dismissal across restarts would need a new local
+    # settings key; left as a documented nice-to-have rather than built now,
+    # since re-showing an informational note on next launch is a minor
+    # inconvenience, not a privacy or correctness issue.
+
+    def _build_crunch_awareness_section(self, layout: QVBoxLayout) -> None:
+        self._crunch_note = QLabel("")
+        self._crunch_note.setObjectName("Muted")
+        self._crunch_note.setWordWrap(True)
+        self._crunch_note.setVisible(False)
+        layout.addWidget(self._crunch_note)
+
+        self._crunch_dismiss_btn = QPushButton("Dismiss")
+        self._crunch_dismiss_btn.setObjectName("Ghost")
+        self._crunch_dismiss_btn.setVisible(False)
+        self._crunch_dismiss_btn.clicked.connect(self._on_dismiss_crunch_note)
+        layout.addWidget(self._crunch_dismiss_btn)
+
+    def _on_dismiss_crunch_note(self) -> None:
+        self._crunch_dismissed = True
+        self._crunch_note.setVisible(False)
+        self._crunch_dismiss_btn.setVisible(False)
+
+    def _refresh_crunch_awareness(self) -> None:
+        if self._crunch_dismissed:
+            return
+        project = self._services.active_project()
+        if project is None:
+            self._crunch_note.setVisible(False)
+            self._crunch_dismiss_btn.setVisible(False)
+            return
+        summaries = self._services.session_summaries.history(project.id, limit=100)
+        result = detect_crunch_pattern(summaries)
+        message = result.message
+        if message is None:
+            self._crunch_note.setVisible(False)
+            self._crunch_dismiss_btn.setVisible(False)
+            return
+        self._crunch_note.setText(message)
+        self._crunch_note.setVisible(True)
+        self._crunch_dismiss_btn.setVisible(True)
+
     # --- Build alerts (Automated Build Pipeline, Phase D) -------------------
     #
     # Per spec, only a build *failure* interrupts the developer — a
@@ -233,3 +290,4 @@ class ContextPanel(QFrame):
         self._projects_label.setText(f"{count} {word} saved locally.")
         self._usage_pill.setText(self._services.usage.status().summary())
         self._refresh_recent_sessions()
+        self._refresh_crunch_awareness()
