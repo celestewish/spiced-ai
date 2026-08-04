@@ -9,6 +9,7 @@ than guessing from raw text.
 
 from __future__ import annotations
 
+from spiced.connectors.unity_docs_scan import DevDocsScanResult
 from spiced.connectors.unity_package_registry import PackageCheckResult
 from spiced.connectors.unity_scan import OversizedAssetFinding
 from spiced.core.accessibility_parser import ParsedAccessibility
@@ -1412,4 +1413,167 @@ def build_economy_simulation_prompt(
         "Simulation results computed by Spiced locally (deterministic, trustworthy):\n"
         f"{_format_economy_findings(findings)}\n\n"
         f"{ECONOMY_SIMULATION_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Auto-Generated Dev Docs (Phase F, section 6). The class/
+# method signatures and doc comments are already deterministic (a local
+# regex scan of the project's own .cs scripts); the AI only turns them into
+# a living, plain-language summary per system/file.
+DEV_DOCS_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the scanned classes/methods/comments as ground truth; do not invent systems or "
+    "methods that weren't in the scan.",
+    "Group related classes into short, plain-language system summaries rather than repeating "
+    "every method signature verbatim.",
+    "Use any ///-doc or // comments found near a class/method as your best signal for intent, "
+    "but say so plainly when a class has no comments to go on and you're inferring purpose from "
+    "its name and methods alone.",
+    "Never claim you changed, edited, or fixed any files — you only read scripts.",
+    "If a file or class looks incomplete or stubbed out, note that rather than padding.",
+    "If nothing was found (no .cs files, or none with classes), say so plainly.",
+)
+
+DEV_DOCS_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section short:
+
+Here's a living summary of your project's scripts.
+
+Systems overview:
+- [System/file grouping, plain-language purpose, 1-2 sentences — or "Nothing to summarize yet." \
+if the scan found no classes]
+
+Notable classes:
+- [Class name, file, plain-language purpose]
+
+Undocumented areas:
+- [Classes/methods with no doc comments Spiced had to infer purpose from name/signature alone — \
+or "Everything scanned had at least some comments to go on." if none]
+
+What this does not cover:
+[A short, honest reminder this only reflects the .cs scripts scanned under Assets/, not design \
+intent, and the extraction is a regex scan, not a real C# parser]"""
+
+
+def _format_dev_docs_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in DEV_DOCS_RULES)
+
+
+def _format_dev_docs_scan(scan: DevDocsScanResult) -> str:
+    if not scan.classes:
+        return f"- No classes found ({scan.file_count} .cs file(s) scanned)."
+    lines = [
+        f"- Scripts scanned: {scan.file_count}",
+        f"- Classes found: {scan.class_count}",
+        f"- Public methods found: {scan.method_count}",
+    ]
+    for c in scan.classes[:40]:
+        doc = f" — {c.doc_comment}" if c.doc_comment else " — (no doc comment)"
+        lines.append(f"- class {c.name} ({c.file}){doc}")
+        for m in c.methods[:15]:
+            mdoc = f" — {m.doc_comment}" if m.doc_comment else ""
+            lines.append(f"    • {m.signature}{mdoc}")
+        if len(c.methods) > 15:
+            lines.append(f"    • ...and {len(c.methods) - 15} more method(s).")
+    if len(scan.classes) > 40:
+        lines.append(f"- ...and {len(scan.classes) - 40} more class(es) (showing the first 40).")
+    return "\n".join(lines)
+
+
+def build_dev_docs_prompt(scan: DevDocsScanResult, *, project_name: str | None = None) -> str:
+    """Assemble the Dev Docs prompt from the deterministic local .cs scan.
+
+    Only class/method names, signatures, and any comments already sitting
+    next to them in the source are included — never full file contents.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion turning an indie Unity developer's scanned script "
+        "signatures into a living, plain-language dev-docs summary. You never change their "
+        "project.\n\n"
+        "Follow these rules:\n"
+        f"{_format_dev_docs_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Classes/methods/comments found by Spiced's local scan (deterministic, trustworthy):\n"
+        f"{_format_dev_docs_scan(scan)}\n\n"
+        f"{DEV_DOCS_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to Design Doc Sync (Phase F, section 6, Stretch tier). This
+# compares the developer's *own game's* design doc (never the Spiced product
+# spec) against the Dev Docs summary of what's actually implemented. Framed
+# explicitly as "reconcile the doc or rein in scope" — never a verdict on
+# which side is right, and never a blocker.
+MAX_DESIGN_DOC_CHARS = 6000
+
+DESIGN_DOC_SYNC_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "This is the developer's own game design doc, not a product spec for Spiced itself.",
+    "Compare what the Dev Docs summary shows is implemented against what the design doc "
+    "describes, in both directions.",
+    "Frame every finding as \"reconcile the doc or rein in scope\" — never as a verdict on which "
+    "one is right, and never as a blocker to anything.",
+    "Only flag drift that looks meaningful (a whole system or feature, not a rename or a "
+    "one-line wording difference).",
+    "Never claim you changed the design doc, the code, or any files.",
+    "If nothing meaningful has drifted, say so plainly rather than inventing a concern.",
+)
+
+DESIGN_DOC_SYNC_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Here's the design-doc drift check.
+
+Implemented but not in the design doc:
+- [System/feature and a short note — or "Nothing stands out." if empty]
+
+Documented but not implemented yet:
+- [System/feature the design doc describes that the Dev Docs summary doesn't show — or \
+"Nothing stands out." if empty]
+
+Either way:
+[A short, honest reminder this is about reconciling the doc or reining in scope — not a \
+verdict on which one is "right"]"""
+
+
+def _format_design_doc_sync_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in DESIGN_DOC_SYNC_RULES)
+
+
+def build_design_doc_sync_prompt(
+    *,
+    design_doc_text: str,
+    dev_docs_summary: str,
+    scan_summary: dict,
+    project_name: str | None = None,
+) -> str:
+    """Assemble the Design Doc Sync prompt from an uploaded design doc plus
+    the project's latest Dev Docs snapshot.
+
+    Only the design doc text the developer explicitly uploaded/pasted, the
+    Dev Docs AI summary, and a list of scanned class names are included —
+    never raw script contents.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    trimmed_doc = design_doc_text.strip()[:MAX_DESIGN_DOC_CHARS] or "(empty)"
+    classes = scan_summary.get("classes", []) if isinstance(scan_summary, dict) else []
+    class_names = ", ".join(c.get("name", "") for c in classes[:60] if c.get("name")) or "(none)"
+    return (
+        "You are Spiced, a calm companion comparing an indie developer's own game design doc "
+        "against what Spiced's Dev Docs scan shows is actually implemented. You never change "
+        "the design doc, the code, or any files.\n\n"
+        "Follow these rules:\n"
+        f"{_format_design_doc_sync_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Dev Docs summary (Spiced's most recent AI-written summary of the scanned scripts):\n"
+        f"{dev_docs_summary or '(no summary available)'}\n\n"
+        f"Classes found by the local scan: {class_names}\n\n"
+        "Design doc text the developer uploaded/pasted (already trimmed; do not ask for the "
+        "full document):\n"
+        "```\n"
+        f"{trimmed_doc}\n"
+        "```\n\n"
+        f"{DESIGN_DOC_SYNC_RESPONSE_FORMAT}\n"
     )

@@ -318,6 +318,45 @@ CREATE TABLE IF NOT EXISTS save_integrity_reports (
     failed_count    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Auto-Generated Dev Docs (Phase F, section 6). One row per "Regenerate
+-- docs" click (never a background file-watcher, per spec) — a versioned
+-- history the Scope-Creep Flagging feature diffs against, not just a
+-- single "latest" cache. source_summary_json is the raw local .cs scan
+-- (connectors.unity_docs_scan); ai_summary is the AI's plain-language pass
+-- over it.
+CREATE TABLE IF NOT EXISTS dev_docs_snapshots (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id          INTEGER NOT NULL,
+    source_summary_json TEXT,
+    ai_summary          TEXT,
+    provider            TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Design Doc Sync (Phase F, section 6, Stretch). The developer's own game
+-- design doc (never the Spiced product spec), pasted or imported per
+-- project. Opt-in per project — see projects.design_doc_sync_enabled.
+CREATE TABLE IF NOT EXISTS design_doc_uploads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL,
+    filename    TEXT,
+    text        TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Design Doc Sync's saved AI comparisons: the uploaded design doc text
+-- against a Dev Docs snapshot, flagging drift either direction, framed as
+-- "reconcile the doc or rein in scope" — never a verdict.
+CREATE TABLE IF NOT EXISTS design_doc_sync_reports (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id            INTEGER NOT NULL,
+    design_doc_upload_id  INTEGER NOT NULL,
+    dev_docs_snapshot_id  INTEGER NOT NULL,
+    ai_summary            TEXT,
+    provider              TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
@@ -346,6 +385,11 @@ PROJECT_MIGRATIONS = {
     # other per-project toggles. Only when explicitly on does the Projects
     # screen install a .git/hooks/pre-commit script into the project.
     "precommit_review_enabled": "INTEGER NOT NULL DEFAULT 0",
+    # Design Doc Sync (Phase F, section 6): off by default, same opt-in shape
+    # as the other per-project toggles. Only when explicitly on does the
+    # Debugging Buddy page's Design Drift section become active for this
+    # project.
+    "design_doc_sync_enabled": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

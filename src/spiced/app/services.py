@@ -25,6 +25,8 @@ from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
 from spiced.core.demo_data import DemoDataService
 from spiced.core.dependency_check import DependencyCheckService
+from spiced.core.design_doc_sync import DesignDocSyncService
+from spiced.core.dev_docs import DevDocsService
 from spiced.core.economy_simulator import EconomySimulationService
 from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
@@ -48,6 +50,9 @@ from spiced.storage.community_pulse import CommunityPulseRepository
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
 from spiced.storage.dependency_check_reports import DependencyCheckReportRepository
+from spiced.storage.design_doc_sync_reports import DesignDocSyncReportRepository
+from spiced.storage.design_doc_uploads import DesignDocUploadRepository
+from spiced.storage.dev_docs_snapshots import DevDocsSnapshotRepository
 from spiced.storage.economy_simulation_reports import EconomySimulationReportRepository
 from spiced.storage.feedback_batches import FeedbackBatchRepository
 from spiced.storage.feedback_tasks import FeedbackTaskRepository
@@ -134,6 +139,21 @@ class Services:
             EconomySimulationReportRepository(self.db)
         )
         self.save_load_tester = SaveLoadTesterService(SaveIntegrityReportRepository(self.db))
+
+        # Documentation + Dev Wellbeing (Phase F, section 6). Dev Docs,
+        # Design Doc Sync, and Scope-Creep Flagging are all local-only (no
+        # backend sync described for any of them). Crunch-Pattern Awareness
+        # (core.crunch_awareness) is deliberately *not* wired here as a
+        # service — the Context Panel calls it directly over
+        # self.session_summaries.history(), reusing Phase B's existing
+        # table with no new capture mechanism and, per the plan's explicit
+        # judgment call #5, no path to TeamService/BackendClient at all.
+        self.dev_docs = DevDocsService(DevDocsSnapshotRepository(self.db))
+        self.design_doc_sync = DesignDocSyncService(
+            DesignDocUploadRepository(self.db),
+            DesignDocSyncReportRepository(self.db),
+            self.dev_docs,
+        )
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.

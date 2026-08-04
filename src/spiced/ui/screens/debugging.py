@@ -44,6 +44,18 @@ from spiced.core.dependency_check import DependencyCheckFindings, DependencyChec
 from spiced.core.dependency_check import NoManifestError as DependencyNoManifestError
 from spiced.core.dependency_check import NoUnityFolderError as DependencyNoUnityFolderError
 from spiced.core.dependency_check import ProviderNotReadyError as DependencyNotReadyError
+from spiced.core.design_doc_sync import (
+    DesignDocSyncNotEnabledError,
+    DesignDocSyncResult,
+    NoDesignDocError,
+    UnsupportedDesignDocFormatError,
+    import_design_doc_text,
+)
+from spiced.core.design_doc_sync import ProviderNotReadyError as DesignDocSyncNotReadyError
+from spiced.core.dev_docs import DevDocsResult
+from spiced.core.dev_docs import NoUnityFolderError as DevDocsNoUnityFolderError
+from spiced.core.dev_docs import ProviderNotReadyError as DevDocsNotReadyError
+from spiced.core.scope_creep import detect_scope_creep
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
 from spiced.ui.widgets.source_link import SourceLinkExpander
@@ -322,6 +334,55 @@ class _DependencyCheckAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
+class _DevDocsWorker(QObject):
+    done = Signal(object)  # DevDocsResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.dev_docs.generate(
+                provider, self._project, record_usage=self._services.usage.record_prompt
+            )
+            self.done.emit(result)
+        except (DevDocsNotReadyError, DevDocsNoUnityFolderError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while generating docs: {exc}")
+
+
+class _DesignDocSyncWorker(QObject):
+    done = Signal(object)  # DesignDocSyncResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.design_doc_sync.compare(
+                provider, self._project, record_usage=self._services.usage.record_prompt
+            )
+            self.done.emit(result)
+        except (
+            DesignDocSyncNotReadyError,
+            DesignDocSyncNotEnabledError,
+            NoDesignDocError,
+            DevDocsNoUnityFolderError,
+        ) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while checking design drift: {exc}")
+
+
 class DebuggingScreen(QWidget):
     usage_changed = Signal()
 
@@ -363,6 +424,8 @@ class DebuggingScreen(QWidget):
         self._build_changelog(layout)
         self._build_asset_health(layout)
         self._build_dependency_check(layout)
+        self._build_dev_docs(layout)
+        self._build_design_drift(layout)
 
         self.refresh()
 
@@ -754,6 +817,300 @@ class DebuggingScreen(QWidget):
         self._dependency_check_history.setFixedHeight(80)
         layout.addWidget(self._dependency_check_history)
 
+    # --- Dev Docs (Auto-Generated Dev Docs) -----------------------------------
+
+    def _build_dev_docs(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Dev Docs (Auto-Generated)")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Scans this project's own .cs scripts under Assets/ for class/method signatures "
+            "and any doc comments, then asks the AI to turn them into a living, plain-language "
+            "summary. Regenerated only when you click the button below — never a background "
+            "file-watcher."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._dev_docs_btn = QPushButton("Regenerate docs")
+        self._dev_docs_btn.clicked.connect(self._on_dev_docs_generate)
+        row.addWidget(self._dev_docs_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self._dev_docs_result = QTextEdit()
+        self._dev_docs_result.setReadOnly(True)
+        self._dev_docs_result.setPlaceholderText("Your generated docs will appear here.")
+        self._dev_docs_result.setFixedHeight(200)
+        layout.addWidget(self._dev_docs_result)
+
+        history_title = QLabel("Snapshot history")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._dev_docs_history = QTextEdit()
+        self._dev_docs_history.setReadOnly(True)
+        self._dev_docs_history.setFixedHeight(90)
+        layout.addWidget(self._dev_docs_history)
+
+    def _on_dev_docs_generate(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._dev_docs_btn.setEnabled(False)
+        self._dev_docs_btn.setText("Generating…")
+        self._dev_docs_result.setPlainText("Scanning scripts and thinking it through…")
+
+        self._thread = QThread()
+        self._worker = _DevDocsWorker(self._services, project)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_dev_docs_done)
+        self._worker.failed.connect(self._on_dev_docs_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _on_dev_docs_done(self, result: DevDocsResult) -> None:
+        self._dev_docs_btn.setEnabled(True)
+        self._dev_docs_btn.setText("Regenerate docs")
+        stats = (
+            f"{result.scan.file_count} script(s), {result.scan.class_count} class(es), "
+            f"{result.scan.method_count} public method(s) scanned.\n\n"
+        )
+        self._dev_docs_result.setPlainText(stats + result.response_text)
+        self.usage_changed.emit()
+        self._refresh_dev_docs_history()
+        # A new snapshot changes the scope-creep trend, so refresh that too.
+        self._refresh_design_drift()
+
+    def _on_dev_docs_failed(self, message: str) -> None:
+        self._dev_docs_btn.setEnabled(True)
+        self._dev_docs_btn.setText("Regenerate docs")
+        self._dev_docs_result.setPlainText(message)
+
+    def _refresh_dev_docs_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._dev_docs_history.setPlainText(
+                "Snapshots are saved once you select an active project."
+            )
+            return
+        snapshots = self._services.dev_docs.history(project.id, limit=5)
+        if not snapshots:
+            self._dev_docs_history.setPlainText("No Dev Docs snapshots generated yet.")
+            return
+        lines = [
+            f"[{s.created_at}] {s.class_count} class(es), {s.method_count} method(s)"
+            for s in snapshots
+        ]
+        self._dev_docs_history.setPlainText("\n".join(lines))
+
+    # --- Design Drift (Design Doc Sync) + Scope-Creep Flagging ----------------
+    #
+    # Paired on the same screen per spec: Scope-Creep Flagging is a pure
+    # local computation over the Dev Docs snapshot history above (no AI
+    # call of its own — see core.scope_creep) and is appended below the AI
+    # drift check's response rather than run as a separate action.
+
+    def _build_design_drift(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Design Drift + Scope Creep")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Opt-in per project (Projects screen). Upload or paste your own game's design doc "
+            "— never Spiced's own spec — and compare it against the latest Dev Docs snapshot: "
+            "flags drift either direction as a heads-up to reconcile the doc or rein in scope, "
+            "paired with a gentle scope-growth note built from your Dev Docs snapshot history."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._design_drift_status = QLabel()
+        self._design_drift_status.setObjectName("Muted")
+        self._design_drift_status.setWordWrap(True)
+        layout.addWidget(self._design_drift_status)
+
+        self._design_doc_input = QPlainTextEdit()
+        self._design_doc_input.setPlaceholderText(
+            "Paste your game's design doc here, or import a .txt/.md/.docx file…"
+        )
+        self._design_doc_input.setFixedHeight(140)
+        layout.addWidget(self._design_doc_input)
+
+        row = QHBoxLayout()
+        self._design_doc_import_btn = QPushButton("Import file…")
+        self._design_doc_import_btn.clicked.connect(self._on_design_doc_import)
+        row.addWidget(self._design_doc_import_btn)
+        self._design_doc_save_btn = QPushButton("Save design doc")
+        self._design_doc_save_btn.setObjectName("Ghost")
+        self._design_doc_save_btn.clicked.connect(self._on_design_doc_save)
+        row.addWidget(self._design_doc_save_btn)
+        row.addStretch(1)
+        self._design_drift_btn = QPushButton("Check design drift")
+        self._design_drift_btn.clicked.connect(self._on_design_drift_check)
+        row.addWidget(self._design_drift_btn)
+        layout.addLayout(row)
+
+        self._design_drift_result = QTextEdit()
+        self._design_drift_result.setReadOnly(True)
+        self._design_drift_result.setPlaceholderText(
+            "The drift check and scope-creep note will appear here."
+        )
+        self._design_drift_result.setFixedHeight(200)
+        layout.addWidget(self._design_drift_result)
+
+        history_title = QLabel("Recent drift checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._design_drift_history = QTextEdit()
+        self._design_drift_history.setReadOnly(True)
+        self._design_drift_history.setFixedHeight(80)
+        layout.addWidget(self._design_drift_history)
+
+    def _on_design_doc_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import a design doc",
+            "",
+            "Design docs (*.txt *.md *.docx);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            text = import_design_doc_text(path)
+        except (OSError, UnsupportedDesignDocFormatError, KeyError) as exc:
+            QMessageBox.warning(
+                self, "Could not read file", f"Sorry, I couldn't read that file:\n{exc}"
+            )
+            return
+        self._design_doc_input.setPlainText(text)
+
+    def _on_design_doc_save(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        try:
+            self._services.design_doc_sync.upload_text(
+                project.id, self._design_doc_input.toPlainText()
+            )
+        except ValueError as exc:
+            QMessageBox.information(self, "Nothing to save", str(exc))
+            return
+        self._refresh_design_drift()
+
+    def _on_design_drift_check(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._design_drift_btn.setEnabled(False)
+        self._design_drift_btn.setText("Checking…")
+        self._design_drift_result.setPlainText("Comparing your design doc against Dev Docs…")
+
+        self._thread = QThread()
+        self._worker = _DesignDocSyncWorker(self._services, project)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.done.connect(self._on_design_drift_done)
+        self._worker.failed.connect(self._on_design_drift_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.start()
+
+    def _scope_creep_message(self, project) -> str | None:
+        """Scope-Creep Flagging: pure local computation over the Dev Docs
+        snapshot history, optionally cross-referenced against the latest
+        uploaded design doc text. No AI call."""
+        snapshots = list(reversed(self._services.dev_docs.history(project.id, limit=20)))
+        upload = self._services.design_doc_sync.latest_upload(project.id)
+        finding = detect_scope_creep(
+            snapshots, design_doc_text=upload.text if upload is not None else None
+        )
+        return finding.message
+
+    def _on_design_drift_done(self, result: DesignDocSyncResult) -> None:
+        self._design_drift_btn.setEnabled(True)
+        self._design_drift_btn.setText("Check design drift")
+        text = result.response_text
+        project = self._services.active_project()
+        if project is not None:
+            scope_note = self._scope_creep_message(project)
+            if scope_note:
+                text += f"\n\n--- Scope-creep note ---\n{scope_note}"
+        self._design_drift_result.setPlainText(text)
+        self.usage_changed.emit()
+        self._refresh_design_drift_history()
+
+    def _on_design_drift_failed(self, message: str) -> None:
+        self._design_drift_btn.setEnabled(True)
+        self._design_drift_btn.setText("Check design drift")
+        self._design_drift_result.setPlainText(message)
+
+    def _refresh_design_drift_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._design_drift_history.setPlainText(
+                "Checks are saved once you select an active project."
+            )
+            return
+        reports = self._services.design_doc_sync.history(project.id, limit=5)
+        if not reports:
+            self._design_drift_history.setPlainText(
+                "No design-drift checks saved for this project yet."
+            )
+            return
+        lines = []
+        for r in reports:
+            summary = (r.ai_summary or "").strip().splitlines()
+            first_line = next((line for line in summary if line.strip()), "")
+            lines.append(f"[{r.created_at}] {first_line}")
+        self._design_drift_history.setPlainText("\n".join(lines))
+
+    def _refresh_design_drift(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = bool(project.design_doc_sync_enabled) if project else False
+        active = has_project and enabled
+
+        self._design_doc_input.setEnabled(active)
+        self._design_doc_import_btn.setEnabled(active)
+        self._design_doc_save_btn.setEnabled(active)
+        self._design_drift_btn.setEnabled(active)
+
+        if not has_project:
+            self._design_drift_status.setText("Select a project to use Design Doc Sync.")
+        elif not enabled:
+            self._design_drift_status.setText(
+                "Off for this project. Turn on \"Design Doc Sync\" on the Projects screen to "
+                "use this section."
+            )
+        else:
+            upload = self._services.design_doc_sync.latest_upload(project.id)
+            if upload is None:
+                self._design_drift_status.setText(
+                    "No design doc saved yet for this project. Paste or import one above, "
+                    "then Save design doc."
+                )
+            else:
+                filename_note = f" ({upload.filename})" if upload.filename else ""
+                self._design_drift_status.setText(
+                    f"Design doc saved {upload.uploaded_at}{filename_note}."
+                )
+        self._refresh_design_drift_history()
+
     def _on_toggle_health(self) -> None:
         expanded = not self._health_body.isVisible()
         self._health_body.setVisible(expanded)
@@ -785,6 +1142,8 @@ class DebuggingScreen(QWidget):
         self._refresh_changelog_history()
         self._refresh_asset_scan_history()
         self._refresh_dependency_check_history()
+        self._refresh_dev_docs_history()
+        self._refresh_design_drift()
 
     def _refresh_history(self) -> None:
         project = self._services.active_project()
