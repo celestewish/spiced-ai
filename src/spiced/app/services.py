@@ -16,20 +16,25 @@ from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
 from spiced.core.asset_scan import AssetScanService
 from spiced.core.auth_service import AuthService
+from spiced.core.budget_tracker import BudgetTrackerService
 from spiced.core.build_pipeline import run_build_pipeline
 from spiced.core.changelog_draft import ChangelogService
 from spiced.core.code_health import CodeHealthService
 from spiced.core.community.base import CommunitySource
 from spiced.core.community.discord_poster import DiscordPoster
 from spiced.core.community_pulse import CommunityPulseService
+from spiced.core.competitive_landscape import CompetitiveLandscapeService
+from spiced.core.contract_checklist import ContractChecklistService
 from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
 from spiced.core.demo_data import DemoDataService
 from spiced.core.dependency_check import DependencyCheckService
 from spiced.core.design_doc_sync import DesignDocSyncService
 from spiced.core.dev_docs import DevDocsService
+from spiced.core.draft_translation import DraftTranslationService
 from spiced.core.economy_simulator import EconomySimulationService
 from spiced.core.feedback import FeedbackService
+from spiced.core.localization_readiness import LocalizationReadinessService
 from spiced.core.performance import PerformanceService
 from spiced.core.player_crash_reports import PlayerCrashSyncService
 from spiced.core.playtester_recruitment import PlaytesterRecruitmentService
@@ -49,21 +54,26 @@ from spiced.core.version_check import VersionCheckService
 from spiced.core.wishlist_analytics import WishlistAnalyticsService
 from spiced.storage.accessibility_reports import AccessibilityReportRepository
 from spiced.storage.asset_scan_reports import AssetScanReportRepository
+from spiced.storage.budget_entries import BudgetRepository
 from spiced.storage.build_reports import BuildReport, BuildReportRepository
 from spiced.storage.changelog_drafts import ChangelogDraftRepository
 from spiced.storage.code_health_reports import CodeHealthReportRepository
 from spiced.storage.community_pulse import CommunityPulseRepository
+from spiced.storage.competitive_landscape_reports import CompetitiveLandscapeReportRepository
+from spiced.storage.contract_checklist_reviews import ContractChecklistReviewRepository
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
 from spiced.storage.dependency_check_reports import DependencyCheckReportRepository
 from spiced.storage.design_doc_sync_reports import DesignDocSyncReportRepository
 from spiced.storage.design_doc_uploads import DesignDocUploadRepository
 from spiced.storage.dev_docs_snapshots import DevDocsSnapshotRepository
+from spiced.storage.draft_translations import DraftTranslationRepository
 from spiced.storage.economy_simulation_reports import EconomySimulationReportRepository
 from spiced.storage.feedback_batches import FeedbackBatchRepository
 from spiced.storage.feedback_tasks import FeedbackTaskRepository
 from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.known_issues import KnownIssueRepository
+from spiced.storage.localization_readiness_reports import LocalizationReadinessReportRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
 from spiced.storage.player_crash_sync import PlayerCrashSyncRepository
 from spiced.storage.playtester_signups import PlaytesterSignupRepository
@@ -102,6 +112,12 @@ DISCORD_POSTING_ENABLED_KEY = "discord_posting_enabled"
 # confirm-before-send dialog. Off by default — approval-required is the
 # default path per spec.
 DISCORD_AUTO_POST_ENABLED_KEY = "discord_auto_post_enabled"
+# Rapid Prototyping Mode (Phase H, section 7 part 2, Core tier). Off by
+# default, same opt-in shape as the other app-wide toggles above. When on,
+# the Testing screen foregrounds a minimal Quick Smoke Test panel and
+# de-emphasizes (collapses) the full functional/performance/accessibility/
+# economy QA suite — nothing is removed, only what's foregrounded changes.
+PROTOTYPE_MODE_ENABLED_KEY = "prototype_mode_enabled"
 
 
 class Services:
@@ -192,6 +208,23 @@ class Services:
         self.player_crash_sync = PlayerCrashSyncService(
             self.teams, self.regression, PlayerCrashSyncRepository(self.db)
         )
+
+        # Business & Legal Support + Prototyping & Pre-Production +
+        # Localization (Phase H, section 7 part 2). Grant/Funding Finder
+        # (core.grant_finder) follows the same stateless pattern as
+        # core.release_checklist and is deliberately not wired here — it's
+        # called directly, same as build_checklist/analyze_checklist.
+        self.contract_checklist = ContractChecklistService(
+            ContractChecklistReviewRepository(self.db)
+        )
+        self.budget_tracker = BudgetTrackerService(BudgetRepository(self.db))
+        self.competitive_landscape = CompetitiveLandscapeService(
+            CompetitiveLandscapeReportRepository(self.db)
+        )
+        self.localization_readiness = LocalizationReadinessService(
+            LocalizationReadinessReportRepository(self.db)
+        )
+        self.draft_translation = DraftTranslationService(DraftTranslationRepository(self.db))
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.
@@ -290,6 +323,14 @@ class Services:
             telemetry_client.post_event(self._telemetry_client_id(), event_name)
         except Exception:
             pass
+
+    # --- Rapid Prototyping Mode (opt-in, off by default) -------------------
+
+    def prototype_mode_enabled(self) -> bool:
+        return self._settings.get(PROTOTYPE_MODE_ENABLED_KEY, "") == "1"
+
+    def set_prototype_mode_enabled(self, enabled: bool) -> None:
+        self._settings.set(PROTOTYPE_MODE_ENABLED_KEY, "1" if enabled else "")
 
     # --- Solo-Dev Mode vs. Small-Team Mode (opt-in, off by default) --------
 

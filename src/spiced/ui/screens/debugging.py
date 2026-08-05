@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -55,6 +56,15 @@ from spiced.core.design_doc_sync import ProviderNotReadyError as DesignDocSyncNo
 from spiced.core.dev_docs import DevDocsResult
 from spiced.core.dev_docs import NoUnityFolderError as DevDocsNoUnityFolderError
 from spiced.core.dev_docs import ProviderNotReadyError as DevDocsNotReadyError
+from spiced.core.draft_translation import DRAFT_NOT_SHIP_READY_NOTICE, DraftTranslationResult
+from spiced.core.draft_translation import NoDialogueError as DraftTranslationNoDialogueError
+from spiced.core.draft_translation import (
+    ProviderNotReadyError as DraftTranslationNotReadyError,
+)
+from spiced.core.localization_readiness import HEURISTIC_CAVEAT, LocalizationReadinessScan
+from spiced.core.localization_readiness import (
+    NoUnityFolderError as LocalizationNoUnityFolderError,
+)
 from spiced.core.scope_creep import detect_scope_creep
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
@@ -413,6 +423,57 @@ class _DesignDocSyncWorker(QObject):
             self.failed.emit(f"Something went wrong while checking design drift: {exc}")
 
 
+class _LocalizationScanWorker(QObject):
+    done = Signal(object)  # LocalizationReadinessScan
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            scan, _report = self._services.localization_readiness.scan(self._project)
+            self.done.emit(scan)
+        except LocalizationNoUnityFolderError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning: {exc}")
+
+
+class _DraftTranslationWorker(QObject):
+    done = Signal(object)  # DraftTranslationResult
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, text: str, target_language: str, source_filename: str | None
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._text = text
+        self._target_language = target_language
+        self._source_filename = source_filename
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.draft_translation.translate(
+                provider,
+                self._text,
+                self._target_language,
+                project=self._services.active_project(),
+                source_filename=self._source_filename,
+                record_usage=self._services.usage.record_prompt,
+            )
+            self._services.record_telemetry_event("debugging.draft_translation_run")
+            self.done.emit(result)
+        except (DraftTranslationNotReadyError, DraftTranslationNoDialogueError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while translating: {exc}")
+
+
 class DebuggingScreen(QWidget):
     usage_changed = Signal()
 
@@ -423,6 +484,7 @@ class DebuggingScreen(QWidget):
         self._version_pending_filename: str | None = None
         self._health_pending_filename: str | None = None
         self._current_changelog_draft_id: int | None = None
+        self._translation_pending_filename: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -454,6 +516,7 @@ class DebuggingScreen(QWidget):
         self._build_dependency_check(layout)
         self._build_dev_docs(layout)
         self._build_design_drift(layout)
+        self._build_localization(layout)
 
         self.refresh()
 
@@ -1143,6 +1206,258 @@ class DebuggingScreen(QWidget):
                 )
         self._refresh_design_drift_history()
 
+    # --- Localization Readiness + Draft Translation Pass ----------------------
+    #
+    # Paired on this same card per spec: the spec calls for the Draft
+    # Translation Pass to live on a "Localization panel," and since there is
+    # no other dedicated Localization screen/section, this is the natural
+    # home for both — a readiness check and a translation aid are clearly
+    # meant to sit together.
+
+    def _build_localization(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Localization")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Localization Readiness Check: a read-only scan of this project's .cs scripts for "
+            "likely-hardcoded user-facing strings, plus prefab/scene text components that "
+            "aren't obviously parameterized. Heuristic, not certainty — see the note below the "
+            "results for exactly what it can and can't catch."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._localization_scan_btn = QPushButton("Scan localization readiness (local, free)")
+        self._localization_scan_btn.clicked.connect(self._on_localization_scan)
+        row.addWidget(self._localization_scan_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self._localization_result = QTextEdit()
+        self._localization_result.setReadOnly(True)
+        self._localization_result.setPlaceholderText(
+            "Hardcoded-string and prefab-text findings will appear here."
+        )
+        self._localization_result.setFixedHeight(200)
+        layout.addWidget(self._localization_result)
+
+        history_title = QLabel("Recent scans")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._localization_history = QTextEdit()
+        self._localization_history.setReadOnly(True)
+        self._localization_history.setFixedHeight(70)
+        layout.addWidget(self._localization_history)
+
+        translation_title = QLabel("Draft Translation Pass")
+        translation_title.setObjectName("SectionTitle")
+        layout.addWidget(translation_title)
+
+        translation_intro = QLabel(
+            "Paste or import a dialogue file (plain text, one line per entry; or simple CSV/JSON "
+            "with a \"text\" field — see the format examples as placeholder text below) and pick "
+            "a target language. " + DRAFT_NOT_SHIP_READY_NOTICE
+        )
+        translation_intro.setObjectName("Muted")
+        translation_intro.setWordWrap(True)
+        layout.addWidget(translation_intro)
+
+        self._translation_input = QPlainTextEdit()
+        self._translation_input.setPlaceholderText(
+            "One line per entry, e.g.:\nWelcome, traveler.\nYour journey begins now.\n\n"
+            "...or JSON: [\"Welcome, traveler.\", \"Your journey begins now.\"]\n"
+            "...or CSV: id,text\ngreeting,Welcome, traveler."
+        )
+        self._translation_input.setFixedHeight(120)
+        layout.addWidget(self._translation_input)
+
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Target language:"))
+        self._translation_language_input = QLineEdit()
+        self._translation_language_input.setPlaceholderText(
+            "e.g. Japanese, French, Brazilian Portuguese"
+        )
+        lang_row.addWidget(self._translation_language_input, 1)
+        layout.addLayout(lang_row)
+
+        row2 = QHBoxLayout()
+        self._translation_import_btn = QPushButton("Import file…")
+        self._translation_import_btn.clicked.connect(self._on_translation_import)
+        row2.addWidget(self._translation_import_btn)
+        row2.addStretch(1)
+        self._translation_run_btn = QPushButton("Draft translation")
+        self._translation_run_btn.clicked.connect(self._on_translation_run)
+        row2.addWidget(self._translation_run_btn)
+        layout.addLayout(row2)
+
+        self._translation_result = QTextEdit()
+        self._translation_result.setReadOnly(True)
+        self._translation_result.setPlaceholderText(
+            "Your draft translation (for a human translator to review) will appear here."
+        )
+        self._translation_result.setFixedHeight(200)
+        layout.addWidget(self._translation_result)
+
+        translation_history_title = QLabel("Recent drafts")
+        translation_history_title.setObjectName("SectionTitle")
+        layout.addWidget(translation_history_title)
+        self._translation_history = QTextEdit()
+        self._translation_history.setReadOnly(True)
+        self._translation_history.setFixedHeight(70)
+        layout.addWidget(self._translation_history)
+
+    def _on_localization_scan(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._localization_scan_btn.setEnabled(False)
+        self._localization_result.setPlainText(
+            "Scanning scripts and prefabs/scenes — this can take a moment on a large project…"
+        )
+
+        worker = _LocalizationScanWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_localization_scan_done)
+        worker.failed.connect(self._on_localization_scan_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_localization_scan_done(self, scan: LocalizationReadinessScan) -> None:
+        self._localization_scan_btn.setEnabled(True)
+        lines = [
+            f"Scripts scanned: {scan.scripts_scanned}  ·  Prefabs/scenes scanned: "
+            f"{scan.prefabs_scanned}",
+            "",
+            "Likely-hardcoded strings in scripts:",
+        ]
+        if scan.hardcoded_strings:
+            for f in scan.hardcoded_strings[:30]:
+                lines.append(f"- [{f.confidence}] {f.file}:{f.line} — \"{f.text}\"")
+            if len(scan.hardcoded_strings) > 30:
+                lines.append(f"...and {len(scan.hardcoded_strings) - 30} more.")
+        else:
+            lines.append("None found.")
+        lines.append("")
+        lines.append("Prefab/scene text not obviously parameterized:")
+        if scan.prefab_texts:
+            for f in scan.prefab_texts[:30]:
+                lines.append(f"- {f.file} — \"{f.text}\"")
+            if len(scan.prefab_texts) > 30:
+                lines.append(f"...and {len(scan.prefab_texts) - 30} more.")
+        else:
+            lines.append("None found.")
+        lines.append("")
+        lines.append(HEURISTIC_CAVEAT)
+        self._localization_result.setPlainText("\n".join(lines))
+        self._refresh_localization_history()
+
+    def _on_localization_scan_failed(self, message: str) -> None:
+        self._localization_scan_btn.setEnabled(True)
+        self._localization_result.setPlainText(message)
+
+    def _refresh_localization_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._localization_history.setPlainText(
+                "Scans are saved once you select an active project."
+            )
+            return
+        reports = self._services.localization_readiness.history(project.id, limit=5)
+        if not reports:
+            self._localization_history.setPlainText("No localization scans saved yet.")
+            return
+        lines = []
+        for r in reports:
+            f = r.findings
+            hc = len(f.get("hardcoded_strings", []))
+            pt = len(f.get("prefab_texts", []))
+            lines.append(f"[{r.created_at}] {hc} hardcoded string(s), {pt} prefab text(s)")
+        self._localization_history.setPlainText("\n".join(lines))
+
+    def _on_translation_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import a dialogue file",
+            "",
+            "Dialogue files (*.txt *.csv *.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Could not read file", f"Sorry, I couldn't open that file:\n{exc}"
+            )
+            return
+        self._translation_input.setPlainText(text)
+        self._translation_pending_filename = Path(path).name
+
+    def _on_translation_run(self) -> None:
+        text = self._translation_input.toPlainText().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to translate", "Paste or import a dialogue file first."
+            )
+            return
+        target_language = self._translation_language_input.text().strip()
+        if not target_language:
+            QMessageBox.information(
+                self, "Target language needed", "Enter the language to translate into."
+            )
+            return
+        filename = self._translation_pending_filename
+        self._translation_run_btn.setEnabled(False)
+        self._translation_run_btn.setText("Translating…")
+        self._translation_result.setPlainText("Drafting a translation…")
+
+        worker = _DraftTranslationWorker(self._services, text, target_language, filename)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_translation_done)
+        worker.failed.connect(self._on_translation_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_translation_done(self, result: DraftTranslationResult) -> None:
+        self._translation_run_btn.setEnabled(True)
+        self._translation_run_btn.setText("Draft translation")
+        self._translation_result.setPlainText(result.response_text)
+        self._translation_pending_filename = None
+        self.usage_changed.emit()
+        self._refresh_translation_history()
+
+    def _on_translation_failed(self, message: str) -> None:
+        self._translation_run_btn.setEnabled(True)
+        self._translation_run_btn.setText("Draft translation")
+        self._translation_result.setPlainText(message)
+
+    def _refresh_translation_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._translation_history.setPlainText(
+                "Drafts are saved once you select an active project."
+            )
+            return
+        drafts = self._services.draft_translation.history(project.id, limit=5)
+        if not drafts:
+            self._translation_history.setPlainText("No draft translations saved yet.")
+            return
+        lines = [
+            f"[{d.created_at}] {d.entry_count} entry/entries -> {d.target_language}"
+            for d in drafts
+        ]
+        self._translation_history.setPlainText("\n".join(lines))
+
     def _on_toggle_health(self) -> None:
         expanded = not self._health_body.isVisible()
         self._health_body.setVisible(expanded)
@@ -1176,6 +1491,8 @@ class DebuggingScreen(QWidget):
         self._refresh_dependency_check_history()
         self._refresh_dev_docs_history()
         self._refresh_design_drift()
+        self._refresh_localization_history()
+        self._refresh_translation_history()
 
     def _refresh_history(self) -> None:
         project = self._services.active_project()

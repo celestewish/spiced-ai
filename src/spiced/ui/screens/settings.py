@@ -147,6 +147,29 @@ class SettingsScreen(QWidget):
         self._discord_auto_post_toggle.toggled.connect(self._on_discord_auto_post_toggled)
         layout.addWidget(self._discord_auto_post_toggle)
 
+        # Rapid Prototyping Mode (Phase H, section 7 part 2, Core tier). Off
+        # by default, same opt-in shape as Team Mode above.
+        prototype_title = QLabel("Prototyping")
+        prototype_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(prototype_title)
+
+        self._prototype_mode_toggle = QCheckBox("Rapid Prototyping Mode")
+        self._prototype_mode_toggle.setChecked(self._services.prototype_mode_enabled())
+        self._prototype_mode_toggle.toggled.connect(self._on_prototype_mode_toggled)
+        layout.addWidget(self._prototype_mode_toggle)
+
+        prototype_note = QLabel(
+            "Off by default. When on, the Automated Testing screen foregrounds a minimal "
+            "\"Quick Smoke Test\" check-in (does this idea work at all?) and de-emphasizes the "
+            "full functional/performance/accessibility/economy QA suite below it — nothing is "
+            "removed, everything stays reachable, only what's foregrounded changes. Meant for "
+            "game-jam and early-prototype work where deep testing isn't the point yet."
+        )
+        prototype_note.setObjectName("Muted")
+        prototype_note.setWordWrap(True)
+        layout.addWidget(prototype_note)
+
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
@@ -201,6 +224,10 @@ class SettingsScreen(QWidget):
                 self._team_mode_toggle.blockSignals(False)
                 return
         self._services.set_team_mode_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_prototype_mode_toggled(self, checked: bool) -> None:
+        self._services.set_prototype_mode_enabled(checked)
         self.settings_changed.emit()
 
     def _on_telemetry_toggled(self, checked: bool) -> None:
