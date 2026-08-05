@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.context_panel import ContextPanel
+from spiced.ui.screens.animation import AnimationScreen
+from spiced.ui.screens.art import ArtScreen
+from spiced.ui.screens.audio import AudioScreen
 from spiced.ui.screens.business import BusinessScreen
 from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
@@ -42,6 +45,14 @@ NAV_ITEMS = [
     # Finder, and Competitive Landscape Scan — none of these naturally
     # belong on an existing tool page either.
     "Business",
+    # Team Collaboration by Role: Art + Audio + Animation (Phase I, section
+    # 8 part 1) — three new sidebar pages per spec, one per role. Shaders/
+    # VFX and the cross-role team-glue features (Unified Task Board,
+    # Role-Based Dashboards, ...) are a later phase and deliberately not
+    # built here.
+    "Art",
+    "Audio",
+    "Animation",
     # Roadmap sits outside the tool pages above, next to Settings — per the
     # Section 5 spec's placement call.
     "Roadmap",
@@ -135,27 +146,42 @@ class MainWindow(QWidget):
         self._feedback_screen = FeedbackScreen(self._services)
         self._marketing_screen = MarketingScreen(self._services)
         self._business_screen = BusinessScreen(self._services)
+        self._art_screen = ArtScreen(self._services)
+        self._audio_screen = AudioScreen(self._services)
+        self._animation_screen = AnimationScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
         self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
         self._projects_screen.projects_changed.connect(self._testing_screen.refresh)
         self._projects_screen.projects_changed.connect(self._feedback_screen.refresh)
         self._projects_screen.projects_changed.connect(self._marketing_screen.refresh)
         self._projects_screen.projects_changed.connect(self._business_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._art_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._audio_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._animation_screen.refresh)
         self._projects_screen.projects_changed.connect(self._dashboard_screen.refresh)
 
         # New AI analyses create debug/test/feedback/marketing/business
         # records, so refresh the dashboard (and usage pill) whenever one
-        # completes.
+        # completes. Art/Audio/Animation involve no AI calls, but they still
+        # emit usage_changed after a scan completes so their own history
+        # panels + the dashboard stay in sync, same as the local-only
+        # sections of Marketing/Business.
         self._debugging_screen.usage_changed.connect(self._context.refresh)
         self._testing_screen.usage_changed.connect(self._context.refresh)
         self._feedback_screen.usage_changed.connect(self._context.refresh)
         self._marketing_screen.usage_changed.connect(self._context.refresh)
         self._business_screen.usage_changed.connect(self._context.refresh)
+        self._art_screen.usage_changed.connect(self._context.refresh)
+        self._audio_screen.usage_changed.connect(self._context.refresh)
+        self._animation_screen.usage_changed.connect(self._context.refresh)
         self._debugging_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._testing_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._feedback_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._marketing_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._business_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._art_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._audio_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._animation_screen.usage_changed.connect(self._dashboard_screen.refresh)
 
         self._roadmap_screen = RoadmapScreen(self._services)
 
@@ -173,6 +199,9 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._feedback_screen)
         self._stack.addWidget(self._marketing_screen)
         self._stack.addWidget(self._business_screen)
+        self._stack.addWidget(self._art_screen)
+        self._stack.addWidget(self._audio_screen)
+        self._stack.addWidget(self._animation_screen)
         self._stack.addWidget(self._roadmap_screen)
         self._stack.addWidget(self._settings_screen)
         # Recompute the dashboard whenever the user navigates to it.

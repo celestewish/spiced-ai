@@ -78,3 +78,18 @@ def test_marketing_screen_module_imports_cleanly():
 def test_business_screen_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.screens.business")
     assert hasattr(module, "BusinessScreen")
+
+
+def test_art_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.art")
+    assert hasattr(module, "ArtScreen")
+
+
+def test_audio_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.audio")
+    assert hasattr(module, "AudioScreen")
+
+
+def test_animation_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.animation")
+    assert hasattr(module, "AnimationScreen")
