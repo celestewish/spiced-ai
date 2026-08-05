@@ -7,27 +7,45 @@ review. It is built on a simple belief: AI should work *alongside* developers,
 not replace them. Spiced suggests, explains, and helps you reason — you stay in
 control of every change to your project.
 
-> Everything from Phases 0–6 (desktop skeleton, local storage, AI provider
-> boundary, the **Unity Debugging Buddy**, **Automated Testing**, **Feedback
-> Review**, the **Project Dashboard**, demo data, onboarding, Regression
-> Tracking, Performance & Profiling, Cross-Platform Simulation, Accessibility,
+> Spiced now covers the full feature spec, Phases 0 through L. Phases 0–6 are
+> the local-first core: desktop skeleton, AI provider boundary, the **Unity
+> Debugging Buddy**, **Automated Testing**, **Feedback Review**, the
+> **Project Dashboard**, demo data, onboarding, Regression Tracking,
+> Performance & Profiling, Cross-Platform Simulation, Accessibility,
 > Version-Aware Suggestions, Code Health, Feedback-to-Task, Community Pulse,
-> and opt-in Run Unity Tests) **plus Team & Workflow, Ethics & Transparency,
-> and Automation & Pipeline** (Phases A–F): real multi-user **Small-Team
-> Mode** on a hosted backend, **Session Summaries**, a **Build Health Score**,
-> app-wide **"why am I seeing this?"** source links, **opt-in-only
-> telemetry**, an open **Roadmap**, an opt-in **Automated Build Pipeline**,
-> **Changelog Generation**, a **Store/Build Checklist**, an **Asset
-> Optimization Sweep**, **Dead Reference Detection**, **Naming Consistency**,
-> **Dependency & Plugin Update Checks**, **Auto-Generated Unit Tests**, an
-> opt-in **Pre-Commit Review** hook, **Economy/Balance Simulation**,
-> convention-based **Save/Load Integrity Testing**, **Auto-Generated Dev
-> Docs**, **Design Doc Sync**, **Scope-Creep Flagging**, and local-only
-> **Crunch-Pattern Awareness**. See [Team & Workflow, Ethics & Automation
-> (Phases A–F)](#team--workflow-ethics--automation-phases-af) below for the
-> full rundown. Every new feature keeps Spiced's founding rules: nothing is
-> sent to AI beyond a trimmed excerpt, and anything that touches your project
-> files or launches your engine is opt-in, per project, and never silent.
+> and opt-in Run Unity Tests. Phases A–F added **Team & Workflow, Ethics &
+> Transparency, and Automation & Pipeline**: real multi-user **Small-Team
+> Mode** on a hosted backend, Session Summaries, a Build Health Score,
+> app-wide "why am I seeing this?" source links, opt-in-only telemetry, an
+> open Roadmap, an opt-in Automated Build Pipeline, Changelog Generation, a
+> Store/Build Checklist, asset/dependency/naming/dead-reference scanners,
+> Auto-Generated Unit Tests, an opt-in Pre-Commit Review hook, Economy
+> Simulation, Save/Load Integrity Testing, Auto-Generated Dev Docs, Design
+> Doc Sync, Scope-Creep Flagging, and local-only Crunch-Pattern Awareness.
+> Phases G–L added **Marketing & Business Support, Team Collaboration by
+> Role, and UI & Experience Features**: a Marketing page (Store Page
+> Advisor, Wishlist Analytics, Screenshot Checklist), Playtester Recruitment,
+> Player Crash & Error Reporting, Discord posting, a Business page (Contract
+> Checklist, Budget/Runway Tracker, a real-researched Grant Finder,
+> Competitive Landscape Scan), Localization Readiness + Draft Translation,
+> Rapid Prototyping Mode, new Art/Audio/Animation/Shaders-VFX pages
+> (Asset Review, Style Consistency, Audio Implementation Checklist, Mix/Level
+> QA, Animation Bug Detection, State Machine Sanity Check, Shader Performance
+> Profiling, Visual Regression Testing), a Team page (Unified Task Board,
+> Role-Based Dashboards, Comment Threads, Relevance-Based Notification
+> routing), and a top bar (Multi-Project Switcher, Command Palette, a
+> Notification Center with digest delivery), plus Customizable Dashboard
+> Widgets, a reusable Visual Diff Viewer, configurable Keyboard Shortcuts, a
+> read-only Companion Mobile View, In-App Accessibility Settings, and Live
+> Task Progress Transparency. See [Team & Workflow, Ethics & Automation
+> (Phases A–F)](#team--workflow-ethics--automation-phases-af) and
+> [Marketing, Team Roles & UI/UX (Phases G–L)](#marketing-team-roles--uiux-phases-gl)
+> below for the full rundown. Every new feature keeps Spiced's founding
+> rules: nothing is sent to AI beyond a trimmed excerpt, anything touching
+> your project files or engine is opt-in and never silent, and every
+> deliberate scope-down (paste/import instead of a live API, a heuristic
+> instead of a runtime guarantee, a mockup instead of a real engine render)
+> is documented in the open, not hidden.
 
 ---
 
@@ -418,54 +436,123 @@ teams — not a local simulation.
   data is never sent anywhere — not even to the team backend for a
   team-linked project.
 
+## Marketing, Team Roles & UI/UX (Phases G–L)
+
+Six more phases covering the feature spec's Marketing/Business Support,
+Team Collaboration by Role, and UI & Experience sections. Same rules as
+every phase before: deterministic local logic where possible, AI only for
+what genuinely needs judgment, and every scope-down from the literal spec
+text stated plainly rather than silently trimmed.
+
 ### Marketing & Community (Phase G)
 
-A new **Marketing** sidebar page, plus additions to **Feedback Review** and
-**Automated Testing**. Several of these are deliberately scoped down from the
-literal feature spec — see the note under each.
+New **Marketing** sidebar page: a **Store Page Optimization Advisor** (AI
+review of a pasted store page draft), a **Wishlist/Analytics Summary**
+(paste/import CSV exports, diffed locally — no live Steam/itch API exists
+to integrate against), and a **Trailer & Screenshot Checklist** (local
+Pillow-based resolution/blank-screenshot checks; video analysis is out of
+scope; the AI pass only ever sees your structured findings and captions,
+never raw image bytes). **Playtester Recruitment Assistant** (drafts a
+recruitment post, tracks a local sign-up list — no real email/build
+distribution) lives on Feedback Review. **Player Crash & Error Reporting**
+is the one feature here that needs the hosted backend: a capped,
+unauthenticated ingest endpoint for team-linked projects feeds real players'
+crashes into the existing Known Issues panel with a "from players" tag (see
+[`docs/player_crash_reporting.md`](docs/player_crash_reporting.md) for the
+integration contract your shipped game would use). **Discord/Community Bot
+Integration** extends the existing read-only Discord source with posting —
+confirm-before-send by default, with a separate opt-in for unattended
+auto-posting.
 
-- **Store Page Optimization Advisor** — paste or import a Steam/itch store
-  page draft (title, description, tags); the AI reviews it against a few
-  commonly recommended practices and returns specific suggestions. Explicitly
-  framed as suggestions, never a guarantee of sales.
-- **Wishlist/Analytics Summary** — *scoped down to a paste/import CSV, not a
-  live API*: neither Steam nor itch offers a public, OAuth-free wishlist/
-  analytics API this project can integrate against. Export your own numbers
-  into a small documented `metric,value` format; Spiced diffs each import
-  against the previous one for the same project and summarizes what's
-  working, flat, or changed — purely local, no AI call needed.
-- **Trailer & Screenshot Checklist** — *screenshots only, no video trailer
-  analysis* (a trailer's pacing/content over time is out of reach for a
-  deterministic check or a text-only AI pass). Upload screenshots; Spiced
-  runs local Pillow-based checks (resolution/aspect ratio against common
-  store sizes, plus a color-variance heuristic flagging likely-blank/loading
-  shots), then an AI pass reviews the *set* — but only filenames, those
-  deterministic findings, and any caption text you add. Raw image bytes are
-  never sent to the AI provider.
-- **Playtester Recruitment Assistant** — on **Feedback Review**. Drafts a
-  recruitment post from a short description, target platform, and timeframe.
-  *Scoped down to a local sign-up list* (name/contact/status you track by
-  hand) rather than real build distribution — Spiced sends no emails and
-  hosts no builds.
-- **Player Crash & Error Reporting** — on **Automated Testing**'s Known
-  Issues panel, tagged **"from players"**. The only feature in this set that
-  needs the hosted backend, since real players (not the dev) report crashes
-  back. Only works for a project linked to a Small-Team Mode team — that's
-  the only way Spiced has a `project_uuid` reachable from outside your
-  machine; solo/local-only projects have nothing to report against. The
-  ingest endpoint needs no auth (players have no Spiced accounts) but caps
-  payload sizes and validates the project is team-linked. Full HTTP contract
-  for wiring into your own game's crash handler:
-  [`docs/player_crash_reporting.md`](docs/player_crash_reporting.md).
-- **Discord/Community Bot Integration** — extends the existing read-only
-  Community Pulse Discord source with a *write* capability, gated behind its
-  own separate opt-in ("Discord integration" on **Settings**, distinct from
-  Community Pulse's read-only toggle). Reuses `DISCORD_BOT_TOKEN`; posts to
-  `DISCORD_CHANNEL_ID` by default (an optional `DISCORD_ANNOUNCE_CHANNEL_ID`
-  lets posts target a different channel than Community Pulse reads from). A
-  **Post to Discord** action on **Debugging Buddy**'s changelog draft always
-  shows the exact text and requires a click to send, unless you separately
-  opt into a documented "post automatically without asking" setting.
+### Business, Prototyping & Localization (Phase H)
+
+New **Business** sidebar page: a **Contract/License Checklist** (AI flags
+common gaps in a pasted contract — repeatedly and clearly labeled *not legal
+advice*), a **Budget/Runway Tracker** (local expense entries → estimated
+runway in months, pure arithmetic, no provider needed, no connection to any
+real billing since Spiced has none), and a **Grant/Funding Finder** — a
+small, curated dataset of three real programs (Epic MegaGrants, UK Games
+Fund, IGDA Foundation) verified via live research rather than invented, each
+carrying an explicit "verify current details before applying" caveat. A
+**Competitive Landscape Scan** is AI-assisted and explicitly labeled as
+approximate, not live market data. **Localization Readiness Check** (a
+local heuristic scan for hardcoded UI strings) and **Draft Translation
+Pass** (always labeled a draft, never ship-ready) live together on
+Debugging Buddy. **Rapid Prototyping Mode** is a Settings toggle that
+surfaces a simplified Quick Smoke Test panel on Automated Testing for
+game-jam-speed iteration.
+
+### Art, Audio & Animation (Phase I)
+
+Three new sidebar pages. **Art**: an **Asset Review Queue** (image
+resolution/size checks plus real `.meta` file parsing for mipmap settings —
+verified against an actual Unity-generated `.meta` file, not guessed) and a
+**Style Consistency Checker** (statistical outlier detection against your
+project's existing asset population — explicitly relative/statistical, not
+true style understanding), plus an **In-Engine Placement Preview** that's
+honestly a Pillow image composite, never a real engine render. **Audio**: an
+**Audio Implementation Checklist** (cross-references audio-triggering code
+against audio assets present) and **Mix/Level QA** (WAV-only clipping/
+silence/loudness checks via stdlib `wave` — Python's old `audioop` module is
+gone as of 3.13 and is never used here), plus **Localization Audio Sync** (a
+staleness/coverage heuristic, not a content match). **Animation**:
+**Animation Bug Detection** and **State Machine Sanity Check** share one
+`.controller`-file parser (format verified against a real Unity project
+file) — Bug Detection surfaces static risk indicators only ("empty state,"
+"zero-duration transition"), never a claimed confirmed bug; State Machine
+Sanity Check finds genuine structural problems (unreachable states, missing
+transition targets).
+
+### Shaders/VFX & Team Glue (Phase J)
+
+New **Shaders/VFX** page: **Shader Performance Profiling** (a static
+complexity heuristic over `.shader` files — texture samples, passes, loops —
+tied into the existing Cross-Platform hardware tiers; `.shadergraph` support
+is detection-only, since no verified real sample was available to build a
+JSON schema against) and **Visual Regression Testing** (paste/import
+before/after screenshot diffing via Pillow, no live capture). New **Team**
+page for the rest of "Team Collaboration by Role": a **Unified Task Board**
+(a real Kanban board on the hosted backend, with "Send to Team Board"
+actions on Animation Bug Detection, the Audio Implementation Checklist, and
+Known Issues that pre-fill the right discipline and a source link back to
+the finding), **Role-Based Dashboards** (team members get a self-service
+discipline — artist/audio/animation/programmer/etc. — and the context panel
+surfaces a relevant summary for it), **Comment Threads** (on Team Task cards
+and Known Issues), and **Relevance-Based Notifications** (routing rules
+only, in Settings — see Phase K for actual delivery).
+
+### Top bar: Multi-Project Switcher, Command Palette & Notification Center (Phase K)
+
+Spiced gains a top bar above the existing sidebar/workspace/context-panel
+layout. The **Multi-Project Switcher** lets you swap the active project
+instantly without leaving your current screen. **Command Palette**
+(<kbd>Ctrl</kbd>+<kbd>K</kbd>) jumps to any page, project, or recent item.
+The **Notification Center** is a real bell-and-inbox backed by the hosted
+backend, with per-event-kind real-time/hourly/daily digest delivery; it's
+wired to four real event sources — build failures, team task assignment,
+comments, and player-crash-driven known issues — always best-effort, so a
+notification hiccup never blocks the action that triggered it.
+
+### Widgets, diffing, shortcuts, mobile & accessibility (Phase L)
+
+The last phase. **Customizable Dashboard Widgets** let you show/hide and
+reorder Context Panel sections and Dashboard module cards (scoped down from
+full drag-and-drop resize). A reusable **Visual Diff Viewer** (text via
+`difflib`, images via the existing visual-regression Pillow diff) is wired
+into Visual Regression's report view and Dev Docs' snapshot-history
+comparison. **Keyboard Shortcuts** are configurable via a
+<kbd>?</kbd> cheat sheet and `QKeySequenceEdit` rebinding in Settings. The
+**Companion Mobile View** is a read-only, server-rendered HTML page on the
+backend (notifications, player crash reports, open tasks for a team-linked
+project) — structurally verified to define no mutating routes, not just
+documented as read-only; get its link from the Team page. **In-App
+Accessibility Settings** (Settings → Accessibility) give Spiced's own UI a
+live-reappliable text-size multiplier, a genuine high-contrast palette, a
+colorblind-safe palette, and a motion-reduction flag. **Live Task Progress
+Transparency**: long-running actions can now show a plain-language step
+trail instead of a bare spinner (wired into the Unity Test Runner, Build
+Pipeline, and project-wide health scans) — fully backward-compatible with
+every other action in the app, which keeps working exactly as before.
 
 ## Current MVP scope (Phases 0–6)
 
@@ -538,16 +625,24 @@ literal feature spec — see the note under each.
   session summaries send only AI-produced summary text and timestamps, never
   raw files, code, or feedback content.
 - No deep static analysis beyond specific, narrow, read-only scans: Dead
-  Reference Detection, the Asset Optimization Sweep, Naming Consistency, and
-  Auto-Generated Dev Docs each walk `Assets/` for one specific, documented
-  purpose — none of them modify anything, and Unity folder *detection* itself
-  (`connectors/unity.py`) stays shallow and non-recursive. Code Health /
-  Version-Aware Suggestions on a single pasted file are unchanged.
-- No scraping of external platforms beyond the same two narrow, opt-in
-  exceptions as before: Community Pulse Check-ins (one read-only Discord
-  channel) and the new Dependency & Plugin Update Checks (read-only public
-  package-version lookups against the Unity Package Registry — no project
-  data is ever sent). No posting to GitHub or other external services.
+  Reference Detection, the Asset Optimization Sweep, Naming Consistency,
+  Auto-Generated Dev Docs, the Art/Audio/Animation/Shaders scanners (Phases
+  I–J), and Localization Readiness (Phase H) each walk your project for one
+  specific, documented purpose — none of them modify anything, and Unity
+  folder *detection* itself (`connectors/unity.py`) stays shallow and
+  non-recursive. Every scanner with real false-positive/negative risk (which
+  is most of them) says so in its own module docstring and in the UI, not
+  just here. Code Health / Version-Aware Suggestions on a single pasted file
+  are unchanged.
+- No scraping of external platforms beyond a short, deliberate, opt-in list:
+  Community Pulse Check-ins (one read-only Discord channel), Dependency &
+  Plugin Update Checks (read-only Unity Package Registry version lookups —
+  no project data sent), and Discord *posting* (Phase G) — which always
+  requires an explicit confirm-before-send unless you separately opt into
+  unattended auto-posting. No posting to GitHub or any other external
+  service. The Companion Mobile View (Phase L) is the one place a *browser*
+  reaches into Spiced at all, and it's read-only by construction, verified
+  by a test that the router defines no mutating HTTP method.
 - Spiced never decides your game's design; it organizes feedback and suggests,
   and you decide what to act on. Scope-Creep Flagging and Crunch-Pattern
   Awareness are the same in spirit — informational nudges, never a gate or a
@@ -740,19 +835,20 @@ ruff check .    # lint
 ```
 src/spiced/
 ├── app/              # entry point + composition root (services wiring)
-├── ui/               # PySide6 window, panels, theme, screens, and reusable widgets
-│                     # (source_link/SourceLinkExpander, readiness_badge/ReadinessBadge)
-├── core/             # use-cases, parsers, classifiers, and analyzers, plus:
-│                     # core/community/ (mock + Discord), session_summary, team_service,
-│                     # auth_service, build_pipeline, changelog_draft, release_checklist,
-│                     # asset_scan, dependency_check, test_generator, precommit_check/hook,
-│                     # economy_simulator, save_load_tester, dev_docs, design_doc_sync,
-│                     # scope_creep, crunch_awareness, roadmap_service
+├── ui/               # PySide6 window, top bar, panels, theme, screens (Dashboard, Projects,
+│                     # Debugging Buddy, Automated Testing, Feedback Review, Marketing,
+│                     # Business, Art, Audio, Animation, Shaders/VFX, Team, Roadmap, Settings),
+│                     # thread_utils (launch_worker, safe QThread lifetime + optional progress),
+│                     # command_palette, notification_center, and reusable widgets/ (source_link,
+│                     # readiness_badge, diff_viewer, progress_trail, comments_widget)
+├── core/             # use-cases, parsers, classifiers, and analyzers for every feature above —
+│                     # too many modules to list individually; one core/*.py per feature,
+│                     # following the same local-parse-first, AI-only-when-needed pattern
 ├── ai/               # provider interface, OpenAI (default), mock, Gemini, prompt templates
 ├── storage/          # SQLite database + one repository per table (see database.py's SCHEMA)
 ├── connectors/       # Unity project-folder detection (shallow, read-only), plus
-│                     # unity_build (headless build trigger), unity_scan (Assets/ scanner),
-│                     # unity_docs_scan (.cs scanner), unity_package_registry (dependency checks)
+│                     # unity_build, unity_scan, unity_docs_scan, unity_controller_scan,
+│                     # unity_package_registry — each a focused, read-only, documented scanner
 └── backend_client/   # HTTP client for the backend + Supabase Auth (config, auth_client,
                       # api_client, telemetry_client) — only used once Small-Team Mode is on
 
