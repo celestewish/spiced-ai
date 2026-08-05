@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     comments,
+    mobile,
     notifications,
     player_crashes,
     roadmap,
@@ -37,6 +38,7 @@ app.include_router(player_crashes.router)
 app.include_router(team_tasks.router)
 app.include_router(comments.router)
 app.include_router(notifications.router)
+app.include_router(mobile.router)
 
 
 @app.get("/health")

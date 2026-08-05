@@ -153,3 +153,44 @@ def test_trigger_build_from_hook_still_gated_when_not_enabled(tmp_path):
     projects, reports, project = _setup(tmp_path)
     with pytest.raises(BuildNotEnabledError):
         trigger_build_from_hook(project.id, projects, reports)
+
+
+# --- Live Task Progress Transparency (Phase L): on_progress ------------------
+
+
+def test_run_build_pipeline_without_on_progress_still_works(monkeypatch, tmp_path):
+    """Backward compatibility: every existing caller omits ``on_progress``
+    entirely -- confirms the default (None) is a true no-op, not a crash."""
+    projects, reports, project = _setup(tmp_path)
+    project = projects.set_build_pipeline_settings(project.id, True, "StandaloneWindows64")
+    _patch_success(monkeypatch)
+
+    report = run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+    assert report.succeeded is True
+
+
+def test_run_build_pipeline_emits_progress_for_each_real_step(monkeypatch, tmp_path):
+    projects, reports, project = _setup(tmp_path)
+    project = projects.set_build_pipeline_settings(project.id, True, "StandaloneWindows64")
+    _patch_success(monkeypatch)
+
+    messages: list[str] = []
+    report = run_build_pipeline(
+        project, reports, trigger=TRIGGER_MANUAL, on_progress=messages.append
+    )
+    assert report.succeeded is True
+    assert len(messages) >= 4
+    assert any("Editor" in m for m in messages)
+    assert any("build script" in m for m in messages)
+    assert any("headless" in m for m in messages)
+    assert any("report" in m for m in messages)
+
+
+def test_run_build_pipeline_progress_stops_before_editor_step_when_not_enabled(tmp_path):
+    """A gate failure happens before the first ``on_progress`` call --
+    confirms progress emission never masks an early raise."""
+    projects, reports, project = _setup(tmp_path)
+    messages: list[str] = []
+    with pytest.raises(BuildNotEnabledError):
+        run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL, on_progress=messages.append)
+    assert messages == []

@@ -99,7 +99,13 @@ class VisualRegressionResult:
         }
 
 
-def _diff_ratio_and_highlight(before: Image.Image, after: Image.Image) -> tuple[float, Image.Image]:
+def diff_ratio_and_highlight(before: Image.Image, after: Image.Image) -> tuple[float, Image.Image]:
+    """Public entry point (also used by ``ui.widgets.diff_viewer.DiffViewer``,
+    Phase L's reusable image-diff widget) for the same changed-pixel-ratio +
+    highlighted-diff-image computation ``diff_pair`` uses internally, but
+    operating on already-open ``PIL.Image`` objects rather than file paths --
+    the widget needs the highlight in memory to render it, not written to
+    disk."""
     b = before.convert("RGB")
     a = after.convert("RGB")
     if b.size != a.size:
@@ -114,6 +120,11 @@ def _diff_ratio_and_highlight(before: Image.Image, after: Image.Image) -> tuple[
     color_layer = Image.new("RGB", b.size, _DIFF_HIGHLIGHT_COLOR)
     highlight.paste(color_layer, mask=mask)
     return ratio, highlight
+
+
+# Backward-compatible private alias -- this module's own diff_pair() below
+# used the underscored name before it was made public for reuse.
+_diff_ratio_and_highlight = diff_ratio_and_highlight
 
 
 def diff_pair(

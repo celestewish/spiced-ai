@@ -20,6 +20,7 @@ that's surfaced (that's a UI concern, e.g. the Context Panel), but every
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -62,6 +63,7 @@ def run_build_pipeline(
     trigger: str,
     target_platform: str | None = None,
     editor_override: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> BuildReport:
     """Run one headless build for ``project`` and save its report.
 
@@ -70,7 +72,19 @@ def run_build_pipeline(
     function is the single choke point for three different trigger sources,
     so the check belongs here rather than being repeated (and potentially
     forgotten) at each call site.
+
+    ``on_progress`` (Live Task Progress Transparency, Phase L), if given, is
+    called with a plain-language description before each real step below --
+    resolving the Editor, preparing the build script, running the (often
+    multi-minute) headless build itself, then saving the report. Entirely
+    optional and backward-compatible: every existing caller that doesn't
+    pass it behaves exactly as before.
     """
+
+    def _progress(message: str) -> None:
+        if on_progress is not None:
+            on_progress(message)
+
     if not project.build_pipeline_enabled:
         raise BuildNotEnabledError(
             f'Automated Build Pipeline is not enabled for "{project.name}". Turn it on for '
@@ -79,6 +93,7 @@ def run_build_pipeline(
     if not project.path:
         raise BuildUnavailableError("Connect a Unity folder for this project first.")
 
+    _progress("Resolving the Unity Editor to build with…")
     required_version = project.engine_metadata.get("unity_version")
     editor = resolve_unity_editor(required_version, editor_override)
     if editor is None:
@@ -89,12 +104,15 @@ def run_build_pipeline(
 
     platform = target_platform or project.build_target_platform or unity_build.DEFAULT_BUILD_TARGET
     started_at = now_sqlite()
+    _progress("Preparing the build script…")
     script_info = unity_build.ensure_build_script(project.path)
     output_dir = str(_builds_dir(project.path))
+    _progress(f"Running the headless {platform} build (this can take a while)…")
     result = unity_build.run_build(
         editor.path, project.path, platform, output_dir, script_info.execute_method
     )
     finished_at = now_sqlite()
+    _progress("Saving the build report…")
 
     return reports.create(
         project_id=project.id,

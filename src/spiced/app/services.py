@@ -130,6 +130,30 @@ DISCORD_AUTO_POST_ENABLED_KEY = "discord_auto_post_enabled"
 # de-emphasizes (collapses) the full functional/performance/accessibility/
 # economy QA suite — nothing is removed, only what's foregrounded changes.
 PROTOTYPE_MODE_ENABLED_KEY = "prototype_mode_enabled"
+# In-App Accessibility Settings (Phase L, section 9 part 2, Core tier). Kept
+# as plain strings/bools here, same as every other settings-toggle group in
+# this class -- ``services.py`` deliberately never imports ``spiced.ui.*``
+# (see this module's own docstring on the UI receiving ready-to-use
+# services, not the other way around), so the actual stylesheet-building
+# (``spiced.ui.theme.build_stylesheet``) is left to the UI layer, which
+# reads these values back via the getters below.
+ACCESSIBILITY_TEXT_SIZE_KEY = "accessibility_text_size"
+ACCESSIBILITY_HIGH_CONTRAST_KEY = "accessibility_high_contrast"
+ACCESSIBILITY_COLORBLIND_SAFE_KEY = "accessibility_colorblind_safe"
+ACCESSIBILITY_REDUCE_MOTION_KEY = "accessibility_reduce_motion"
+DEFAULT_ACCESSIBILITY_TEXT_SIZE = "normal"
+# Customizable Dashboard Widgets (Phase L, Phase 2 tier, scoped down to
+# show/hide + reorder -- see ui.widget_preferences for the full scope-down
+# note) and Keyboard Shortcuts for Power Users (Phase L, Phase 2 tier) both
+# store a small JSON blob keyed by id -- the simplest shape for this kind of
+# flexible, per-id preference data, matching how ``app_settings`` already
+# stores single opaque values for everything else in this class rather than
+# needing a dedicated table (see ``storage.database.SCHEMA`` -- there's no
+# existing JSON-blob-in-app_settings precedent to follow exactly, but a
+# dedicated table would be overkill for what's genuinely just a small,
+# whole-value preference document per feature).
+WIDGET_PREFERENCES_KEY = "widget_preferences_v1"
+KEYBOARD_SHORTCUTS_KEY = "keyboard_shortcuts_v1"
 
 
 class Services:
@@ -377,6 +401,51 @@ class Services:
     def set_prototype_mode_enabled(self, enabled: bool) -> None:
         self._settings.set(PROTOTYPE_MODE_ENABLED_KEY, "1" if enabled else "")
 
+    # --- In-App Accessibility Settings --------------------------------------
+
+    def accessibility_text_size(self) -> str:
+        saved = self._settings.get(ACCESSIBILITY_TEXT_SIZE_KEY, "")
+        return saved or DEFAULT_ACCESSIBILITY_TEXT_SIZE
+
+    def set_accessibility_text_size(self, size: str) -> None:
+        self._settings.set(ACCESSIBILITY_TEXT_SIZE_KEY, size)
+
+    def accessibility_high_contrast_enabled(self) -> bool:
+        return self._settings.get(ACCESSIBILITY_HIGH_CONTRAST_KEY, "") == "1"
+
+    def set_accessibility_high_contrast_enabled(self, enabled: bool) -> None:
+        self._settings.set(ACCESSIBILITY_HIGH_CONTRAST_KEY, "1" if enabled else "")
+
+    def accessibility_colorblind_safe_enabled(self) -> bool:
+        return self._settings.get(ACCESSIBILITY_COLORBLIND_SAFE_KEY, "") == "1"
+
+    def set_accessibility_colorblind_safe_enabled(self, enabled: bool) -> None:
+        self._settings.set(ACCESSIBILITY_COLORBLIND_SAFE_KEY, "1" if enabled else "")
+
+    def accessibility_reduce_motion_enabled(self) -> bool:
+        return self._settings.get(ACCESSIBILITY_REDUCE_MOTION_KEY, "") == "1"
+
+    def set_accessibility_reduce_motion_enabled(self, enabled: bool) -> None:
+        self._settings.set(ACCESSIBILITY_REDUCE_MOTION_KEY, "1" if enabled else "")
+
+    # --- Customizable Dashboard Widgets / Keyboard Shortcuts: raw JSON -----
+    #
+    # Thin, Qt-free persistence only -- see core.widget_preferences and
+    # core.keyboard_shortcuts for the actual (de)serialization/validation
+    # logic these two just store the result of.
+
+    def widget_preferences_json(self) -> str | None:
+        return self._settings.get(WIDGET_PREFERENCES_KEY)
+
+    def set_widget_preferences_json(self, raw_json: str) -> None:
+        self._settings.set(WIDGET_PREFERENCES_KEY, raw_json)
+
+    def keyboard_shortcuts_json(self) -> str | None:
+        return self._settings.get(KEYBOARD_SHORTCUTS_KEY)
+
+    def set_keyboard_shortcuts_json(self, raw_json: str) -> None:
+        self._settings.set(KEYBOARD_SHORTCUTS_KEY, raw_json)
+
     # --- Solo-Dev Mode vs. Small-Team Mode (opt-in, off by default) --------
 
     def team_mode_enabled(self) -> bool:
@@ -445,17 +514,21 @@ class Services:
         trigger: str,
         target_platform: str | None = None,
         editor_override: str | None = None,
+        on_progress=None,
     ) -> BuildReport:
         """One choke point for every build trigger (manual button, the
         in-app scheduler, and later the Phase E commit hook) so the opt-in
         gate in ``core.build_pipeline.run_build_pipeline`` is always applied
-        the same way, no matter who's asking."""
+        the same way, no matter who's asking. ``on_progress`` (Phase L, Live
+        Task Progress Transparency) is an optional passthrough -- see
+        ``core.build_pipeline.run_build_pipeline``."""
         return run_build_pipeline(
             project,
             self.build_reports,
             trigger=trigger,
             target_platform=target_platform,
             editor_override=editor_override,
+            on_progress=on_progress,
         )
 
     # --- Pre-Commit Review (opt-in per project) -----------------------------
