@@ -9,6 +9,7 @@ from app.models import (  # noqa: F401 (registers metadata)
     ChangelogEntry,
     Comment,
     EventRoutingRule,
+    Notification,
     NotificationPreference,
     PlayerCrashReport,
     RoadmapSuggestion,

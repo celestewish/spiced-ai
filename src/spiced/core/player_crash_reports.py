@@ -10,6 +10,15 @@ projects — crash reporting needs a real ``project_uuid`` the backend
 recognizes, and solo/local-only projects never mint one (consistent with
 Spiced's local-first design: nothing about a purely local project is ever
 reachable from outside this machine).
+
+Notification Center event source (Phase K, section 9 part 1, #d): a player
+crash that turns out to be a brand-new Known Issue, or a regression of a
+previously-resolved one, also creates a real notification for whoever's
+relevant to that event kind -- reusing the exact same "known_issue_opened"/
+"known_issue_regression" routing Phase J already ships defaults for (see
+``core.notification_routing.DEFAULT_EVENT_KIND_DISCIPLINES``). A repeat
+occurrence of an already-open issue is deliberately quiet -- nothing new to
+tell anyone.
 """
 
 from __future__ import annotations
@@ -85,4 +94,26 @@ class PlayerCrashSyncService:
             )
             self._sync_log.mark_ingested(project_id, report.id)
             outcomes.append(outcome)
+            self._notify_outcome(project_uuid, outcome)
         return PlayerCrashSyncResult(fetched_count=len(reports), new_outcomes=outcomes)
+
+    def _notify_outcome(self, project_uuid: str, outcome: RegressionOutcome) -> None:
+        """Best-effort: a brand-new issue or a regression of a resolved one
+        notifies whoever's relevant; a repeat of an already-open issue is
+        quiet (nothing new to say)."""
+        if outcome.match is None:
+            event_kind = "known_issue_opened"
+            title = f"New issue reported by a player: {outcome.issue.title}"
+        elif outcome.match.issue.status == "resolved":
+            event_kind = "known_issue_regression"
+            title = f"Possible regression reported by a player: {outcome.issue.title}"
+        else:
+            return
+        self._teams.notify_relevant_members_for_project_event(
+            project_uuid,
+            event_kind,
+            title,
+            "Reported by a real player of the shipped game.",
+            subject_type="known_issue",
+            subject_id=str(outcome.issue.id),
+        )

@@ -108,3 +108,20 @@ def test_team_screen_module_imports_cleanly():
 def test_comments_widget_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.widgets.comments_widget")
     assert hasattr(module, "CommentsWidget")
+
+
+def test_top_bar_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.top_bar")
+    assert hasattr(module, "TopBar")
+
+
+def test_notification_center_ui_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.notification_center")
+    assert hasattr(module, "NotificationBell")
+    assert hasattr(module, "NotificationDropdown")
+
+
+def test_command_palette_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.command_palette")
+    assert hasattr(module, "CommandPalette")
+    assert hasattr(module, "PaletteItem")

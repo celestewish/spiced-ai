@@ -10,7 +10,12 @@ copy for this toggle says so explicitly.
 Runs due builds on a worker thread, same pattern as every other long-running
 action in this app (see ``ui/screens/testing.py``'s ``_UnityRunWorker``).
 Per spec, a successful scheduled build stays quiet — only a failure is
-surfaced, via ``build_failed`` (the Context Panel listens for this).
+surfaced, via ``build_failed`` (the Context Panel listens for this) and, for
+a team-linked project, a real Notification Center entry (see
+``_notify_build_failure`` below, Phase K, section 9 part 1's "migrate the
+existing build-failure signal into a real event source" instruction). The
+Context Panel note stays -- it's the only surfacing a solo/local-only build
+ever gets, since Notifications require a team.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ _CHECK_INTERVAL_MS = 60_000
 
 
 class _ScheduledBuildWorker(QObject):
-    build_done = Signal(str, bool, str)  # project_name, succeeded, message
+    build_done = Signal(int, str, bool, str)  # project_id, project_name, succeeded, message
     finished = Signal()
 
     def __init__(self, services: Services, project_ids: list[int]) -> None:
@@ -50,16 +55,57 @@ class _ScheduledBuildWorker(QObject):
                     editor_override=project.unity_editor_path_override,
                 )
             except (BuildNotEnabledError, BuildUnavailableError) as exc:
-                self.build_done.emit(project.name, False, str(exc))
+                self.build_done.emit(project.id, project.name, False, str(exc))
                 continue
             except Exception as exc:  # surfaced calmly; never crashes the app
-                self.build_done.emit(project.name, False, f"Something went wrong: {exc}")
+                self.build_done.emit(
+                    project.id, project.name, False, f"Something went wrong: {exc}"
+                )
                 continue
             if report.succeeded:
-                self.build_done.emit(project.name, True, "")
+                self.build_done.emit(project.id, project.name, True, "")
             else:
                 message = report.log_tail or "The scheduled build did not succeed."
-                self.build_done.emit(project.name, False, message)
+                self.build_done.emit(project.id, project.name, False, message)
+        self.finished.emit()
+
+
+class _BuildFailureNotifyWorker(QObject):
+    """Notification Center event source (Phase K, #a): for a team-linked
+    project, create a real ``Notification`` for whoever's relevant to
+    "build_failed" (see ``core.notification_routing``). Best-effort and
+    silent either way -- ``TeamService.notify_relevant_members_for_project_event``
+    already swallows backend/auth errors, and a solo/unlinked project simply
+    has nothing to notify (project.project_uuid is falsy)."""
+
+    finished = Signal()
+
+    def __init__(
+        self, services: Services, project_id: int, project_name: str, message: str
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project_id = project_id
+        self._project_name = project_name
+        self._message = message
+
+    def run(self) -> None:
+        try:
+            project = self._services.projects.get_project(self._project_id)
+        except KeyError:
+            self.finished.emit()
+            return
+        if project.project_uuid:
+            lines = (self._message or "").strip().splitlines()
+            detail = next((line for line in lines if line.strip()), "").strip()
+            self._services.teams.notify_relevant_members_for_project_event(
+                project.project_uuid,
+                "build_failed",
+                f"Scheduled build failed: {self._project_name}",
+                detail or "See Testing for details.",
+                subject_type="build",
+                subject_id=str(self._project_id),
+            )
         self.finished.emit()
 
 
@@ -116,10 +162,20 @@ class BuildScheduler(QObject):
         worker.finished.connect(thread.quit)
         thread.start()
 
-    def _on_build_done(self, project_name: str, succeeded: bool, message: str) -> None:
+    def _on_build_done(
+        self, project_id: int, project_name: str, succeeded: bool, message: str
+    ) -> None:
         self.build_report_saved.emit()
         if not succeeded:
             self.build_failed.emit(project_name, message)
+            self._notify_build_failure(project_id, project_name, message)
+
+    def _notify_build_failure(self, project_id: int, project_name: str, message: str) -> None:
+        worker = _BuildFailureNotifyWorker(self._services, project_id, project_name, message)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        thread.start()
 
     def _on_finished(self) -> None:
         self._batch_running = False

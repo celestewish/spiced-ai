@@ -1,18 +1,14 @@
-"""Relevance-Based Notifications: routing logic only (Phase J, section 8 part 2).
+"""Relevance-Based Notifications: routing logic (Phase J, section 8 part 2),
+now consumed by the actual Notification Center (Phase K, section 9 part 1).
 
-**Sequencing scope boundary** (see the phase plan): Section 9's Notification
-Center (a bell icon + inbox UI) is Phase K, a later phase, and is NOT built
-here. This module is the routing/filtering *mechanism* that future
-Notification Center is expected to consume: given a team's members, an event
-kind, and any team-level routing rules / per-member preference overrides
-(fetched from the backend via ``TeamService`` -- see ``core.team_service.
-TeamService.relevant_members_for_project_event``), decide which members are
-relevant to one occurrence of that event. Nothing here delivers, stores, or
-displays an actual notification -- there is no inbox, no bell icon, no
-"seen"/"unread" state, and no push/email/toast of any kind. That is
-explicitly Phase K's job; this phase only builds the decision layer plus a
-Settings-page panel for editing the routing rules (see
-``ui.screens.settings.SettingsScreen``'s notification routing section).
+This module stays the routing/filtering *mechanism* only: given a team's
+members, an event kind, and any team-level routing rules / per-member
+preference overrides, decide which members are relevant to one occurrence of
+that event. It still never delivers, stores, or displays anything itself --
+that's ``core.team_service.TeamService._notify_event`` (Phase K), which calls
+``relevant_members_for_event`` below and then creates one
+``backend_client.api_client.Notification`` row per relevant, already-joined
+member via the backend's ``/teams/{team_id}/notifications`` endpoints.
 """
 
 from __future__ import annotations
@@ -37,6 +33,14 @@ DEFAULT_EVENT_KIND_DISCIPLINES: dict[str, list[str]] = {
     # (see relevant_members_for_event's extra_discipline parameter) rather
     # than a fixed default -- an empty default list here is intentional.
     "team_task_assigned": [],
+    # A quiet Context Panel note either way (see ui.build_scheduler), but
+    # also now a real notification for whoever's on point for builds.
+    "build_failed": ["programmer"],
+    # Routed dynamically, same as team_task_assigned: a comment on a task
+    # routes to that task's assigned_discipline, a comment on a known issue
+    # routes to "programmer" (see TeamService._notify_comment) -- an empty
+    # default here is intentional.
+    "comment_posted": [],
 }
 
 KNOWN_EVENT_KINDS: list[str] = sorted(DEFAULT_EVENT_KIND_DISCIPLINES)

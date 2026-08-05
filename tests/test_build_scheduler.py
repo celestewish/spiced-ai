@@ -70,7 +70,7 @@ def test_worker_stays_quiet_on_success(monkeypatch, tmp_path):
 
     worker = _ScheduledBuildWorker(services, [project.id])
     calls = []
-    worker.build_done.connect(lambda name, ok, msg: calls.append((name, ok, msg)))
+    worker.build_done.connect(lambda pid, name, ok, msg: calls.append((name, ok, msg)))
     worker.run()
 
     assert calls == [(project.name, True, "")]
@@ -87,7 +87,7 @@ def test_worker_reports_failure_with_log_tail(monkeypatch, tmp_path):
 
     worker = _ScheduledBuildWorker(services, [project.id])
     calls = []
-    worker.build_done.connect(lambda name, ok, msg: calls.append((name, ok, msg)))
+    worker.build_done.connect(lambda pid, name, ok, msg: calls.append((name, ok, msg)))
     worker.run()
 
     assert len(calls) == 1
@@ -108,7 +108,7 @@ def test_worker_handles_gate_error_without_crashing(monkeypatch, tmp_path):
 
     worker = _ScheduledBuildWorker(services, [project.id])
     calls = []
-    worker.build_done.connect(lambda name, ok, msg: calls.append((name, ok, msg)))
+    worker.build_done.connect(lambda pid, name, ok, msg: calls.append((name, ok, msg)))
     finished = []
     worker.finished.connect(lambda: finished.append(True))
     worker.run()
@@ -121,7 +121,7 @@ def test_worker_skips_projects_that_no_longer_exist(tmp_path):
     services = _services(tmp_path)
     worker = _ScheduledBuildWorker(services, [999])
     calls = []
-    worker.build_done.connect(lambda name, ok, msg: calls.append((name, ok, msg)))
+    worker.build_done.connect(lambda pid, name, ok, msg: calls.append((name, ok, msg)))
     worker.run()
     assert calls == []
 
@@ -213,3 +213,101 @@ def test_check_due_projects_waits_while_a_batch_is_already_running(monkeypatch, 
     scheduler._check_due_projects()
 
     assert started_batches == []
+
+
+# --- Notification Center event source (Phase K, #a): build failures --------
+
+
+def test_worker_build_done_includes_project_id(monkeypatch, tmp_path):
+    services = _services(tmp_path)
+    project = services.projects.create_project("Moonlit Depths")
+    monkeypatch.setattr(
+        services,
+        "run_build",
+        lambda project, trigger, editor_override=None: _fake_report(False, "boom"),
+    )
+
+    worker = _ScheduledBuildWorker(services, [project.id])
+    calls = []
+    worker.build_done.connect(lambda pid, name, ok, msg: calls.append((pid, name, ok, msg)))
+    worker.run()
+
+    assert calls == [(project.id, project.name, False, "boom")]
+
+
+def test_build_failure_notify_worker_notifies_team_linked_project(monkeypatch, tmp_path):
+    from spiced.ui.build_scheduler import _BuildFailureNotifyWorker
+
+    services = _services(tmp_path)
+    project = services.projects.create_project("Moonlit Depths")
+    services.projects.ensure_project_uuid(project.id)
+    project = services.projects.get_project(project.id)
+    assert project.project_uuid
+
+    captured = {}
+
+    def fake_notify(project_uuid, event_kind, title, body, **kwargs):
+        captured["args"] = (project_uuid, event_kind, title, body, kwargs)
+        return []
+
+    monkeypatch.setattr(
+        services.teams, "notify_relevant_members_for_project_event", fake_notify
+    )
+
+    worker = _BuildFailureNotifyWorker(services, project.id, project.name, "boom: NRE\nmore")
+    finished = []
+    worker.finished.connect(lambda: finished.append(True))
+    worker.run()
+
+    assert finished == [True]
+    project_uuid, event_kind, title, body, kwargs = captured["args"]
+    assert project_uuid == project.project_uuid
+    assert event_kind == "build_failed"
+    assert project.name in title
+    assert body == "boom: NRE"
+    assert kwargs["subject_type"] == "build"
+    assert kwargs["subject_id"] == str(project.id)
+
+
+def test_build_failure_notify_worker_is_noop_for_unlinked_project(monkeypatch, tmp_path):
+    from spiced.ui.build_scheduler import _BuildFailureNotifyWorker
+
+    services = _services(tmp_path)
+    project = services.projects.create_project("Solo Project")
+    assert not project.project_uuid
+
+    called = []
+    monkeypatch.setattr(
+        services.teams,
+        "notify_relevant_members_for_project_event",
+        lambda *a, **k: called.append((a, k)),
+    )
+
+    worker = _BuildFailureNotifyWorker(services, project.id, project.name, "boom")
+    finished = []
+    worker.finished.connect(lambda: finished.append(True))
+    worker.run()
+
+    assert finished == [True]
+    assert called == []
+
+
+def test_on_build_done_triggers_notify_only_on_failure(monkeypatch, tmp_path):
+    services = _services(tmp_path)
+    scheduler = BuildScheduler(services)
+    scheduler.stop()
+
+    notified = []
+    monkeypatch.setattr(
+        scheduler, "_notify_build_failure", lambda pid, name, msg: notified.append((pid, name, msg))
+    )
+    saved = []
+    scheduler.build_report_saved.connect(lambda: saved.append(True))
+
+    scheduler._on_build_done(1, "Demo", True, "")
+    assert notified == []
+    assert saved == [True]
+
+    scheduler._on_build_done(1, "Demo", False, "boom")
+    assert notified == [(1, "Demo", "boom")]
+    assert saved == [True, True]

@@ -29,7 +29,7 @@ QMainWindow, QWidget#Root {{
 }}
 
 /* Panels */
-QFrame#Panel, QFrame#Sidebar, QFrame#ContextPanel {{
+QFrame#Panel, QFrame#Sidebar, QFrame#ContextPanel, QFrame#TopBar {{
     background: {CREAM_PANEL};
     border: 1px solid {BORDER};
     border-radius: 14px;
@@ -37,6 +37,14 @@ QFrame#Panel, QFrame#Sidebar, QFrame#ContextPanel {{
 
 QFrame#Sidebar {{
     background: {SIDEBAR};
+}}
+
+/* Top bar (Phase K): Spiced wordmark + Multi-Project Switcher, notification
+   bell on the right. Kept minimal -- reuses Panel's own background/border. */
+QDialog#Panel {{
+    background: {CREAM_PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 14px;
 }}
 
 /* Dashboard cards */

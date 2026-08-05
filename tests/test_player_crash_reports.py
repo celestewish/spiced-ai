@@ -23,11 +23,18 @@ class FakeTeamService:
     def __init__(self, reports=None, raise_error=None):
         self._reports = reports or []
         self._raise_error = raise_error
+        self.notify_calls: list[tuple] = []
 
     def list_player_crashes(self, project_uuid):
         if self._raise_error is not None:
             raise self._raise_error
         return self._reports
+
+    def notify_relevant_members_for_project_event(
+        self, project_uuid, event_kind, title, body, **kwargs
+    ):
+        self.notify_calls.append((project_uuid, event_kind, title, body, kwargs))
+        return []
 
 
 def _report(report_id, error_type="NullReferenceException", message="boom"):
@@ -118,6 +125,60 @@ def test_sync_swallows_auth_errors():
 
     result = service.sync(project.id, "proj-uuid")
     assert result.fetched_count == 0
+
+
+def test_sync_notifies_relevant_members_for_a_brand_new_issue():
+    team_service = FakeTeamService(reports=[_report("r1")])
+    service, _regression, db = _service(team_service)
+    projects = ProjectRepository(db)
+    project = projects.create("Moonlit Depths")
+
+    service.sync(project.id, "proj-uuid")
+
+    assert len(team_service.notify_calls) == 1
+    project_uuid, event_kind, title, _body, kwargs = team_service.notify_calls[0]
+    assert project_uuid == "proj-uuid"
+    assert event_kind == "known_issue_opened"
+    assert "NullReferenceException" in title
+    assert kwargs["subject_type"] == "known_issue"
+
+
+def test_sync_does_not_notify_for_a_repeat_of_an_already_open_issue():
+    """A player crash matching an already-open (not resolved) known issue is
+    a repeat occurrence, not new news -- no notification."""
+    from spiced.core.regression import debug_signature
+
+    team_service = FakeTeamService(reports=[_report("r1")])
+    service, regression, db = _service(team_service)
+    projects = ProjectRepository(db)
+    project = projects.create("Moonlit Depths")
+    regression.note_issue(
+        project.id, "debug", debug_signature("NullReferenceException", None),
+        "NullReferenceException in Foo.cs",
+    )
+
+    service.sync(project.id, "proj-uuid")
+
+    assert team_service.notify_calls == []
+
+
+def test_sync_notifies_regression_for_a_resolved_issue_reoccurring():
+    from spiced.core.regression import debug_signature
+
+    team_service = FakeTeamService(reports=[_report("r1")])
+    service, regression, db = _service(team_service)
+    projects = ProjectRepository(db)
+    project = projects.create("Moonlit Depths")
+    issue = regression.note_issue(
+        project.id, "debug", debug_signature("NullReferenceException", None),
+        "NullReferenceException in Foo.cs",
+    ).issue
+    regression.mark_resolved(issue.id)
+
+    service.sync(project.id, "proj-uuid")
+
+    assert len(team_service.notify_calls) == 1
+    assert team_service.notify_calls[0][1] == "known_issue_regression"
 
 
 def test_sync_matches_similar_signature_to_existing_dev_found_issue():

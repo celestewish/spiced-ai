@@ -66,6 +66,35 @@ class _RoutingMutateWorker(QObject):
             self.failed.emit(f"That didn't go through: {exc}")
 
 
+class _PreferencesLoadWorker(QObject):
+    """Loads the signed-in user's own notification preferences for the
+    active project's team -- Phase K's Notification settings section builds
+    directly on Phase J's routing panel above, so this mirrors
+    ``_RoutingLoadWorker`` exactly, just filtered to "mine only" (routing
+    rules are team-wide; preferences are per-member)."""
+
+    done = Signal(object, list)  # team_id | None, list[NotificationPreference] (mine only)
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+
+    def run(self) -> None:
+        try:
+            team = self._services.teams.find_team_for_project(self._project_uuid)
+            if team is None:
+                self.done.emit(None, [])
+                return
+            all_prefs = self._services.teams.list_notification_preferences(team.id)
+            user = self._services.auth.current_user()
+            mine = [p for p in all_prefs if user and p.user_id == user.id]
+            self.done.emit(team.id, mine)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't load notification preferences: {exc}")
+
+
 class SettingsScreen(QWidget):
     settings_changed = Signal()
 
@@ -216,6 +245,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(prototype_note)
 
         self._build_notification_routing_section(layout)
+        self._build_notification_preferences_section(layout)
 
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
@@ -248,6 +278,7 @@ class SettingsScreen(QWidget):
         layout.addStretch(1)
 
         self._routing_team_id: str | None = None
+        self._pref_team_id: str | None = None
         self.refresh()
 
     def _on_provider_changed(self, name: str) -> None:
@@ -299,12 +330,11 @@ class SettingsScreen(QWidget):
     # --- Relevance-Based Notifications: routing config (Phase J, #6) --------
     #
     # Scope boundary: this only edits the ROUTING rules (which discipline(s)
-    # an event kind routes to) plus shows the default mapping -- there is no
-    # inbox/bell-icon anywhere in Spiced yet, and nothing here ever delivers
-    # or displays a notification. See core.notification_routing's module
-    # docstring for the full Phase K sequencing note this deliberately stops
-    # short of. Only usable for a team-linked active project, since routing
-    # rules are saved per-team.
+    # an event kind routes to) plus shows the default mapping. The actual
+    # inbox (bell icon + dropdown) is the Notification Center's UI (Phase K,
+    # section 9 part 1) in the top bar -- see ui.top_bar.TopBar and
+    # ui.notification_center. Only usable for a team-linked active project,
+    # since routing rules are saved per-team.
 
     def _build_notification_routing_section(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Notification routing")
@@ -313,10 +343,10 @@ class SettingsScreen(QWidget):
         layout.addWidget(heading)
 
         note = QLabel(
-            "Which discipline(s) each kind of event routes to -- the decision layer a future "
-            "Notification Center (not built yet, see Section 9) will use to decide who to "
-            "notify. Nothing is delivered or displayed here; this only edits the routing rules "
-            "for the active project's team."
+            "Which discipline(s) each kind of event routes to -- the decision layer the "
+            "Notification Center (bell icon, top bar) uses to decide who to notify. This only "
+            "edits the routing rules for the active project's team; pick real-time vs. digest "
+            "delivery for yourself below."
         )
         note.setObjectName("Muted")
         note.setWordWrap(True)
@@ -345,9 +375,62 @@ class SettingsScreen(QWidget):
         row.addWidget(self._routing_add_btn)
         layout.addLayout(row)
 
+    # --- Notification Center: digest options (Phase K, section 9 part 1) ----
+    #
+    # Builds directly on the routing panel above rather than replacing it:
+    # routing decides WHETHER an event kind is relevant to you at all (by
+    # discipline, or your own enabled/disabled override); this section only
+    # decides WHEN a relevant one actually surfaces -- real-time, or held
+    # for an hourly/daily digest (see core.notification_center.
+    # bucket_by_cadence, which the bell's poller applies).
+
+    def _build_notification_preferences_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Notification settings")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Choose how you want to hear about each kind of event once it's relevant to you "
+            "(see the routing rules above): Real-time (as soon as it happens), Hourly digest, "
+            "or Daily digest. You can also enable/disable an event kind for yourself here, "
+            "overriding the discipline-based default regardless of your own discipline. Only "
+            "usable for a team-linked project you're signed in for."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._pref_status = QLabel("")
+        self._pref_status.setObjectName("Muted")
+        self._pref_status.setWordWrap(True)
+        layout.addWidget(self._pref_status)
+
+        self._pref_list = QTextEdit()
+        self._pref_list.setReadOnly(True)
+        self._pref_list.setFixedHeight(120)
+        layout.addWidget(self._pref_list)
+
+        row = QHBoxLayout()
+        self._pref_event_box = QComboBox()
+        self._pref_event_box.addItems(KNOWN_EVENT_KINDS)
+        row.addWidget(self._pref_event_box, 1)
+        self._pref_enabled_box = QComboBox()
+        self._pref_enabled_box.addItem("Enabled", True)
+        self._pref_enabled_box.addItem("Disabled", False)
+        row.addWidget(self._pref_enabled_box, 1)
+        self._pref_delivery_box = QComboBox()
+        self._pref_delivery_box.addItems(["realtime", "hourly", "daily"])
+        row.addWidget(self._pref_delivery_box, 1)
+        self._pref_save_btn = QPushButton("Save preference")
+        self._pref_save_btn.clicked.connect(self._on_save_preference)
+        row.addWidget(self._pref_save_btn)
+        layout.addLayout(row)
+
     def refresh(self) -> None:
-        """Reload the notification routing panel for the active project's
-        team, if any. Safe to call whenever the active project changes."""
+        """Reload the notification routing + preferences panels for the
+        active project's team, if any. Safe to call whenever the active
+        project changes."""
         project = self._services.active_project()
         if project is None or not project.project_uuid or not self._services.auth.is_logged_in():
             self._routing_team_id = None
@@ -357,6 +440,13 @@ class SettingsScreen(QWidget):
             )
             self._routing_list.setPlainText("")
             self._routing_add_btn.setEnabled(False)
+
+            self._pref_team_id = None
+            self._pref_status.setText(
+                "Only available for a team-linked project you're signed in for."
+            )
+            self._pref_list.setPlainText("")
+            self._pref_save_btn.setEnabled(False)
             return
 
         self._routing_add_btn.setEnabled(True)
@@ -369,6 +459,17 @@ class SettingsScreen(QWidget):
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+        self._pref_save_btn.setEnabled(True)
+        self._pref_status.setText("Loading…")
+        pref_worker = _PreferencesLoadWorker(self._services, project.project_uuid)
+        pref_thread = launch_worker(self, pref_worker)
+        pref_thread.started.connect(pref_worker.run)
+        pref_worker.done.connect(self._on_preferences_loaded)
+        pref_worker.failed.connect(self._on_preferences_load_failed)
+        pref_worker.done.connect(pref_thread.quit)
+        pref_worker.failed.connect(pref_thread.quit)
+        pref_thread.start()
 
     def _on_routing_loaded(self, team_id: str | None, rules) -> None:
         self._routing_team_id = team_id
@@ -410,6 +511,49 @@ class SettingsScreen(QWidget):
         thread.started.connect(worker.run)
         worker.done.connect(self.refresh)
         worker.failed.connect(self._on_routing_load_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_preferences_loaded(self, team_id: str | None, prefs) -> None:
+        self._pref_team_id = team_id
+        if team_id is None:
+            self._pref_status.setText("This project isn't linked to a team yet.")
+            self._pref_list.setPlainText("")
+            self._pref_save_btn.setEnabled(False)
+            return
+        self._pref_status.setText("")
+        by_kind = {p.event_kind: p for p in prefs}
+        lines = []
+        for event_kind in KNOWN_EVENT_KINDS:
+            pref = by_kind.get(event_kind)
+            state = "enabled" if (pref is None or pref.enabled) else "disabled"
+            delivery = pref.delivery if pref is not None else "realtime"
+            suffix = "" if pref is not None else " (default)"
+            lines.append(f"{event_kind}: {state}, {delivery}{suffix}")
+        self._pref_list.setPlainText("\n".join(lines))
+
+    def _on_preferences_load_failed(self, message: str) -> None:
+        self._pref_status.setText(message)
+
+    def _on_save_preference(self) -> None:
+        if self._pref_team_id is None:
+            return
+        event_kind = self._pref_event_box.currentText()
+        enabled = bool(self._pref_enabled_box.currentData())
+        delivery = self._pref_delivery_box.currentText()
+        team_id = self._pref_team_id
+        self._pref_save_btn.setEnabled(False)
+
+        worker = _RoutingMutateWorker(
+            lambda: self._services.teams.set_notification_preference(
+                team_id, event_kind, enabled, delivery
+            )
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self.refresh)
+        worker.failed.connect(self._on_preferences_load_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
