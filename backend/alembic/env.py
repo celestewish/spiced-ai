@@ -7,6 +7,9 @@ from app.config import get_settings
 from app.db import Base
 from app.models import (  # noqa: F401 (registers metadata)
     ChangelogEntry,
+    Comment,
+    EventRoutingRule,
+    NotificationPreference,
     PlayerCrashReport,
     RoadmapSuggestion,
     RoadmapVote,
@@ -14,6 +17,7 @@ from app.models import (  # noqa: F401 (registers metadata)
     Team,
     TeamMember,
     TeamProject,
+    TeamTask,
     TelemetryEvent,
     User,
 )

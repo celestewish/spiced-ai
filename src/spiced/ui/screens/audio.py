@@ -61,6 +61,46 @@ class _AudioChecklistWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
+class _SendToTeamBoardWorker(QObject):
+    done = Signal(object)  # TeamTask | None
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str, title: str, description: str,
+                 source_ref: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+        self._title = title
+        self._description = description
+        self._source_ref = source_ref
+
+    def run(self) -> None:
+        try:
+            task = self._services.teams.send_finding_to_team_board(
+                self._project_uuid, self._title,
+                description=self._description,
+                assigned_discipline="audio",
+                source_type="audio",
+                source_ref=self._source_ref,
+            )
+            self.done.emit(task)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't send to the Team board: {exc}")
+
+
+def _audio_checklist_gap_count(scan: AudioImplementationScan) -> int:
+    return len(scan.unmatched_references) + len(scan.unreferenced_audio_files)
+
+
+def _audio_checklist_source_ref(scan: AudioImplementationScan) -> str | None:
+    if scan.unmatched_references:
+        r = scan.unmatched_references[0]
+        return f"unmatched-audio-ref:{r.file}:{r.line}"
+    if scan.unreferenced_audio_files:
+        return f"unreferenced-audio-file:{scan.unreferenced_audio_files[0]}"
+    return None
+
+
 class _MixQaWorker(QObject):
     done = Signal(object)  # MixQaBatchResult
     failed = Signal(str)
@@ -246,6 +286,24 @@ class AudioScreen(QWidget):
         self._audio_checklist_result.setFixedHeight(220)
         layout.addWidget(self._audio_checklist_result)
 
+        # "Send to Team Board" routing entry point (Phase J, #3): only
+        # enabled once a scan has gaps AND the active project is
+        # team-linked -- creates a TeamTask pre-filled with discipline
+        # "audio" and a source_ref back to the first flagged gap.
+        team_board_row = QHBoxLayout()
+        team_board_row.addStretch(1)
+        self._audio_send_btn = QPushButton("Send to Team Board")
+        self._audio_send_btn.setObjectName("Ghost")
+        self._audio_send_btn.setEnabled(False)
+        self._audio_send_btn.clicked.connect(self._on_send_audio_gaps_to_team_board)
+        team_board_row.addWidget(self._audio_send_btn)
+        layout.addLayout(team_board_row)
+        self._audio_send_status = QLabel("")
+        self._audio_send_status.setObjectName("Muted")
+        self._audio_send_status.setWordWrap(True)
+        layout.addWidget(self._audio_send_status)
+        self._last_audio_checklist_scan: AudioImplementationScan | None = None
+
         history_title = QLabel("Recent checklist runs")
         history_title.setObjectName("SectionTitle")
         layout.addWidget(history_title)
@@ -278,6 +336,14 @@ class AudioScreen(QWidget):
         self._audio_checklist_run_btn.setEnabled(True)
         self._audio_checklist_run_btn.setText("Run checklist")
         self._audio_checklist_result.setPlainText(_format_audio_checklist(scan))
+        self._last_audio_checklist_scan = scan
+        project = self._services.active_project()
+        team_linked = bool(project and project.project_uuid)
+        self._audio_send_btn.setEnabled(bool(_audio_checklist_gap_count(scan)) and team_linked)
+        self._audio_send_status.setText(
+            "" if team_linked else
+            "Link this project to a team (Projects screen) to send findings to a Team Board."
+        )
         self.usage_changed.emit()
         self._refresh_audio_checklist_history()
 
@@ -285,6 +351,40 @@ class AudioScreen(QWidget):
         self._audio_checklist_run_btn.setEnabled(True)
         self._audio_checklist_run_btn.setText("Run checklist")
         self._audio_checklist_result.setPlainText(message)
+
+    def _on_send_audio_gaps_to_team_board(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.project_uuid or self._last_audio_checklist_scan is None:
+            return
+        scan = self._last_audio_checklist_scan
+        gap_count = _audio_checklist_gap_count(scan)
+        title = f"Audio Implementation Checklist: {gap_count} gap(s) in {project.name}"
+        source_ref = _audio_checklist_source_ref(scan)
+        self._audio_send_btn.setEnabled(False)
+        self._audio_send_status.setText("Sending…")
+
+        worker = _SendToTeamBoardWorker(
+            self._services, project.project_uuid, title, _format_audio_checklist(scan),
+            source_ref or "audio-implementation-checklist",
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_audio_gaps_sent)
+        worker.failed.connect(self._on_audio_gaps_send_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_audio_gaps_sent(self, task) -> None:
+        self._audio_send_btn.setEnabled(True)
+        self._audio_send_status.setText(
+            "Sent to the Team board." if task is not None
+            else "This project isn't linked to a team."
+        )
+
+    def _on_audio_gaps_send_failed(self, message: str) -> None:
+        self._audio_send_btn.setEnabled(True)
+        self._audio_send_status.setText(message)
 
     def _refresh_audio_checklist_history(self) -> None:
         project = self._services.active_project()

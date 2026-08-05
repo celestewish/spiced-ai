@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,14 +11,59 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
+from spiced.core.notification_routing import (
+    DEFAULT_EVENT_KIND_DISCIPLINES,
+    KNOWN_EVENT_KINDS,
+    disciplines_for_event,
+)
 from spiced.core.plans import PLANS
 from spiced.ui.auth_dialog import AuthDialog
+from spiced.ui.screens.team import SUGGESTED_DISCIPLINES
+from spiced.ui.thread_utils import launch_worker
+
+
+class _RoutingLoadWorker(QObject):
+    done = Signal(object, list)  # team_id | None, list[EventRoutingRule]
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+
+    def run(self) -> None:
+        try:
+            team = self._services.teams.find_team_for_project(self._project_uuid)
+            if team is None:
+                self.done.emit(None, [])
+                return
+            rules = self._services.teams.list_routing_rules(team.id)
+            self.done.emit(team.id, rules)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't load routing rules: {exc}")
+
+
+class _RoutingMutateWorker(QObject):
+    done = Signal()
+    failed = Signal(str)
+
+    def __init__(self, action) -> None:
+        super().__init__()
+        self._action = action
+
+    def run(self) -> None:
+        try:
+            self._action()
+            self.done.emit()
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"That didn't go through: {exc}")
 
 
 class SettingsScreen(QWidget):
@@ -170,6 +215,8 @@ class SettingsScreen(QWidget):
         prototype_note.setWordWrap(True)
         layout.addWidget(prototype_note)
 
+        self._build_notification_routing_section(layout)
+
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
@@ -199,6 +246,9 @@ class SettingsScreen(QWidget):
         layout.addWidget(self._test_result)
 
         layout.addStretch(1)
+
+        self._routing_team_id: str | None = None
+        self.refresh()
 
     def _on_provider_changed(self, name: str) -> None:
         self._services.set_provider_name(name)
@@ -245,6 +295,124 @@ class SettingsScreen(QWidget):
     def _on_plan_changed(self, _index: int) -> None:
         self._services.usage.set_plan(self._plan_box.currentData())
         self.settings_changed.emit()
+
+    # --- Relevance-Based Notifications: routing config (Phase J, #6) --------
+    #
+    # Scope boundary: this only edits the ROUTING rules (which discipline(s)
+    # an event kind routes to) plus shows the default mapping -- there is no
+    # inbox/bell-icon anywhere in Spiced yet, and nothing here ever delivers
+    # or displays a notification. See core.notification_routing's module
+    # docstring for the full Phase K sequencing note this deliberately stops
+    # short of. Only usable for a team-linked active project, since routing
+    # rules are saved per-team.
+
+    def _build_notification_routing_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Notification routing")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Which discipline(s) each kind of event routes to -- the decision layer a future "
+            "Notification Center (not built yet, see Section 9) will use to decide who to "
+            "notify. Nothing is delivered or displayed here; this only edits the routing rules "
+            "for the active project's team."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._routing_status = QLabel("")
+        self._routing_status.setObjectName("Muted")
+        self._routing_status.setWordWrap(True)
+        layout.addWidget(self._routing_status)
+
+        self._routing_list = QTextEdit()
+        self._routing_list.setReadOnly(True)
+        self._routing_list.setFixedHeight(120)
+        layout.addWidget(self._routing_list)
+
+        row = QHBoxLayout()
+        self._routing_event_box = QComboBox()
+        self._routing_event_box.addItems(KNOWN_EVENT_KINDS)
+        row.addWidget(self._routing_event_box, 1)
+        self._routing_discipline_box = QComboBox()
+        self._routing_discipline_box.setEditable(True)
+        self._routing_discipline_box.addItems(SUGGESTED_DISCIPLINES)
+        row.addWidget(self._routing_discipline_box, 1)
+        self._routing_add_btn = QPushButton("Add rule")
+        self._routing_add_btn.clicked.connect(self._on_add_routing_rule)
+        row.addWidget(self._routing_add_btn)
+        layout.addLayout(row)
+
+    def refresh(self) -> None:
+        """Reload the notification routing panel for the active project's
+        team, if any. Safe to call whenever the active project changes."""
+        project = self._services.active_project()
+        if project is None or not project.project_uuid or not self._services.auth.is_logged_in():
+            self._routing_team_id = None
+            self._routing_status.setText(
+                "Only available for a team-linked project you're signed in for -- select one on "
+                "the Projects screen."
+            )
+            self._routing_list.setPlainText("")
+            self._routing_add_btn.setEnabled(False)
+            return
+
+        self._routing_add_btn.setEnabled(True)
+        self._routing_status.setText("Loading…")
+        worker = _RoutingLoadWorker(self._services, project.project_uuid)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_routing_loaded)
+        worker.failed.connect(self._on_routing_load_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_routing_loaded(self, team_id: str | None, rules) -> None:
+        self._routing_team_id = team_id
+        if team_id is None:
+            self._routing_status.setText(
+                "This project isn't linked to a team yet -- link it on the Projects screen."
+            )
+            self._routing_list.setPlainText("")
+            self._routing_add_btn.setEnabled(False)
+            return
+        self._routing_status.setText("")
+        lines = []
+        for event_kind in KNOWN_EVENT_KINDS:
+            disciplines = disciplines_for_event(event_kind, rules)
+            is_default = disciplines == DEFAULT_EVENT_KIND_DISCIPLINES.get(event_kind, [])
+            suffix = " (default)" if is_default else " (customized)"
+            shown = ", ".join(disciplines) if disciplines else "(none)"
+            lines.append(f"{event_kind}: {shown}{suffix}")
+        self._routing_list.setPlainText("\n".join(lines))
+
+    def _on_routing_load_failed(self, message: str) -> None:
+        self._routing_status.setText(message)
+
+    def _on_add_routing_rule(self) -> None:
+        if self._routing_team_id is None:
+            return
+        event_kind = self._routing_event_box.currentText()
+        discipline = self._routing_discipline_box.currentText().strip()
+        if not discipline:
+            QMessageBox.information(self, "Missing discipline", "Pick or type a discipline first.")
+            return
+        team_id = self._routing_team_id
+        self._routing_add_btn.setEnabled(False)
+
+        worker = _RoutingMutateWorker(
+            lambda: self._services.teams.add_routing_rule(team_id, event_kind, discipline)
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self.refresh)
+        worker.failed.connect(self._on_routing_load_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
 
     def _on_test(self) -> None:
         self._test_btn.setEnabled(False)

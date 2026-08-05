@@ -93,3 +93,18 @@ def test_audio_screen_module_imports_cleanly():
 def test_animation_screen_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.screens.animation")
     assert hasattr(module, "AnimationScreen")
+
+
+def test_shaders_vfx_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.shaders_vfx")
+    assert hasattr(module, "ShadersVfxScreen")
+
+
+def test_team_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.team")
+    assert hasattr(module, "TeamScreen")
+
+
+def test_comments_widget_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.widgets.comments_widget")
+    assert hasattr(module, "CommentsWidget")

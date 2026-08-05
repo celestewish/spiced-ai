@@ -79,6 +79,7 @@ from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.comments_widget import CommentsWidget
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -453,6 +454,58 @@ class _EconomySimulationAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
+# "Send to Team Board" routing entry point (Phase J, #3) for Known Issues.
+# Best-effort discipline inference from the issue's own free-text category
+# -- falls back to "programmer" (bugs/regressions are the default routing
+# target per core.notification_routing's known_issue_opened default) rather
+# than leaving it unassigned, since an unassigned task is easy to miss on
+# the board.
+_KNOWN_ISSUE_CATEGORY_DISCIPLINE_HINTS = {
+    "audio": "audio", "sound": "audio",
+    "animation": "animation", "anim": "animation",
+    "art": "artist", "visual": "artist", "graphic": "artist",
+    "ui": "design", "design": "design",
+}
+
+
+def _infer_known_issue_discipline(category: str | None) -> str:
+    lowered = (category or "").lower()
+    for hint, discipline in _KNOWN_ISSUE_CATEGORY_DISCIPLINE_HINTS.items():
+        if hint in lowered:
+            return discipline
+    return "programmer"
+
+
+class _SendKnownIssueToTeamBoardWorker(QObject):
+    done = Signal(object)  # TeamTask | None
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str, issue) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+        self._issue = issue
+
+    def run(self) -> None:
+        try:
+            issue = self._issue
+            task = self._services.teams.send_finding_to_team_board(
+                self._project_uuid,
+                f"Known Issue: {issue.title}",
+                description=(
+                    f"Source: {issue.source}. Status: {issue.status}. "
+                    f"Seen {issue.occurrences} time(s), first {issue.first_seen_at}, "
+                    f"last {issue.last_seen_at}."
+                ),
+                assigned_discipline=_infer_known_issue_discipline(issue.category),
+                source_type="known_issue",
+                source_ref=f"known_issue:{issue.id}",
+            )
+            self.done.emit(task)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't send to the Team board: {exc}")
+
+
 class TestingScreen(QWidget):
     usage_changed = Signal()
 
@@ -462,6 +515,7 @@ class TestingScreen(QWidget):
         self._pending_filename: str | None = None
         self._selected_case_id: int | None = None
         self._selected_issue_id: int | None = None
+        self._known_issues_cache: list = []
         self._perf_pending_filename: str | None = None
         self._access_pending_filename: str | None = None
         self._last_checklist: ReleaseChecklist | None = None
@@ -834,7 +888,26 @@ class TestingScreen(QWidget):
         self._reopen_btn = QPushButton("Reopen")
         self._reopen_btn.clicked.connect(self._on_mark_open)
         row.addWidget(self._reopen_btn)
+        # "Send to Team Board" routing entry point (Phase J, #3): only
+        # enabled with a selected issue AND a team-linked active project --
+        # creates a TeamTask with a best-effort discipline inferred from the
+        # issue's category and a source_ref back to the known_issue id.
+        self._issue_send_btn = QPushButton("Send to Team Board")
+        self._issue_send_btn.setObjectName("Ghost")
+        self._issue_send_btn.setEnabled(False)
+        self._issue_send_btn.clicked.connect(self._on_send_issue_to_team_board)
+        row.addWidget(self._issue_send_btn)
         layout.addLayout(row)
+
+        self._issue_send_status = QLabel("")
+        self._issue_send_status.setObjectName("Muted")
+        self._issue_send_status.setWordWrap(True)
+        layout.addWidget(self._issue_send_status)
+
+        # Comment Threads on Assets/Builds (Phase J, #5): attached to
+        # whichever Known Issue is currently selected above.
+        self._issue_comments = CommentsWidget(self._services)
+        layout.addWidget(self._issue_comments)
 
         # Player Crash & Error Reporting (Phase G, section 7): only
         # reachable for a team-linked project — see
@@ -1318,6 +1391,9 @@ class TestingScreen(QWidget):
         has_issue = self._selected_issue_id is not None
         self._resolve_btn.setEnabled(has_issue)
         self._reopen_btn.setEnabled(has_issue)
+        project = self._services.active_project()
+        team_linked = bool(project and project.project_uuid)
+        self._issue_send_btn.setEnabled(has_issue and team_linked)
 
     def _refresh_cases(self) -> None:
         self._case_list.blockSignals(True)
@@ -1357,6 +1433,7 @@ class TestingScreen(QWidget):
         self._issues_list.clear()
         project = self._services.active_project()
         issues = self._services.testing.known_issues(project.id) if project else []
+        self._known_issues_cache = list(issues)
         for issue in issues:
             when = issue.resolved_at or issue.last_seen_at
             label = (
@@ -1372,6 +1449,7 @@ class TestingScreen(QWidget):
         self._issues_empty.setVisible(not issues)
         self._issues_list.setVisible(bool(issues))
         self._selected_issue_id = None
+        self._issue_comments.set_subject(None, "known_issue", "")
         self._update_edit_buttons()
 
     def _refresh_perf_history(self) -> None:
@@ -1695,6 +1773,47 @@ class TestingScreen(QWidget):
     def _on_issue_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
         self._selected_issue_id = int(current.data(_USER_ROLE)) if current is not None else None
         self._update_edit_buttons()
+        project = self._services.active_project()
+        project_uuid = project.project_uuid if project else None
+        if self._selected_issue_id is None:
+            self._issue_comments.set_subject(None, "known_issue", "")
+        else:
+            self._issue_comments.set_subject(
+                project_uuid, "known_issue", str(self._selected_issue_id)
+            )
+
+    def _selected_known_issue(self):
+        return next(
+            (i for i in self._known_issues_cache if i.id == self._selected_issue_id), None
+        )
+
+    def _on_send_issue_to_team_board(self) -> None:
+        project = self._services.active_project()
+        issue = self._selected_known_issue()
+        if project is None or not project.project_uuid or issue is None:
+            return
+        self._issue_send_btn.setEnabled(False)
+        self._issue_send_status.setText("Sending…")
+
+        worker = _SendKnownIssueToTeamBoardWorker(self._services, project.project_uuid, issue)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_issue_sent)
+        worker.failed.connect(self._on_issue_send_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_issue_sent(self, task) -> None:
+        self._issue_send_btn.setEnabled(True)
+        self._issue_send_status.setText(
+            "Sent to the Team board." if task is not None
+            else "This project isn't linked to a team."
+        )
+
+    def _on_issue_send_failed(self, message: str) -> None:
+        self._issue_send_btn.setEnabled(True)
+        self._issue_send_status.setText(message)
 
     def _on_mark_resolved(self) -> None:
         if self._selected_issue_id is None:

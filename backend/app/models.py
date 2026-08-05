@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -71,6 +71,17 @@ class TeamMember(Base):
     )
     invited_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="member")
+    # Discipline/skill role (Phase J, section 8 part 2 -- Role-Based
+    # Dashboards + Relevance-Based Notifications routing). Deliberately NOT
+    # the same field as ``role`` above, which is membership-only
+    # ("owner"/"member"). A free-ish string with a small suggested set
+    # (programmer/artist/audio/animation/design) rather than a rigid enum,
+    # since indie teams don't fit neat boxes -- see docs on the desktop
+    # Settings/Team screens for the suggested values shown in the UI.
+    # Settable via self-service (PATCH .../members/me) or by any team member
+    # (PATCH .../members/{member_id}), mirroring the existing permissiveness
+    # of invite_member (no owner-only gate exists anywhere in this router).
+    discipline: Mapped[str | None] = mapped_column(String(50), nullable=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
@@ -217,4 +228,111 @@ class RoadmapVote(Base):
         String(36), ForeignKey("roadmap_suggestions.id"), index=True
     )
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class TeamTask(Base):
+    """Unified Task Board (Phase J, section 8 part 2, Core tier).
+
+    A single flat task list per team, optionally scoped to one team-linked
+    project (``project_uuid`` nullable — a team could in principle track a
+    cross-project task, though the desktop UI only ever creates project-
+    scoped ones today). ``source_type``/``source_ref`` trace a task back to
+    whatever finding generated it (e.g. an Animation Bug Detection result, a
+    Known Issue signature) when it was created via one of the "Send to Team
+    Board" routing entry points rather than typed in by hand.
+    """
+
+    __tablename__ = "team_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    project_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    # e.g. "programmer"/"artist"/"audio"/"animation"/"design"/None -- same
+    # free-ish vocabulary as TeamMember.discipline, not enforced as a foreign
+    # key against it (a task can be pre-filled with a discipline no current
+    # member has claimed yet).
+    assigned_discipline: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # 'manual' | 'feedback' | 'bug' | 'animation' | 'audio' | 'known_issue' | ...
+    source_type: Mapped[str] = mapped_column(String(30), default="manual")
+    source_ref: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_by_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Comment(Base):
+    """Comment Threads on Assets/Builds (Phase J, section 8 part 2, Phase 2 tier).
+
+    ``subject_type`` is a small fixed set matching what actually exists to
+    comment on today ('task' | 'known_issue' | 'build' | 'session_summary');
+    ``subject_id`` is a string (not a foreign key) since those subjects live
+    in different tables/shapes -- a ``TeamTask.id`` (uuid string) and a local
+    Known Issue id (a SQLite integer, stringified) don't share a type. Only
+    ever created for a team-linked subject; comments have no meaning for a
+    solo/local-only project.
+    """
+
+    __tablename__ = "comments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    subject_type: Mapped[str] = mapped_column(String(30))
+    subject_id: Mapped[str] = mapped_column(String(100), index=True)
+    author_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EventRoutingRule(Base):
+    """Relevance-Based Notifications: a team's own routing rule (Phase J).
+
+    Overrides ``core.notification_routing.DEFAULT_EVENT_KIND_DISCIPLINES``
+    for one ``event_kind`` on one team: if a team has at least one saved
+    rule for a given event kind, those rule rows replace the hardcoded
+    default for that team (see ``notification_routing.disciplines_for_event``)
+    rather than merging with it, so a team can narrow or widen the default
+    set without fighting it. Purely a routing *decision* input -- see
+    ``EventRoutingRule``/``NotificationPreference``'s shared module docstring
+    note (Phase K sequencing) in ``core.notification_routing``: nothing here
+    delivers or displays a notification.
+    """
+
+    __tablename__ = "event_routing_rules"
+    __table_args__ = (
+        UniqueConstraint("team_id", "event_kind", "discipline", name="uq_event_routing_rule"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    event_kind: Mapped[str] = mapped_column(String(100))
+    discipline: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class NotificationPreference(Base):
+    """Relevance-Based Notifications: one member's explicit override (Phase J).
+
+    Absence of a row for a (team, user, event_kind) triple means "use the
+    discipline-based default" (see ``core.notification_routing``); a row
+    here always wins, letting any member opt in or out of an event kind
+    regardless of their own discipline. Readable by any team member (routing
+    decisions need everyone's overrides to compute who's relevant), but only
+    writable by the row's own owner (see ``routers.notifications.
+    set_my_notification_preference``, a ``.../me`` endpoint).
+    """
+
+    __tablename__ = "notification_preferences"
+    __table_args__ = (
+        UniqueConstraint("team_id", "user_id", "event_kind", name="uq_notification_pref"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    event_kind: Mapped[str] = mapped_column(String(100))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

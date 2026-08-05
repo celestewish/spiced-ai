@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -41,6 +42,9 @@ class TeamMemberOut(BaseModel):
     # Team Mode prompt context, which shows teammates by name/email.
     email: str | None
     role: str
+    # Discipline/skill role (Phase J) -- see TeamMember.discipline. None
+    # until the member (or another teammate) sets it.
+    discipline: str | None = None
     joined_at: datetime | None
     created_at: datetime
 
@@ -48,6 +52,13 @@ class TeamMemberOut(BaseModel):
 class TeamInviteRequest(BaseModel):
     email: EmailStr
     role: str = "member"
+    # Optional owner-set discipline at invite time (Phase J, Role-Based
+    # Dashboards) -- the invitee can still change it later via self-service.
+    discipline: str | None = None
+
+
+class MemberDisciplineUpdate(BaseModel):
+    discipline: str | None = None
 
 
 class TeamProjectCreate(BaseModel):
@@ -153,3 +164,85 @@ class RoadmapSuggestionOut(BaseModel):
     created_at: datetime
     vote_count: int
     voted_by_me: bool
+
+
+class TeamTaskCreate(BaseModel):
+    title: str
+    description: str | None = None
+    project_uuid: str | None = None
+    assigned_discipline: str | None = None
+    source_type: str = "manual"
+    source_ref: str | None = None
+
+
+class TeamTaskUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: Literal["open", "in_progress", "done"] | None = None
+    assigned_discipline: str | None = None
+
+
+class TeamTaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    project_uuid: str | None
+    title: str
+    description: str | None
+    status: str
+    assigned_discipline: str | None
+    source_type: str
+    source_ref: str | None
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CommentCreate(BaseModel):
+    subject_type: Literal["task", "known_issue", "build", "session_summary"]
+    subject_id: str
+    body: str = Field(max_length=4000)
+
+
+class CommentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    subject_type: str
+    subject_id: str
+    author_user_id: str
+    body: str
+    created_at: datetime
+
+
+class EventRoutingRuleCreate(BaseModel):
+    event_kind: str
+    discipline: str
+
+
+class EventRoutingRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    event_kind: str
+    discipline: str
+    created_at: datetime
+
+
+class NotificationPreferenceUpdate(BaseModel):
+    event_kind: str
+    enabled: bool = True
+
+
+class NotificationPreferenceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    user_id: str
+    event_kind: str
+    enabled: bool
+    created_at: datetime

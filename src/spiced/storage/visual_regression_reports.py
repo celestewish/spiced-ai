@@ -1,0 +1,68 @@
+"""Visual Regression Testing persistence.
+
+Each row is one saved local before/after diff pass (``core.visual_regression``)
+-- deterministic Pillow pixel-difference findings, no AI call. Same minimal
+shape as ``animation_state_machine_reports``.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+from spiced.storage.database import Database
+
+
+@dataclass(frozen=True)
+class VisualRegressionReport:
+    id: int
+    project_id: int
+    findings_json: str | None
+    created_at: str
+
+    @property
+    def findings(self) -> dict:
+        if not self.findings_json:
+            return {}
+        try:
+            data = json.loads(self.findings_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+class VisualRegressionReportRepository:
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    def create(self, project_id: int, findings: dict) -> VisualRegressionReport:
+        new_id = self._db.execute(
+            "INSERT INTO visual_regression_reports (project_id, findings_json) VALUES (?, ?)",
+            (project_id, json.dumps(findings)),
+        )
+        return self.get(new_id)
+
+    def get(self, report_id: int) -> VisualRegressionReport:
+        row = self._db.query_one(
+            "SELECT * FROM visual_regression_reports WHERE id = ?", (report_id,)
+        )
+        if row is None:
+            raise KeyError(f"No visual regression report with id {report_id}")
+        return self._to_report(row)
+
+    def list_for_project(self, project_id: int, limit: int = 20) -> list[VisualRegressionReport]:
+        rows = self._db.query_all(
+            "SELECT * FROM visual_regression_reports WHERE project_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (project_id, limit),
+        )
+        return [self._to_report(r) for r in rows]
+
+    @staticmethod
+    def _to_report(row) -> VisualRegressionReport:
+        return VisualRegressionReport(
+            id=row["id"],
+            project_id=row["project_id"],
+            findings_json=row["findings_json"],
+            created_at=row["created_at"],
+        )

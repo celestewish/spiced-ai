@@ -27,6 +27,8 @@ from spiced.ui.screens.marketing import MarketingScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.roadmap import RoadmapScreen
 from spiced.ui.screens.settings import SettingsScreen
+from spiced.ui.screens.shaders_vfx import ShadersVfxScreen
+from spiced.ui.screens.team import TeamScreen
 from spiced.ui.screens.testing import TestingScreen
 
 NAV_ITEMS = [
@@ -46,13 +48,21 @@ NAV_ITEMS = [
     # belong on an existing tool page either.
     "Business",
     # Team Collaboration by Role: Art + Audio + Animation (Phase I, section
-    # 8 part 1) — three new sidebar pages per spec, one per role. Shaders/
-    # VFX and the cross-role team-glue features (Unified Task Board,
-    # Role-Based Dashboards, ...) are a later phase and deliberately not
-    # built here.
+    # 8 part 1) — three new sidebar pages per spec, one per role.
     "Art",
     "Audio",
     "Animation",
+    # Shaders & VFX + Cross-Role & Team Glue (Phase J, section 8 part 2) —
+    # two more new sidebar pages per spec: Shaders/VFX (Shader Performance
+    # Profiling, Visual Regression Testing) and Team (Unified Task Board,
+    # discipline self-service, comment threads). Role-Based Dashboards (#4)
+    # lives on the Context Panel instead (it's a summary, not its own
+    # screen); Relevance-Based Notifications' routing config lives on the
+    # Settings screen (see SettingsScreen) rather than getting its own page,
+    # since Section 9's Notification Center (the actual inbox UI) is a
+    # later phase (Phase K) this one deliberately doesn't build.
+    "Shaders/VFX",
+    "Team",
     # Roadmap sits outside the tool pages above, next to Settings — per the
     # Section 5 spec's placement call.
     "Roadmap",
@@ -149,6 +159,8 @@ class MainWindow(QWidget):
         self._art_screen = ArtScreen(self._services)
         self._audio_screen = AudioScreen(self._services)
         self._animation_screen = AnimationScreen(self._services)
+        self._shaders_vfx_screen = ShadersVfxScreen(self._services)
+        self._team_screen = TeamScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
         self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
         self._projects_screen.projects_changed.connect(self._testing_screen.refresh)
@@ -158,14 +170,21 @@ class MainWindow(QWidget):
         self._projects_screen.projects_changed.connect(self._art_screen.refresh)
         self._projects_screen.projects_changed.connect(self._audio_screen.refresh)
         self._projects_screen.projects_changed.connect(self._animation_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._shaders_vfx_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._team_screen.refresh)
         self._projects_screen.projects_changed.connect(self._dashboard_screen.refresh)
+        # SettingsScreen's notification routing panel (#6) is also
+        # project-scoped (routing rules are per-team) -- connected below,
+        # once self._settings_screen exists.
 
         # New AI analyses create debug/test/feedback/marketing/business
         # records, so refresh the dashboard (and usage pill) whenever one
-        # completes. Art/Audio/Animation involve no AI calls, but they still
-        # emit usage_changed after a scan completes so their own history
-        # panels + the dashboard stay in sync, same as the local-only
-        # sections of Marketing/Business.
+        # completes. Art/Audio/Animation/Shaders-VFX involve no AI calls,
+        # but they still emit usage_changed after a scan completes so their
+        # own history panels + the dashboard stay in sync, same as the
+        # local-only sections of Marketing/Business. Team involves no AI
+        # call either, but emits usage_changed after a task/comment mutation
+        # for the same reason.
         self._debugging_screen.usage_changed.connect(self._context.refresh)
         self._testing_screen.usage_changed.connect(self._context.refresh)
         self._feedback_screen.usage_changed.connect(self._context.refresh)
@@ -174,6 +193,8 @@ class MainWindow(QWidget):
         self._art_screen.usage_changed.connect(self._context.refresh)
         self._audio_screen.usage_changed.connect(self._context.refresh)
         self._animation_screen.usage_changed.connect(self._context.refresh)
+        self._shaders_vfx_screen.usage_changed.connect(self._context.refresh)
+        self._team_screen.usage_changed.connect(self._context.refresh)
         self._debugging_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._testing_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._feedback_screen.usage_changed.connect(self._dashboard_screen.refresh)
@@ -182,6 +203,8 @@ class MainWindow(QWidget):
         self._art_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._audio_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._animation_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._shaders_vfx_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._team_screen.usage_changed.connect(self._dashboard_screen.refresh)
 
         self._roadmap_screen = RoadmapScreen(self._services)
 
@@ -191,6 +214,9 @@ class MainWindow(QWidget):
         # Health badge shows its team-linked note. Rapid Prototyping Mode
         # toggling changes which panel the Testing screen foregrounds.
         self._settings_screen.settings_changed.connect(self._testing_screen.refresh)
+        # The notification routing panel (#6) needs to reload whenever the
+        # active project (and therefore its team) changes.
+        self._projects_screen.projects_changed.connect(self._settings_screen.refresh)
 
         self._stack.addWidget(self._dashboard_screen)
         self._stack.addWidget(self._projects_screen)
@@ -202,6 +228,8 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._art_screen)
         self._stack.addWidget(self._audio_screen)
         self._stack.addWidget(self._animation_screen)
+        self._stack.addWidget(self._shaders_vfx_screen)
+        self._stack.addWidget(self._team_screen)
         self._stack.addWidget(self._roadmap_screen)
         self._stack.addWidget(self._settings_screen)
         # Recompute the dashboard whenever the user navigates to it.

@@ -11,6 +11,7 @@ from app.auth import get_current_user
 from app.db import get_db
 from app.models import Team, TeamMember, TeamProject, User
 from app.schemas import (
+    MemberDisciplineUpdate,
     TeamCreate,
     TeamInviteRequest,
     TeamMemberOut,
@@ -113,6 +114,7 @@ def invite_member(
         user_id=existing_user.id if existing_user else None,
         invited_email=None if existing_user else body.email,
         role=body.role,
+        discipline=body.discipline,
         joined_at=datetime.now(UTC) if existing_user else None,
     )
     db.add(member)
@@ -129,6 +131,52 @@ def list_members(
 ) -> list[TeamMember]:
     _require_membership(db, team_id, user)
     return db.query(TeamMember).filter(TeamMember.team_id == team_id).all()
+
+
+@router.patch("/{team_id}/members/me", response_model=TeamMemberOut)
+def set_my_discipline(
+    team_id: str,
+    body: MemberDisciplineUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TeamMember:
+    """Self-service discipline update (Phase J, Role-Based Dashboards) --
+    any signed-in member of the team can set their own discipline, no
+    approval needed."""
+    _require_membership(db, team_id, user)
+    member = (
+        db.query(TeamMember)
+        .filter(TeamMember.team_id == team_id, TeamMember.user_id == user.id)
+        .first()
+    )
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.")
+    member.discipline = body.discipline
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+@router.patch("/{team_id}/members/{member_id}", response_model=TeamMemberOut)
+def set_member_discipline(
+    team_id: str,
+    member_id: str,
+    body: MemberDisciplineUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TeamMember:
+    """Owner/teammate-set discipline path (Phase J) -- kept as permissive as
+    every other member-management endpoint in this router (invite_member has
+    no owner-only gate either), rather than introducing a new authorization
+    tier just for this field."""
+    _require_membership(db, team_id, user)
+    member = db.get(TeamMember, member_id)
+    if member is None or member.team_id != team_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    member.discipline = body.discipline
+    db.commit()
+    db.refresh(member)
+    return member
 
 
 @router.post(

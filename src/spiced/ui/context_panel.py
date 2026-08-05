@@ -8,7 +8,87 @@ from PySide6.QtWidgets import QFrame, QLabel, QMessageBox, QPushButton, QVBoxLay
 from spiced.app.services import Services
 from spiced.core.crunch_awareness import detect_crunch_pattern
 from spiced.core.session_summary import ProviderNotReadyError, SessionSummaryResult
+from spiced.storage.projects import Project
 from spiced.ui.thread_utils import launch_worker
+
+# Role-Based Dashboards (Phase J, Cross-Role & Team Glue #4): the
+# disciplines this panel knows how to summarize, each backed by a genuinely
+# existing feature's most recently SAVED report -- never a live re-scan,
+# since ContextPanel.refresh() runs synchronously on the UI thread and must
+# stay fast. Covers 4 of the suggested discipline values (see
+# ui.screens.team.SUGGESTED_DISCIPLINES); "design" has no existing feature
+# with a comparable saved-report summary yet, so it's deliberately not
+# covered here.
+_ROLE_SUMMARY_LABELS = {
+    "artist": "Asset Review Queue",
+    "audio": "Audio Implementation Checklist",
+    "animation": "State Machine Health",
+    "programmer": "Code Health",
+}
+
+
+def _role_summary_text(services: Services, project: Project, discipline: str) -> str | None:
+    """The one-line summary shown for ``discipline``, or None if this
+    discipline isn't one of the four covered (see ``_ROLE_SUMMARY_LABELS``)."""
+    if discipline == "artist":
+        reports = services.asset_review_queue.history(project.id, limit=1)
+        if not reports:
+            return f"{_ROLE_SUMMARY_LABELS[discipline]}: no saved runs yet -- see the Art screen."
+        flagged = sum(1 for f in reports[0].findings if not f.get("passed", True))
+        return f"{_ROLE_SUMMARY_LABELS[discipline]}: {flagged} asset(s) flagged in the last run."
+    if discipline == "audio":
+        reports = services.audio_implementation_checklist.history(project.id, limit=1)
+        if not reports:
+            return f"{_ROLE_SUMMARY_LABELS[discipline]}: no saved runs yet -- see the Audio screen."
+        f = reports[0].findings
+        gaps = len(f.get("unmatched_references", [])) + len(f.get("unreferenced_audio_files", []))
+        return f"{_ROLE_SUMMARY_LABELS[discipline]}: {gaps} gap(s) in the last run."
+    if discipline == "animation":
+        reports = services.animation_state_machine_check.history(project.id, limit=1)
+        if not reports:
+            return (
+                f"{_ROLE_SUMMARY_LABELS[discipline]}: no saved checks yet -- see the "
+                "Animation screen."
+            )
+        f = reports[0].findings
+        flagged = len(f.get("unreachable_states", [])) + len(f.get("missing_targets", []))
+        return f"{_ROLE_SUMMARY_LABELS[discipline]}: {flagged} issue(s) in the last check."
+    if discipline == "programmer":
+        reports = services.code_health.history(project.id, limit=1)
+        if not reports:
+            return (
+                f"{_ROLE_SUMMARY_LABELS[discipline]}: no saved reviews yet -- see the "
+                "Debugging Buddy screen."
+            )
+        metrics = reports[0].metrics
+        longest = len(metrics.get("longest_functions", []))
+        todos = metrics.get("todo_count", 0)
+        return f"{_ROLE_SUMMARY_LABELS[discipline]}: {longest} long function(s), {todos} TODO(s)."
+    return None
+
+
+class _RoleDashboardWorker(QObject):
+    """Fetches the signed-in user's discipline (a network call, via
+    TeamService) then a local report summary for it -- run off the UI thread
+    since ContextPanel.refresh() itself must stay fast and synchronous."""
+
+    done = Signal(object)  # str | None (the summary text, or None to show nothing)
+    failed = Signal()
+
+    def __init__(self, services: Services, project: Project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            discipline = self._services.teams.my_discipline(self._project.project_uuid)
+            if not discipline:
+                self.done.emit(None)
+                return
+            self.done.emit(_role_summary_text(self._services, self._project, discipline))
+        except Exception:
+            self.failed.emit()
 
 
 class _SessionSummaryWorker(QObject):
@@ -93,6 +173,7 @@ class ContextPanel(QFrame):
 
         self._build_session_section(layout)
         self._build_crunch_awareness_section(layout)
+        self._build_role_dashboard_section(layout)
         self._build_build_alert_section(layout)
 
         layout.addStretch(1)
@@ -237,6 +318,56 @@ class ContextPanel(QFrame):
         self._crunch_note.setVisible(True)
         self._crunch_dismiss_btn.setVisible(True)
 
+    # --- Role-Based Dashboards (Phase J, Cross-Role & Team Glue #4) ---------
+    #
+    # Only shown for a team-linked project whose signed-in user has a
+    # discipline set (see core.team_service.TeamService.my_discipline) that
+    # is one of the four this panel knows how to summarize (see
+    # _ROLE_SUMMARY_LABELS above). Hidden entirely otherwise -- solo/local-
+    # only projects, unlinked team projects, no discipline set, or a
+    # discipline this panel doesn't cover yet (e.g. "design").
+
+    def _build_role_dashboard_section(self, layout: QVBoxLayout) -> None:
+        self._role_title = QLabel("Your discipline")
+        self._role_title.setObjectName("SectionTitle")
+        self._role_title.setVisible(False)
+        layout.addWidget(self._role_title)
+
+        self._role_summary = QLabel("")
+        self._role_summary.setObjectName("Muted")
+        self._role_summary.setWordWrap(True)
+        self._role_summary.setVisible(False)
+        layout.addWidget(self._role_summary)
+
+    def _refresh_role_dashboard(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.project_uuid or not self._services.auth.is_logged_in():
+            self._role_title.setVisible(False)
+            self._role_summary.setVisible(False)
+            return
+
+        worker = _RoleDashboardWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_role_dashboard_done)
+        worker.failed.connect(self._on_role_dashboard_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_role_dashboard_done(self, summary: str | None) -> None:
+        if not summary:
+            self._role_title.setVisible(False)
+            self._role_summary.setVisible(False)
+            return
+        self._role_title.setVisible(True)
+        self._role_summary.setText(summary)
+        self._role_summary.setVisible(True)
+
+    def _on_role_dashboard_failed(self) -> None:
+        self._role_title.setVisible(False)
+        self._role_summary.setVisible(False)
+
     # --- Build alerts (Automated Build Pipeline, Phase D) -------------------
     #
     # Per spec, only a build *failure* interrupts the developer — a
@@ -289,3 +420,4 @@ class ContextPanel(QFrame):
         self._usage_pill.setText(self._services.usage.status().summary())
         self._refresh_recent_sessions()
         self._refresh_crunch_awareness()
+        self._refresh_role_dashboard()
