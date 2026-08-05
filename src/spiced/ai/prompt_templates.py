@@ -1808,3 +1808,223 @@ def build_screenshot_checklist_prompt(
         f"{_format_screenshot_findings(findings, captions or {})}\n\n"
         f"{SCREENSHOT_CHECKLIST_RESPONSE_FORMAT}\n"
     )
+
+
+# Rules specific to the Contract/License Checklist (Phase H, section 7 part 2,
+# Stretch tier). This is the single riskiest prompt in the app to get wrong:
+# a developer could genuinely be about to sign something. The "not legal
+# advice, talk to a real lawyer" caveat is deliberately repeated multiple
+# times in the rules AND baked into the required response format itself, not
+# left as a single disclaimer that's easy to skim past.
+CONTRACT_CHECKLIST_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "You are not a lawyer and this is not legal advice, in any part of your reply — you are "
+    "pointing out things a non-lawyer might want to double-check, nothing more.",
+    "Point out common gaps or red flags worth a second look — missing termination terms, "
+    "unclear IP/ownership assignment, one-sided indemnification, unusual exclusivity or "
+    "non-compete scope, missing payment terms/timelines, vague deliverables — but only ones "
+    "that plausibly apply to the text given, never a generic checklist recited regardless of "
+    "content.",
+    "Frame every item as \"worth asking a lawyer about,\" never as a verdict on whether the "
+    "document is safe, fair, or enforceable — you cannot know that.",
+    "Never tell the developer to sign, not sign, or that a clause is legally valid or invalid.",
+    "Never claim you changed, edited, drafted, or redlined anything — the developer's own "
+    "lawyer does that.",
+    "If the excerpt is too short or unclear to say anything useful, say so plainly rather than "
+    "inventing generic contract concerns.",
+    "End your reply by explicitly recommending a real lawyer review anything that actually "
+    "matters before the developer signs or relies on it.",
+)
+
+CONTRACT_CHECKLIST_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Not legal advice — this is a non-lawyer's read to help you know what to ask a real lawyer \
+about, nothing more.
+
+Things to double check:
+- [Specific gap or red flag actually present in the excerpt, and why it's worth a lawyer's eyes \
+— or "Nothing obvious stood out in this excerpt, but that is not the same as a clean bill of \
+health." if nothing applies]
+
+What I can't tell you:
+[A short, honest reminder that you are not a lawyer, this is not legal advice, and enforceability/\
+fairness/validity are outside what you can assess]
+
+Before you sign or rely on this:
+Talk to a real lawyer about anything here that actually matters."""
+
+
+def _format_contract_checklist_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in CONTRACT_CHECKLIST_RULES)
+
+
+def build_contract_checklist_prompt(excerpt: str, *, project_name: str | None = None) -> str:
+    """Assemble the Contract/License Checklist prompt from a pasted/imported excerpt.
+
+    Only the trimmed excerpt the developer explicitly pasted/imported is
+    included. This is explicitly, repeatedly not legal advice — see
+    ``CONTRACT_CHECKLIST_RULES`` and the required response format, both of
+    which repeat the "talk to a real lawyer" caveat.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    text_block = excerpt.strip() or "(empty — nothing was pasted or imported)"
+    return (
+        "You are Spiced, a calm companion pointing an indie developer toward things worth "
+        "asking a real lawyer about in a contract or license document they pasted or imported. "
+        "You are not a lawyer, this is not legal advice, and you never edit or draft anything "
+        "yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_contract_checklist_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Document excerpt the developer pasted/imported (already trimmed; do not ask for the "
+        "full document):\n"
+        "```\n"
+        f"{text_block}\n"
+        "```\n\n"
+        f"{CONTRACT_CHECKLIST_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Competitive Landscape Scan (Phase H, section 7 part 2,
+# Phase 2 tier). No live market data integration exists here (see
+# core.competitive_landscape) — the AI works from its own general knowledge,
+# which can be outdated or simply wrong about specific prices/review counts.
+# Framed, per spec, "to inform, never to discourage."
+COMPETITIVE_LANDSCAPE_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "You are working from general training knowledge only — Spiced has no live connection to "
+    "Steam, itch, or any storefront, and you cannot look anything up right now.",
+    "Explicitly and clearly label your read as approximate and potentially outdated — never "
+    "state a specific price, review count, or sales figure as if it is current fact; if you "
+    "mention one, frame it as \"roughly, as of your training, but verify this yourself.\"",
+    "Suggest comparable existing titles by genre/mechanics/scope, and general positioning "
+    "thoughts (how this game might differentiate) — never a market-sizing or revenue estimate.",
+    "Frame this to inform the developer's thinking, never to discourage them — do not tell them "
+    "the space is \"too crowded\" or that they shouldn't make the game.",
+    "Never claim you changed, published, or priced anything — this is discussion only.",
+    "If the description given is too thin to suggest meaningful comparisons, say so plainly "
+    "rather than inventing detail.",
+    "End your reply with an explicit reminder to verify current pricing, review counts, and "
+    "positioning directly on the storefronts before drawing conclusions.",
+)
+
+COMPETITIVE_LANDSCAPE_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Approximate read, not live market data — verify anything specific yourself before drawing \
+conclusions.
+
+Comparable titles:
+- [Title, genre/mechanics similarity, and roughly why it's comparable — or "Not enough detail \
+in the description to suggest meaningful comparisons." if the description is too thin]
+
+Positioning thoughts:
+- [1-3 grounded, non-prescriptive thoughts on how this game might differentiate — framed to \
+inform, never to discourage]
+
+What I can't verify right now:
+[A short, honest reminder that you have no live connection to any storefront, and any price/\
+review-count/sales figure mentioned above is approximate at best]"""
+
+
+def _format_competitive_landscape_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in COMPETITIVE_LANDSCAPE_RULES)
+
+
+def build_competitive_landscape_prompt(
+    description: str, *, project_name: str | None = None
+) -> str:
+    """Assemble the Competitive Landscape Scan prompt from the developer's own description.
+
+    Only the description the developer typed is included. Spiced never
+    fetches or scrapes anything live — this prompt works entirely from the
+    model's general knowledge, which the response format and rules require
+    be labeled approximate/not live data.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    description_block = description.strip() or "(no description provided)"
+    return (
+        "You are Spiced, a calm companion giving an indie developer a rough sense of their "
+        "competitive landscape from general knowledge only — never live storefront data.\n\n"
+        "Follow these rules:\n"
+        f"{_format_competitive_landscape_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Game description the developer provided (genre, core mechanics, rough scope):\n"
+        "```\n"
+        f"{description_block}\n"
+        "```\n\n"
+        f"{COMPETITIVE_LANDSCAPE_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Draft Translation Pass (Phase H, section 7 part 2,
+# Stretch tier). Always labeled a draft for a human translator to refine —
+# never presented as ship-ready, per spec, repeated in both the rules and the
+# required response format.
+DRAFT_TRANSLATION_RULES: tuple[str, ...] = (
+    "Translate every numbered source line into the requested target language, keeping the same "
+    "numbering so the developer can match translations back to originals.",
+    "Preserve any placeholders/format tokens exactly as they appear (e.g. {0}, {player_name}, "
+    "%s, \\n) — never translate or alter the token itself, only the surrounding text.",
+    "Keep the tone and register close to the source line — do not add jokes, flourishes, or "
+    "content that wasn't in the original.",
+    "This is a draft machine translation only, not a professional localization pass — never "
+    "claim fluency, cultural-accuracy, or ship-readiness for any line.",
+    "Never claim you changed, edited, or saved anything to the developer's project.",
+    "If a source line is ambiguous or you're unsure of an idiom, translate your best guess and "
+    "flag it plainly rather than pretending certainty.",
+    "End your reply with an explicit reminder that a human translator (ideally a native speaker "
+    "of the target language) should review and refine every line before it ships.",
+)
+
+DRAFT_TRANSLATION_RESPONSE_FORMAT = """Structure your reply exactly like this:
+
+Draft translation only — for a human translator to review and refine, never ship-ready as-is.
+
+```
+1. [translated line 1]
+2. [translated line 2]
+...
+```
+
+Lines I'm least sure about:
+- [line number and a short note on the ambiguity/idiom — or "Nothing stood out as especially \
+uncertain." if none]
+
+Before this ships:
+Have a human translator (ideally a native speaker of the target language) review and refine \
+every line above — this is a draft, not a finished localization."""
+
+
+def _format_draft_translation_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in DRAFT_TRANSLATION_RULES)
+
+
+def build_draft_translation_prompt(
+    lines: list[str], *, target_language: str, project_name: str | None = None
+) -> str:
+    """Assemble the Draft Translation Pass prompt from parsed dialogue lines.
+
+    Only the dialogue text lines the developer pasted/imported are included
+    (already parsed by ``core.draft_translation`` from the documented plain-
+    text/CSV/JSON formats) — never any other project file.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    numbered = "\n".join(f"{i}. {line}" for i, line in enumerate(lines, start=1))
+    lines_block = numbered or "(no lines parsed)"
+    return (
+        "You are Spiced, a calm companion producing a draft machine translation of an indie "
+        "developer's dialogue/UI text for a human translator to refine afterward. You never "
+        "claim this is ship-ready and you never save or change anything in the project "
+        "yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_draft_translation_rules()}\n\n"
+        f"{project_line}\n"
+        f"Target language: {target_language}\n\n"
+        "Source lines the developer pasted/imported (already parsed, numbered for matching):\n"
+        f"{lines_block}\n\n"
+        f"{DRAFT_TRANSLATION_RESPONSE_FORMAT}\n"
+    )

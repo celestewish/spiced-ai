@@ -73,3 +73,8 @@ def test_build_scheduler_module_imports_cleanly():
 def test_marketing_screen_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.screens.marketing")
     assert hasattr(module, "MarketingScreen")
+
+
+def test_business_screen_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.screens.business")
+    assert hasattr(module, "BusinessScreen")

@@ -434,6 +434,94 @@ CREATE TABLE IF NOT EXISTS player_crash_sync_log (
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(project_id, remote_report_id)
 );
+
+-- Contract/License Checklist (Phase H, section 7 part 2, Stretch tier). The
+-- developer's own pasted/imported contract or license text is never stored
+-- in full here, on purpose -- this is more sensitive than a debug log or
+-- player feedback batch (see core.contract_checklist for the excerpt-
+-- capping discipline this mirrors from debugging/feedback). Only a short
+-- preview excerpt, a hash reference to the full text the developer pasted,
+-- and the AI's "things to double check" output are kept. Never legal advice
+-- -- see the prompt/UI copy for the repeated caveats.
+CREATE TABLE IF NOT EXISTS contract_checklist_reviews (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL,
+    source_filename  TEXT,
+    excerpt_hash     TEXT,
+    excerpt_preview  TEXT,
+    ai_summary       TEXT,
+    provider         TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Budget/Runway Tracker (Phase H, section 7 part 2, Phase 2 tier). Purely
+-- local, offline bookkeeping of the *studio's own* recurring costs -- this
+-- is not Spiced's own billing (Spiced has none, anywhere). Project-scoped,
+-- consistent with the rest of the app's per-project data model. No AI is
+-- required for the runway arithmetic itself (see core.budget_tracker).
+CREATE TABLE IF NOT EXISTS budget_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    amount      REAL NOT NULL,
+    frequency   TEXT NOT NULL DEFAULT 'monthly',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per project holding the developer's manually-entered "funds
+-- currently available" figure used by the runway calculation above. A
+-- separate tiny table (rather than a settings key) keeps it project-scoped
+-- and queryable the same way as budget_entries.
+CREATE TABLE IF NOT EXISTS budget_available_funds (
+    project_id  INTEGER PRIMARY KEY,
+    amount      REAL NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Competitive Landscape Scan (Phase H, section 7 part 2, Phase 2 tier).
+-- AI-assisted only (no live market data integration this session -- see
+-- core.competitive_landscape for why): the developer describes their game
+-- and the AI suggests comparable existing titles and positioning thoughts
+-- from its general knowledge, always labeled approximate/not live data.
+CREATE TABLE IF NOT EXISTS competitive_landscape_reports (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER NOT NULL,
+    description_excerpt TEXT,
+    ai_summary        TEXT,
+    provider          TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Localization Readiness Check (Phase H, section 7 part 2, Phase 2 tier). A
+-- read-only recursive scan (core.localization_readiness) of a project's .cs
+-- scripts for likely-hardcoded user-facing strings, plus a scan of prefab/
+-- scene text components that aren't obviously parameterized. Heuristic,
+-- deterministic, no AI call -- see the module for the documented heuristic
+-- and its known false positive/negative shape.
+CREATE TABLE IF NOT EXISTS localization_readiness_reports (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER NOT NULL,
+    findings_json     TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Draft Translation Pass (Phase H, section 7 part 2, Stretch tier). The
+-- developer pastes/imports a dialogue file and picks a target language;
+-- Spiced drafts a machine translation, always labeled a draft for a human
+-- translator to refine -- never ship-ready (see core.draft_translation).
+CREATE TABLE IF NOT EXISTS draft_translations (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL,
+    source_filename  TEXT,
+    source_format    TEXT,
+    target_language  TEXT,
+    entry_count      INTEGER NOT NULL DEFAULT 0,
+    raw_excerpt      TEXT,
+    ai_draft_text    TEXT,
+    provider         TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

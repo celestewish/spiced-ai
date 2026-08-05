@@ -495,6 +495,24 @@ class TestingScreen(QWidget):
         header.addLayout(badge_row)
         outer.addLayout(header)
 
+        # Rapid Prototyping Mode (Phase H, section 7 part 2, Core tier): a
+        # minimal pass/fail check-in, foregrounded only while the app-wide
+        # toggle (Settings screen) is on. Hidden entirely otherwise — see
+        # refresh() / _apply_prototype_mode.
+        self._smoke_test_panel = self._build_quick_smoke_test()
+        outer.addWidget(self._smoke_test_panel)
+        self._smoke_test_panel.setVisible(False)
+
+        # Collapsed by default whenever Rapid Prototyping Mode is on — see
+        # _apply_prototype_mode. Irrelevant while the mode is off, since the
+        # suite is always shown then regardless of this flag.
+        self._qa_suite_expanded = False
+        self._qa_toggle_btn = QPushButton("▸ Full QA suite (click to expand)")
+        self._qa_toggle_btn.setObjectName("Ghost")
+        self._qa_toggle_btn.clicked.connect(self._on_toggle_qa_suite)
+        self._qa_toggle_btn.setVisible(False)
+        outer.addWidget(self._qa_toggle_btn)
+
         self._tabs = QTabWidget()
         outer.addWidget(self._tabs, 1)
         self._tabs.addTab(self._build_functional_tab(), "Functional")
@@ -508,6 +526,93 @@ class TestingScreen(QWidget):
     def _on_open_ready_to_ship(self) -> None:
         self._tabs.setCurrentIndex(self._release_tab_index)
         self._on_show_checklist()
+
+    # --- Rapid Prototyping Mode: Quick Smoke Test panel -----------------------
+
+    def _build_quick_smoke_test(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("Panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(28, 8, 28, 8)
+        layout.setSpacing(8)
+
+        heading = QLabel("Quick Smoke Test")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Rapid Prototyping Mode is on (Settings screen). Skip deep testing for now — just "
+            "record whether the idea works at all. The full QA suite below still has "
+            "everything; it's just collapsed out of the way while you're prototyping."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._smoke_input = QLineEdit()
+        self._smoke_input.setPlaceholderText("What did you just try?")
+        row.addWidget(self._smoke_input, 1)
+        self._smoke_works_btn = QPushButton("Works")
+        self._smoke_works_btn.clicked.connect(lambda: self._on_smoke_result(True))
+        row.addWidget(self._smoke_works_btn)
+        self._smoke_fails_btn = QPushButton("Doesn't work yet")
+        self._smoke_fails_btn.setObjectName("Ghost")
+        self._smoke_fails_btn.clicked.connect(lambda: self._on_smoke_result(False))
+        row.addWidget(self._smoke_fails_btn)
+        layout.addLayout(row)
+
+        self._smoke_status = QLabel("")
+        self._smoke_status.setObjectName("Muted")
+        self._smoke_status.setWordWrap(True)
+        layout.addWidget(self._smoke_status)
+
+        return panel
+
+    def _on_smoke_result(self, passed: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        description = self._smoke_input.text().strip()
+        if not description:
+            QMessageBox.information(
+                self, "Nothing to record", "Describe what you just tried first."
+            )
+            return
+        case = self._services.testing.create_case(project.id, title=description)
+        self._services.testing.update_case(
+            case.id,
+            title=case.title,
+            category=case.category,
+            priority=case.priority,
+            status="Pass" if passed else "Fail",
+        )
+        self._smoke_input.clear()
+        verdict = "works" if passed else "doesn't work yet"
+        self._smoke_status.setText(f'Recorded: "{description}" — {verdict}.')
+        self._refresh_cases()
+
+    def _on_toggle_qa_suite(self) -> None:
+        self._qa_suite_expanded = not self._qa_suite_expanded
+        self._apply_prototype_mode()
+
+    def _apply_prototype_mode(self) -> None:
+        """Foreground the smoke-test panel and de-emphasize (collapse) the
+        full QA suite while Rapid Prototyping Mode is on -- nothing about
+        the full suite is removed, only what's foregrounded by default."""
+        enabled = self._services.prototype_mode_enabled()
+        self._smoke_test_panel.setVisible(enabled)
+        self._qa_toggle_btn.setVisible(enabled)
+        if enabled:
+            arrow = "▾" if self._qa_suite_expanded else "▸"
+            action = "collapse" if self._qa_suite_expanded else "expand"
+            self._qa_toggle_btn.setText(f"{arrow} Full QA suite (click to {action})")
+            self._tabs.setVisible(self._qa_suite_expanded)
+        else:
+            self._tabs.setVisible(True)
 
     def _scrollable(self) -> tuple[QWidget, QVBoxLayout]:
         container = QWidget()
@@ -1182,6 +1287,7 @@ class TestingScreen(QWidget):
         self._readiness_badge.set_readiness(
             summary.readiness if summary else None, team_linked=team_linked
         )
+        self._apply_prototype_mode()
 
         for widget in (self._add_btn, self._title_input, self._update_status_btn):
             widget.setEnabled(has_project)
