@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.db import Base
 from app.models import (  # noqa: F401 (registers metadata)
     ChangelogEntry,
+    PlayerCrashReport,
     RoadmapSuggestion,
     RoadmapVote,
     SessionSummary,

@@ -418,6 +418,55 @@ teams — not a local simulation.
   data is never sent anywhere — not even to the team backend for a
   team-linked project.
 
+### Marketing & Community (Phase G)
+
+A new **Marketing** sidebar page, plus additions to **Feedback Review** and
+**Automated Testing**. Several of these are deliberately scoped down from the
+literal feature spec — see the note under each.
+
+- **Store Page Optimization Advisor** — paste or import a Steam/itch store
+  page draft (title, description, tags); the AI reviews it against a few
+  commonly recommended practices and returns specific suggestions. Explicitly
+  framed as suggestions, never a guarantee of sales.
+- **Wishlist/Analytics Summary** — *scoped down to a paste/import CSV, not a
+  live API*: neither Steam nor itch offers a public, OAuth-free wishlist/
+  analytics API this project can integrate against. Export your own numbers
+  into a small documented `metric,value` format; Spiced diffs each import
+  against the previous one for the same project and summarizes what's
+  working, flat, or changed — purely local, no AI call needed.
+- **Trailer & Screenshot Checklist** — *screenshots only, no video trailer
+  analysis* (a trailer's pacing/content over time is out of reach for a
+  deterministic check or a text-only AI pass). Upload screenshots; Spiced
+  runs local Pillow-based checks (resolution/aspect ratio against common
+  store sizes, plus a color-variance heuristic flagging likely-blank/loading
+  shots), then an AI pass reviews the *set* — but only filenames, those
+  deterministic findings, and any caption text you add. Raw image bytes are
+  never sent to the AI provider.
+- **Playtester Recruitment Assistant** — on **Feedback Review**. Drafts a
+  recruitment post from a short description, target platform, and timeframe.
+  *Scoped down to a local sign-up list* (name/contact/status you track by
+  hand) rather than real build distribution — Spiced sends no emails and
+  hosts no builds.
+- **Player Crash & Error Reporting** — on **Automated Testing**'s Known
+  Issues panel, tagged **"from players"**. The only feature in this set that
+  needs the hosted backend, since real players (not the dev) report crashes
+  back. Only works for a project linked to a Small-Team Mode team — that's
+  the only way Spiced has a `project_uuid` reachable from outside your
+  machine; solo/local-only projects have nothing to report against. The
+  ingest endpoint needs no auth (players have no Spiced accounts) but caps
+  payload sizes and validates the project is team-linked. Full HTTP contract
+  for wiring into your own game's crash handler:
+  [`docs/player_crash_reporting.md`](docs/player_crash_reporting.md).
+- **Discord/Community Bot Integration** — extends the existing read-only
+  Community Pulse Discord source with a *write* capability, gated behind its
+  own separate opt-in ("Discord integration" on **Settings**, distinct from
+  Community Pulse's read-only toggle). Reuses `DISCORD_BOT_TOKEN`; posts to
+  `DISCORD_CHANNEL_ID` by default (an optional `DISCORD_ANNOUNCE_CHANNEL_ID`
+  lets posts target a different channel than Community Pulse reads from). A
+  **Post to Discord** action on **Debugging Buddy**'s changelog draft always
+  shows the exact text and requires a click to send, unless you separately
+  opt into a documented "post automatically without asking" setting.
+
 ## Current MVP scope (Phases 0–6)
 
 - Python + PySide6 desktop application (normal resizable window).

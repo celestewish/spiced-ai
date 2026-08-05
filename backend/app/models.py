@@ -150,6 +150,31 @@ class TelemetryEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class PlayerCrashReport(Base):
+    """A crash/error report submitted by an end player of a shipped game
+    (Phase G, section 7 — Player Crash & Error Reporting).
+
+    No auth on ingestion: players don't have Spiced accounts. Only accepted
+    for a ``project_uuid`` that's linked to a team (see ``TeamProject`` and
+    ``routers.player_crashes``) — solo/local-only projects never mint a
+    ``project_uuid`` at all, so there is nothing to report against; this is
+    consistent with Spiced's local-first design, not an arbitrary
+    restriction. Field lengths mirror the caps enforced in the router
+    (``message``/``stack_excerpt`` are never accepted unbounded).
+    """
+
+    __tablename__ = "player_crash_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_uuid: Mapped[str] = mapped_column(String(36), index=True)
+    error_type: Mapped[str] = mapped_column(String(200))
+    message: Mapped[str] = mapped_column(String(2000))
+    stack_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    app_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class ChangelogEntry(Base):
     """Spiced's own public release notes (Open Roadmap, Phase C, stretch).
 

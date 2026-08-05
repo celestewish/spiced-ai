@@ -115,6 +115,38 @@ class SettingsScreen(QWidget):
         telemetry_note.setWordWrap(True)
         layout.addWidget(telemetry_note)
 
+        # Discord/Community Bot Integration: posting (Phase G, section 7).
+        # Deliberately a separate toggle from Community Pulse above — that's
+        # opt-in *read*, this is opt-in *write*, a meaningfully bigger trust
+        # boundary (see core.community.discord_poster).
+        discord_title = QLabel("Discord integration")
+        discord_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(discord_title)
+
+        self._discord_toggle = QCheckBox("Allow Spiced to post to Discord")
+        self._discord_toggle.setChecked(self._services.discord_posting_enabled())
+        self._discord_toggle.toggled.connect(self._on_discord_toggled)
+        layout.addWidget(self._discord_toggle)
+
+        discord_note = QLabel(
+            "Off by default. Uses the same DISCORD_BOT_TOKEN as Community Pulse, plus "
+            "DISCORD_CHANNEL_ID as the post target (or a separate DISCORD_ANNOUNCE_CHANNEL_ID, "
+            "if set). Even when this is on, Spiced always shows you the exact text before "
+            "posting and requires a click to send — unless you also turn on the auto-post "
+            "option below, which skips that confirmation."
+        )
+        discord_note.setObjectName("Muted")
+        discord_note.setWordWrap(True)
+        layout.addWidget(discord_note)
+
+        self._discord_auto_post_toggle = QCheckBox(
+            "Post automatically without asking (skips the confirm step)"
+        )
+        self._discord_auto_post_toggle.setChecked(self._services.discord_auto_post_enabled())
+        self._discord_auto_post_toggle.toggled.connect(self._on_discord_auto_post_toggled)
+        layout.addWidget(self._discord_auto_post_toggle)
+
         # Connection test for the selected provider
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
@@ -173,6 +205,14 @@ class SettingsScreen(QWidget):
 
     def _on_telemetry_toggled(self, checked: bool) -> None:
         self._services.set_telemetry_opt_in_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_discord_toggled(self, checked: bool) -> None:
+        self._services.set_discord_posting_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_discord_auto_post_toggled(self, checked: bool) -> None:
+        self._services.set_discord_auto_post_enabled(checked)
         self.settings_changed.emit()
 
     def _on_plan_changed(self, _index: int) -> None:

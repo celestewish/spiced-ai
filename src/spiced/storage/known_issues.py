@@ -18,6 +18,10 @@ STATUS_RESOLVED = "resolved"
 
 SOURCE_DEBUG = "debug"
 SOURCE_TEST = "test"
+# Player Crash & Error Reporting (Phase G, section 7): a crash a real player
+# of the shipped game reported, ingested via core.player_crash_reports and
+# surfaced in the Known Issues panel with a visible "from players" tag.
+SOURCE_PLAYER = "player"
 
 
 @dataclass(frozen=True)

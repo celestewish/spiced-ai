@@ -50,6 +50,7 @@ from spiced.core.economy_simulator import ProviderNotReadyError as EconomyNotRea
 from spiced.core.hardware_simulation import available_tiers
 from spiced.core.performance import PerformanceReview
 from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
+from spiced.core.player_crash_reports import PlayerCrashSyncResult
 from spiced.core.release_checklist import (
     PLATFORM_LABELS,
     PLATFORMS,
@@ -75,7 +76,7 @@ from spiced.core.testing import (
 )
 from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor, run_tests
 from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
-from spiced.storage.known_issues import STATUS_RESOLVED
+from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
@@ -296,6 +297,28 @@ class _AccessibilityWorker(QObject):
             self.failed.emit(str(exc))
         except Exception as exc:
             self.failed.emit(f"Something went wrong during analysis: {exc}")
+
+
+class _PlayerCrashSyncWorker(QObject):
+    """Player Crash & Error Reporting: pulls new reports for a team-linked
+    project and merges them into Known Issues (see core.player_crash_reports).
+    """
+
+    done = Signal(object)  # PlayerCrashSyncResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_id: int, project_uuid: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_id = project_id
+        self._project_uuid = project_uuid
+
+    def run(self) -> None:
+        try:
+            result = self._services.player_crash_sync.sync(self._project_id, self._project_uuid)
+            self.done.emit(result)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while syncing player crash reports: {exc}")
 
 
 class _BuildWorker(QObject):
@@ -707,6 +730,22 @@ class TestingScreen(QWidget):
         self._reopen_btn.clicked.connect(self._on_mark_open)
         row.addWidget(self._reopen_btn)
         layout.addLayout(row)
+
+        # Player Crash & Error Reporting (Phase G, section 7): only
+        # reachable for a team-linked project — see
+        # docs/player_crash_reporting.md for why a solo/local-only project
+        # has no project_uuid to sync against at all.
+        self._player_crash_status = QLabel()
+        self._player_crash_status.setObjectName("Muted")
+        self._player_crash_status.setWordWrap(True)
+        layout.addWidget(self._player_crash_status)
+
+        sync_row = QHBoxLayout()
+        sync_row.addStretch(1)
+        self._player_crash_sync_btn = QPushButton("Sync player crash reports")
+        self._player_crash_sync_btn.clicked.connect(self._on_sync_player_crashes)
+        sync_row.addWidget(self._player_crash_sync_btn)
+        layout.addLayout(sync_row)
 
     # --- Save Compatibility (Save/Load Integrity Testing) ------------------
 
@@ -1150,6 +1189,7 @@ class TestingScreen(QWidget):
         self._refresh_cases()
         self._refresh_history()
         self._refresh_known_issues()
+        self._refresh_player_crash_status()
         self._refresh_perf_history()
         self._refresh_access_history()
         self._refresh_unity_run_status()
@@ -1217,6 +1257,8 @@ class TestingScreen(QWidget):
                 f"[{issue.status}] {issue.title}  ·  seen {issue.occurrences}x  ·  "
                 f"{'resolved ' if issue.status == STATUS_RESOLVED else 'last seen '}{when}"
             )
+            if issue.source == SOURCE_PLAYER:
+                label += "  ·  from players"
             item = QListWidgetItem(label)
             item.setData(_USER_ROLE, issue.id)
             self._issues_list.addItem(item)
@@ -1559,6 +1601,61 @@ class TestingScreen(QWidget):
             return
         self._services.testing.mark_issue_open(self._selected_issue_id)
         self._refresh_known_issues()
+
+    def _refresh_player_crash_status(self) -> None:
+        project = self._services.active_project()
+        eligible = bool(
+            project
+            and project.project_uuid
+            and self._services.team_mode_enabled()
+            and self._services.auth.is_logged_in()
+        )
+        self._player_crash_sync_btn.setEnabled(eligible)
+        if project is None:
+            self._player_crash_status.setText(
+                "Player crash reports need a team-linked project — select one first."
+            )
+        elif not eligible:
+            self._player_crash_status.setText(
+                "Only available for a project linked to a Small-Team Mode team (see "
+                "docs/player_crash_reporting.md) — solo/local-only projects have no reachable "
+                "project_uuid for players to report against."
+            )
+        else:
+            self._player_crash_status.setText(
+                "Pulls crash reports real players sent in for this team-linked project and "
+                "merges them into the list above, tagged \"from players\"."
+            )
+
+    def _on_sync_player_crashes(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.project_uuid:
+            return
+        self._player_crash_sync_btn.setEnabled(False)
+        self._player_crash_sync_btn.setText("Syncing…")
+
+        worker = _PlayerCrashSyncWorker(self._services, project.id, project.project_uuid)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_player_crash_sync_done)
+        worker.failed.connect(self._on_player_crash_sync_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_player_crash_sync_done(self, result: PlayerCrashSyncResult) -> None:
+        self._player_crash_sync_btn.setText("Sync player crash reports")
+        self._player_crash_sync_btn.setEnabled(True)
+        new_count = len(result.new_outcomes)
+        self._player_crash_status.setText(
+            f"Synced {result.fetched_count} report(s) from players — {new_count} new."
+        )
+        self._refresh_known_issues()
+
+    def _on_player_crash_sync_failed(self, message: str) -> None:
+        self._player_crash_sync_btn.setText("Sync player crash reports")
+        self._player_crash_sync_btn.setEnabled(True)
+        self._player_crash_status.setText(message)
 
     # --- Performance handlers ------------------------------------------------
 

@@ -1577,3 +1577,234 @@ def build_design_doc_sync_prompt(
         "```\n\n"
         f"{DESIGN_DOC_SYNC_RESPONSE_FORMAT}\n"
     )
+
+
+# Rules specific to the Store Page Optimization Advisor (Phase G, section 7,
+# Phase 2 tier). Reviews a pasted/imported Steam/itch store page draft
+# against a small set of documented best practices. Explicitly framed as
+# suggestions, never a guarantee of sales — Spiced cannot know how a page
+# will actually convert, only whether it follows commonly recommended
+# patterns.
+STORE_PAGE_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Review against commonly recommended store-page practices: a clear hook in the first line "
+    "of the description, specific/readable tag choices over vague ones, and common mistakes "
+    "(burying the genre, no clear call-to-action, walls of text with no formatting).",
+    "Frame every suggestion as a suggestion, never a guarantee — you cannot know how this page "
+    "will actually convert or sell; you can only point out common patterns.",
+    "Never claim you changed, edited, or published anything — the developer copies and edits "
+    "this themselves on Steam/itch.",
+    "If the title or description is missing or very short, say so plainly rather than inventing "
+    "detail to review.",
+    "Keep tag feedback concrete: which tags read as relevant/specific, which read as vague or "
+    "possibly mismatched, and any obvious missing common tag for the genre described.",
+)
+
+STORE_PAGE_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section \
+short:
+
+Here's a read on your store page draft (suggestions only, not a guarantee of anything).
+
+First-line hook:
+- [Does the description open with a clear, specific hook? Suggestion if not.]
+
+Tags:
+- [Which tags read well, which read as vague/mismatched, and any obvious gap]
+
+Common mistakes to check:
+- [Only ones that actually apply to this draft — or "Nothing obvious stood out." if none]
+
+Suggested rewrite ideas:
+- [1-3 concrete, optional phrasing ideas — never a rewritten page, just direction]"""
+
+
+def _format_store_page_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in STORE_PAGE_RULES)
+
+
+def build_store_page_prompt(
+    *, title: str, description: str, tags: list[str], project_name: str | None = None
+) -> str:
+    """Assemble the Store Page Optimization Advisor prompt.
+
+    Only the title/description/tags the developer pasted or imported are
+    included — Spiced never fetches or scrapes anything from Steam/itch
+    itself.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    title_line = title or "(no title provided)"
+    description_block = description or "(no description provided)"
+    tags_line = ", ".join(tags) if tags else "(no tags provided)"
+    return (
+        "You are Spiced, a calm companion giving an indie developer a read on their Steam/itch "
+        "store page draft. You never publish, submit, or edit the page yourself — only the "
+        "developer does that, on the store's own site.\n\n"
+        "Follow these rules:\n"
+        f"{_format_store_page_rules()}\n\n"
+        f"{project_line}\n\n"
+        f"Title: {title_line}\n\n"
+        "Description (already trimmed; do not ask for more):\n"
+        "```\n"
+        f"{description_block}\n"
+        "```\n\n"
+        f"Tags: {tags_line}\n\n"
+        f"{STORE_PAGE_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Playtester Recruitment Assistant (Phase G, section 7,
+# Phase 2 tier). Drafts a recruitment post the developer copies and posts
+# themselves — Spiced never recruits, contacts, or distributes anything on
+# its own (see core.playtester_recruitment for the local-sign-up-list scope
+# decision).
+PLAYTESTER_RECRUITMENT_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Write a short, friendly recruitment post the developer can copy and post themselves — "
+    "Discord, forums, an itch devlog, wherever they choose. You never post anything yourself.",
+    "Base the post on exactly what the developer described needing testers for, the target "
+    "platform, and the timeframe — do not invent game details you weren't given.",
+    "Include a clear, simple call-to-action for how someone should express interest — the "
+    "developer fills in their own actual sign-up method afterward; you don't know it.",
+    "Keep it concise enough to post as-is as a Discord/forum message, not a full press release.",
+    "Never claim you recruited, contacted, or distributed anything to anyone.",
+)
+
+PLAYTESTER_RECRUITMENT_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping it \
+short:
+
+Here's a draft recruitment post.
+
+```
+[the post itself, ready to copy/paste]
+```
+
+Notes:
+[Any short, honest caveat — e.g. if the description given was thin — or "Nothing else to \
+flag."]"""
+
+
+def _format_playtester_recruitment_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in PLAYTESTER_RECRUITMENT_RULES)
+
+
+def build_playtester_recruitment_prompt(
+    *,
+    needs_description: str,
+    target_platform: str,
+    timeframe: str,
+    project_name: str | None = None,
+) -> str:
+    """Assemble the Playtester Recruitment Assistant's post-drafting prompt.
+
+    Only the short description/platform/timeframe the developer typed in are
+    included.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion drafting a playtester-recruitment post for an indie "
+        "developer. You never post, recruit, or distribute anything yourself — this is a draft "
+        "for the developer to copy out and post wherever they choose.\n\n"
+        "Follow these rules:\n"
+        f"{_format_playtester_recruitment_rules()}\n\n"
+        f"{project_line}\n"
+        f"What testers are needed for: {needs_description or '(not described)'}\n"
+        f"Target platform: {target_platform or '(not specified)'}\n"
+        f"Timeframe: {timeframe or '(not specified)'}\n\n"
+        f"{PLAYTESTER_RECRUITMENT_RESPONSE_FORMAT}\n"
+    )
+
+
+# Rules specific to the Trailer & Screenshot Checklist (Phase G, section 7,
+# Stretch tier). Scoped to screenshots only — no video trailer analysis (see
+# core.trailer_screenshot_checklist). The AI is never shown the actual
+# images, only Spiced's own deterministic per-image findings (a Pillow-based
+# resolution/aspect-ratio check and a color-variance "likely blank" scan)
+# plus any caption text the developer supplies.
+SCREENSHOT_CHECKLIST_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Treat the deterministic per-image findings (resolution, aspect ratio, blank-shot flag) as "
+    "ground truth; do not recompute or second-guess them.",
+    "You were not shown the actual images — only filenames, the deterministic findings, and any "
+    "caption text the developer supplied about each shot. Never guess at visual content beyond "
+    "that; if a caption is missing, say the shot's content couldn't be assessed rather than "
+    "inventing what it probably shows.",
+    "You cannot judge story/gameplay order, variety, or whether a shot spoils early content "
+    "without seeing the images — say so plainly rather than pretending you can.",
+    "Never claim you edited, cropped, resized, or reordered anything — the developer does that "
+    "themselves.",
+    "If every shot looks technically fine, say so plainly rather than padding with concerns.",
+)
+
+SCREENSHOT_CHECKLIST_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each \
+section short:
+
+Here's the screenshot set review.
+
+Technical flags:
+- [Per flagged image: filename and the deterministic issue — or "No technical issues found." if \
+none]
+
+Caption-based notes:
+- [Only from captions the developer supplied — e.g. two captions sounding very similar, or a "
+"caption suggesting a spoiler-heavy early shot — or "No captions supplied to review." if none "
+"given]
+
+What I can't tell from here:
+[A short, honest reminder that composition/variety/spoiler-order can't be judged without seeing \
+the actual images]"""
+
+
+def _format_screenshot_checklist_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in SCREENSHOT_CHECKLIST_RULES)
+
+
+def _format_screenshot_findings(findings, captions: dict[str, str]) -> str:
+    if not findings:
+        return "- No screenshots supplied."
+    lines = []
+    for f in findings:
+        caption = captions.get(f.filename)
+        caption_note = f' Caption: "{caption}"' if caption else " Caption: (none supplied)"
+        flags = []
+        if not f.meets_min_resolution:
+            flags.append("below minimum resolution")
+        elif not f.meets_recommended_resolution:
+            flags.append("below recommended resolution")
+        if not f.aspect_ratio_ok:
+            flags.append("unusual aspect ratio")
+        if f.likely_blank:
+            flags.append("likely blank/low-variance")
+        flag_text = ", ".join(flags) if flags else "no technical flags"
+        lines.append(
+            f"- {f.filename}: {f.width}x{f.height}, aspect {f.aspect_ratio:.2f}:1, "
+            f"color variance {f.color_stddev:g} ({flag_text}).{caption_note}"
+        )
+    return "\n".join(lines)
+
+
+def build_screenshot_checklist_prompt(
+    findings, *, captions: dict[str, str] | None = None, project_name: str | None = None
+) -> str:
+    """Assemble the screenshot-set review prompt.
+
+    Only filenames, Spiced's own deterministic per-image findings (resolution,
+    aspect ratio, a low-color-variance "likely blank" heuristic), and any
+    caption text the developer typed in are included — raw image bytes are
+    never sent to the AI provider, and this function never even receives them.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    return (
+        "You are Spiced, a calm companion reviewing an indie developer's store-page screenshot "
+        "set. You were never shown the actual images — only structured findings and any "
+        "captions the developer supplied. You never edit or reorder anything yourself.\n\n"
+        "Follow these rules:\n"
+        f"{_format_screenshot_checklist_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Per-image findings from Spiced's local, deterministic scan (Pillow-based resolution/"
+        "aspect-ratio checks and a color-variance blank-shot heuristic):\n"
+        f"{_format_screenshot_findings(findings, captions or {})}\n\n"
+        f"{SCREENSHOT_CHECKLIST_RESPONSE_FORMAT}\n"
+    )

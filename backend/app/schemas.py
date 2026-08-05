@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserOut(BaseModel):
@@ -96,6 +96,32 @@ class TelemetryEventOut(BaseModel):
     anonymous_client_id: str
     event_name: str
     created_at: datetime
+
+
+class PlayerCrashReportCreate(BaseModel):
+    # These max_length caps are the outer bound Pydantic will accept at all
+    # (a request over them is rejected with 422 before it's ever stored);
+    # the router truncates further to the tighter, documented storage caps
+    # (see routers.player_crashes) so the endpoint is never an open,
+    # unbounded write even from a client that ignores these limits.
+    error_type: str = Field(max_length=500)
+    message: str = Field(max_length=4000)
+    stack_excerpt: str | None = Field(default=None, max_length=20000)
+    app_version: str | None = Field(default=None, max_length=200)
+    occurred_at: datetime
+
+
+class PlayerCrashReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_uuid: str
+    error_type: str
+    message: str
+    stack_excerpt: str | None
+    app_version: str | None
+    occurred_at: datetime
+    reported_at: datetime
 
 
 class ChangelogEntryCreate(BaseModel):
