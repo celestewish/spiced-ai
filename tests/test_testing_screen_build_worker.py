@@ -54,7 +54,9 @@ def test_build_worker_passes_project_editor_override_through_to_run_build(monkey
 
     captured = {}
 
-    def fake_run_build(project, trigger, target_platform=None, editor_override=None):
+    def fake_run_build(
+        project, trigger, target_platform=None, editor_override=None, on_progress=None
+    ):
         captured["editor_override"] = editor_override
         captured["target_platform"] = target_platform
         return _fake_report()
@@ -77,7 +79,9 @@ def test_build_worker_passes_none_when_no_override_configured(monkeypatch, tmp_p
 
     captured = {}
 
-    def fake_run_build(project, trigger, target_platform=None, editor_override=None):
+    def fake_run_build(
+        project, trigger, target_platform=None, editor_override=None, on_progress=None
+    ):
         captured["editor_override"] = editor_override
         return _fake_report()
 
@@ -87,3 +91,31 @@ def test_build_worker_passes_none_when_no_override_configured(monkeypatch, tmp_p
     worker.run()
 
     assert captured["editor_override"] is None
+
+
+# --- Live Task Progress Transparency (Phase L) -------------------------------
+
+
+def test_build_worker_forwards_progress_from_run_build(monkeypatch, tmp_path):
+    services = _services(tmp_path)
+    project = services.projects.create_project("Moonlit Depths")
+
+    def fake_run_build(
+        project, trigger, target_platform=None, editor_override=None, on_progress=None
+    ):
+        if on_progress is not None:
+            on_progress("Resolving the Unity Editor to build with…")
+            on_progress("Running the headless build…")
+        return _fake_report()
+
+    monkeypatch.setattr(services, "run_build", fake_run_build)
+
+    worker = _BuildWorker(services, project, "StandaloneWindows64")
+    received: list[str] = []
+    worker.progress.connect(received.append)
+    worker.run()
+
+    assert received == [
+        "Resolving the Unity Editor to build with…",
+        "Running the headless build…",
+    ]

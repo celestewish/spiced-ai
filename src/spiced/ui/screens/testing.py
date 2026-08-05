@@ -80,6 +80,7 @@ from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.comments_widget import CommentsWidget
+from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -165,11 +166,20 @@ class _UnityRunWorker(QObject):
 
     Emits per-platform so a failure on one platform (e.g. PlayMode timing out)
     doesn't hide a result already obtained from another (e.g. EditMode).
+
+    Also emits ``progress`` (Live Task Progress Transparency, Phase L) with a
+    plain-language description of each real step -- launching a platform,
+    then reviewing its results -- since a full Unity test run naturally has
+    several minutes-long steps a developer benefits from seeing named, not
+    just a spinner. Purely additive: ``platform_started``/``platform_done``/
+    ``platform_failed`` still carry the exact same information they always
+    did, for callers that don't care about the progress trail.
     """
 
     platform_started = Signal(str)
     platform_done = Signal(str, object)  # platform, TestReview
     platform_failed = Signal(str, str)  # platform, message
+    progress = Signal(str)
     finished = Signal()
 
     def __init__(self, services: Services, project, editor_path: str, platforms: list[str]) -> None:
@@ -180,6 +190,7 @@ class _UnityRunWorker(QObject):
         self._platforms = platforms
 
     def run(self) -> None:
+        total = len(self._platforms)
         try:
             provider = self._services.build_provider()
         except Exception as exc:
@@ -202,8 +213,9 @@ class _UnityRunWorker(QObject):
 
         team_mode = self._services.team_mode_enabled()
         team_members = self._services.team_prompt_context(self._project) if team_mode else None
-        for platform in self._platforms:
+        for index, platform in enumerate(self._platforms, start=1):
             self.platform_started.emit(platform)
+            self.progress.emit(f"Running {platform} tests… ({index} of {total})")
             try:
                 result = run_tests(self._editor_path, self._project.path, platform)
                 if not result.succeeded:
@@ -211,7 +223,9 @@ class _UnityRunWorker(QObject):
                     if result.log_tail:
                         message += f"\n\nLog excerpt:\n{result.log_tail}"
                     self.platform_failed.emit(platform, message)
+                    self.progress.emit(f"{platform} tests did not complete successfully.")
                     continue
+                self.progress.emit(f"Reviewing {platform} results with the AI provider…")
                 review = self._services.testing.analyze(
                     provider,
                     result.results_xml,
@@ -223,10 +237,12 @@ class _UnityRunWorker(QObject):
                     team_members=team_members,
                 )
                 self.platform_done.emit(platform, review)
+                self.progress.emit(f"{platform} tests complete.")
             except ProviderNotReadyError as exc:
                 self.platform_failed.emit(platform, str(exc))
             except Exception as exc:  # surfaced calmly to the user
                 self.platform_failed.emit(platform, f"Something went wrong: {exc}")
+        self.progress.emit("All platforms finished.")
         self.finished.emit()
 
 
@@ -323,8 +339,17 @@ class _PlayerCrashSyncWorker(QObject):
 
 
 class _BuildWorker(QObject):
+    """Also emits ``progress`` (Live Task Progress Transparency, Phase L)
+    with a plain-language description of each real pipeline step -- see
+    ``core.build_pipeline.run_build_pipeline``'s ``on_progress`` param. A
+    manual "Run build now" click is exactly the kind of multi-minute action
+    (resolve Editor, prepare script, run the headless build, save the
+    report) worth naming steps for, not just a bare spinner.
+    """
+
     done = Signal(object)  # BuildReport
     failed = Signal(str)
+    progress = Signal(str)
 
     def __init__(self, services: Services, project, target_platform: str) -> None:
         super().__init__()
@@ -339,6 +364,7 @@ class _BuildWorker(QObject):
                 trigger=TRIGGER_MANUAL,
                 target_platform=self._target_platform,
                 editor_override=self._project.unity_editor_path_override,
+                on_progress=self.progress.emit,
             )
             self.done.emit(report)
         except (BuildNotEnabledError, BuildUnavailableError) as exc:
@@ -801,6 +827,13 @@ class TestingScreen(QWidget):
         self._unity_run_btn.clicked.connect(self._on_run_unity_tests)
         row.addWidget(self._unity_run_btn)
         layout.addLayout(row)
+
+        # Live Task Progress Transparency (Phase L): a Unity test run
+        # naturally has several minutes-long steps (launch each platform,
+        # review its results) worth naming, not just a spinner -- see
+        # _UnityRunWorker.progress.
+        self._unity_progress_trail = ProgressTrail()
+        layout.addWidget(self._unity_progress_trail)
 
         self._unity_run_result = QTextEdit()
         self._unity_run_result.setReadOnly(True)
@@ -1282,6 +1315,11 @@ class TestingScreen(QWidget):
         row.addWidget(self._build_run_btn)
         layout.addLayout(row)
 
+        # Live Task Progress Transparency (Phase L): a manual build has
+        # several real, minutes-long steps -- see _BuildWorker.progress.
+        self._build_progress_trail = ProgressTrail()
+        layout.addWidget(self._build_progress_trail)
+
         self._build_result = QTextEdit()
         self._build_result.setReadOnly(True)
         self._build_result.setPlaceholderText("Build output will appear here.")
@@ -1727,9 +1765,10 @@ class TestingScreen(QWidget):
         self._unity_run_result.setPlainText(
             "Launching Unity — this can take a while, especially on a first run…"
         )
+        self._unity_progress_trail.reset()
 
         worker = _UnityRunWorker(self._services, project, editor.path, platforms)
-        thread = launch_worker(self, worker)
+        thread = launch_worker(self, worker, progress_slot=self._unity_progress_trail.add_step)
         thread.started.connect(worker.run)
         worker.platform_started.connect(self._on_unity_platform_started)
         worker.platform_done.connect(self._on_unity_platform_done)
@@ -2070,9 +2109,10 @@ class TestingScreen(QWidget):
         self._build_result.setPlainText(
             "Launching Unity to build — this can take a while, especially on a first build…"
         )
+        self._build_progress_trail.reset()
 
         worker = _BuildWorker(self._services, project, platform)
-        thread = launch_worker(self, worker)
+        thread = launch_worker(self, worker, progress_slot=self._build_progress_trail.add_step)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_build_done)
         worker.failed.connect(self._on_build_failed)

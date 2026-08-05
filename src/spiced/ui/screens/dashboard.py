@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,13 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.core.dashboard import DashboardSummary, ModuleCard, NextAction
+from spiced.core.widget_preferences import (
+    DASHBOARD_WIDGETS,
+    load_preferences,
+    merge_and_dump,
+    ordered_visible_ids,
+)
+from spiced.ui.widget_customize_dialog import WidgetCustomizeDialog
 
 
 class DashboardScreen(QWidget):
@@ -40,9 +48,19 @@ class DashboardScreen(QWidget):
         self._layout.setContentsMargins(28, 28, 28, 28)
         self._layout.setSpacing(14)
 
+        title_row = QHBoxLayout()
         title = QLabel("Project Dashboard")
         title.setObjectName("ScreenTitle")
-        self._layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        # Customizable Dashboard Widgets (Phase L, Phase 2 tier -- scoped
+        # down to show/hide + reorder, see core.widget_preferences): applies
+        # to the Debugging/Testing/Feedback module-card row below.
+        self._customize_btn = QPushButton("Customize modules")
+        self._customize_btn.setObjectName("Ghost")
+        self._customize_btn.clicked.connect(self._on_customize_modules)
+        title_row.addWidget(self._customize_btn)
+        self._layout.addLayout(title_row)
 
         self._body = QVBoxLayout()
         self._body.setSpacing(14)
@@ -68,13 +86,23 @@ class DashboardScreen(QWidget):
         self._body.addWidget(self._overview_card(summary))
         self._body.addWidget(self._readiness_card(summary))
 
-        cards_row = QHBoxLayout()
-        cards_row.setSpacing(14)
-        for card in (summary.debugging, summary.testing, summary.feedback):
-            cards_row.addWidget(self._module_card(card), 1)
-        wrapper = QWidget()
-        wrapper.setLayout(cards_row)
-        self._body.addWidget(wrapper)
+        cards_by_id = {
+            "module_debugging": summary.debugging,
+            "module_testing": summary.testing,
+            "module_feedback": summary.feedback,
+        }
+        preferences = load_preferences(self._services.widget_preferences_json(), DASHBOARD_WIDGETS)
+        visible_ids = ordered_visible_ids(preferences, DASHBOARD_WIDGETS)
+        if visible_ids:
+            cards_row = QHBoxLayout()
+            cards_row.setSpacing(14)
+            for widget_id in visible_ids:
+                card_data = cards_by_id.get(widget_id)
+                if card_data is not None:
+                    cards_row.addWidget(self._module_card(card_data), 1)
+            wrapper = QWidget()
+            wrapper.setLayout(cards_row)
+            self._body.addWidget(wrapper)
 
         self._body.addWidget(self._actions_card(summary))
         if summary.missing_data:
@@ -190,6 +218,17 @@ class DashboardScreen(QWidget):
         return card
 
     # --- Handlers ----------------------------------------------------------
+
+    def _on_customize_modules(self) -> None:
+        preferences = load_preferences(self._services.widget_preferences_json(), DASHBOARD_WIDGETS)
+        dialog = WidgetCustomizeDialog(
+            DASHBOARD_WIDGETS, preferences, parent=self, title="Customize dashboard modules"
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated = dialog.result_preferences()
+            new_json = merge_and_dump(self._services.widget_preferences_json(), updated)
+            self._services.set_widget_preferences_json(new_json)
+            self.refresh()
 
     def _on_generate(self, summary: DashboardSummary) -> None:
         self._summary_text = summary.to_markdown()

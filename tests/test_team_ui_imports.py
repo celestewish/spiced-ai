@@ -125,3 +125,28 @@ def test_command_palette_module_imports_cleanly():
     module = importlib.import_module("spiced.ui.command_palette")
     assert hasattr(module, "CommandPalette")
     assert hasattr(module, "PaletteItem")
+
+
+# --- Phase L: UI & Experience Features (final) ------------------------------
+
+
+def test_progress_trail_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.widgets.progress_trail")
+    assert hasattr(module, "ProgressTrail")
+
+
+def test_diff_viewer_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.widgets.diff_viewer")
+    assert hasattr(module, "DiffViewer")
+    assert hasattr(module, "DiffViewerDialog")
+    assert hasattr(module, "diff_text")
+
+
+def test_widget_customize_dialog_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.widget_customize_dialog")
+    assert hasattr(module, "WidgetCustomizeDialog")
+
+
+def test_shortcuts_cheatsheet_module_imports_cleanly():
+    module = importlib.import_module("spiced.ui.shortcuts_cheatsheet")
+    assert hasattr(module, "ShortcutsCheatSheet")

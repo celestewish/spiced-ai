@@ -3,13 +3,28 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QFrame, QLabel, QMessageBox, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from spiced.app.services import Services
 from spiced.core.crunch_awareness import detect_crunch_pattern
 from spiced.core.session_summary import ProviderNotReadyError, SessionSummaryResult
+from spiced.core.widget_preferences import (
+    CONTEXT_PANEL_WIDGETS,
+    load_preferences,
+    merge_and_dump,
+)
 from spiced.storage.projects import Project
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widget_customize_dialog import WidgetCustomizeDialog
 
 # Role-Based Dashboards (Phase J, Cross-Role & Team Glue #4): the
 # disciplines this panel knows how to summarize, each backed by a genuinely
@@ -143,10 +158,97 @@ class ContextPanel(QFrame):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
+        header_row = QHBoxLayout()
         heading = QLabel("Project context")
         heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
+        header_row.addWidget(heading)
+        header_row.addStretch(1)
+        # Customizable Dashboard Widgets (Phase L, Phase 2 tier -- scoped
+        # down to show/hide + reorder, see core.widget_preferences): opens a
+        # small list dialog for the sections below, rather than the full
+        # spec's drag-and-drop resize.
+        self._customize_btn = QPushButton("Customize")
+        self._customize_btn.setObjectName("Ghost")
+        self._customize_btn.clicked.connect(self._on_customize)
+        header_row.addWidget(self._customize_btn)
+        layout.addLayout(header_row)
 
+        # Every section below is built into its own container widget and
+        # tracked in ``self._section_widgets`` so ``_apply_widget_layout``
+        # can show/hide and reorder them independently, per the developer's
+        # saved widget preferences (see core.widget_preferences).
+        self._sections_layout = QVBoxLayout()
+        self._sections_layout.setSpacing(10)
+        layout.addLayout(self._sections_layout)
+        self._section_widgets: dict[str, QWidget] = {}
+
+        self._build_project_info_section()
+        self._build_usage_section()
+        self._build_session_section()
+        self._build_crunch_awareness_section()
+        self._build_role_dashboard_section()
+
+        self._apply_widget_layout()
+
+        self._build_build_alert_section(layout)
+
+        layout.addStretch(1)
+
+        footer = QLabel("Spiced keeps everything local. You decide what to share.")
+        footer.setObjectName("Muted")
+        footer.setWordWrap(True)
+        layout.addWidget(footer)
+
+        self.refresh()
+
+    def _register_section(self, widget_id: str, container: QWidget) -> None:
+        self._section_widgets[widget_id] = container
+        self._sections_layout.addWidget(container)
+
+    @staticmethod
+    def _section_container() -> tuple[QWidget, QVBoxLayout]:
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(6)
+        return container, container_layout
+
+    # --- Customizable Dashboard Widgets (Phase L) ---------------------------
+
+    def _on_customize(self) -> None:
+        preferences = load_preferences(
+            self._services.widget_preferences_json(), CONTEXT_PANEL_WIDGETS
+        )
+        dialog = WidgetCustomizeDialog(
+            CONTEXT_PANEL_WIDGETS, preferences, parent=self, title="Customize project context"
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated = dialog.result_preferences()
+            new_json = merge_and_dump(self._services.widget_preferences_json(), updated)
+            self._services.set_widget_preferences_json(new_json)
+            self._apply_widget_layout()
+
+    def _apply_widget_layout(self) -> None:
+        """Show/hide and reorder each registered section per the developer's
+        saved preferences. Re-adding a widget to a QVBoxLayout it's already
+        in moves it to the end, so iterating specs in their saved order
+        produces exactly that final layout order."""
+        preferences = load_preferences(
+            self._services.widget_preferences_json(), CONTEXT_PANEL_WIDGETS
+        )
+        ordered_specs = sorted(CONTEXT_PANEL_WIDGETS, key=lambda s: preferences[s.id].order)
+        for spec in ordered_specs:
+            widget = self._section_widgets.get(spec.id)
+            if widget is None:
+                continue
+            self._sections_layout.removeWidget(widget)
+            self._sections_layout.addWidget(widget)
+            widget.setVisible(preferences[spec.id].visible)
+
+    # --- Project info / Usage (Phase L: made customizable) ------------------
+
+    def _build_project_info_section(self) -> None:
+        container, layout = self._section_container()
         self._active_label = QLabel()
         self._active_label.setWordWrap(True)
         layout.addWidget(self._active_label)
@@ -160,8 +262,10 @@ class ContextPanel(QFrame):
         self._projects_label.setObjectName("Muted")
         self._projects_label.setWordWrap(True)
         layout.addWidget(self._projects_label)
+        self._register_section("project_info", container)
 
-        layout.addSpacing(10)
+    def _build_usage_section(self) -> None:
+        container, layout = self._section_container()
         usage_title = QLabel("Usage")
         usage_title.setObjectName("SectionTitle")
         layout.addWidget(usage_title)
@@ -170,25 +274,12 @@ class ContextPanel(QFrame):
         self._usage_pill.setObjectName("UsagePill")
         self._usage_pill.setWordWrap(True)
         layout.addWidget(self._usage_pill)
-
-        self._build_session_section(layout)
-        self._build_crunch_awareness_section(layout)
-        self._build_role_dashboard_section(layout)
-        self._build_build_alert_section(layout)
-
-        layout.addStretch(1)
-
-        footer = QLabel("Spiced keeps everything local. You decide what to share.")
-        footer.setObjectName("Muted")
-        footer.setWordWrap(True)
-        layout.addWidget(footer)
-
-        self.refresh()
+        self._register_section("usage", container)
 
     # --- Session Summaries (Phase B) ----------------------------------------
 
-    def _build_session_section(self, layout: QVBoxLayout) -> None:
-        layout.addSpacing(10)
+    def _build_session_section(self) -> None:
+        container, layout = self._section_container()
         title = QLabel("Session")
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
@@ -219,6 +310,7 @@ class ContextPanel(QFrame):
         self._recent_sessions.setObjectName("Muted")
         self._recent_sessions.setWordWrap(True)
         layout.addWidget(self._recent_sessions)
+        self._register_section("session", container)
 
     def _on_end_session(self) -> None:
         if self._services.active_project() is None:
@@ -281,7 +373,8 @@ class ContextPanel(QFrame):
     # since re-showing an informational note on next launch is a minor
     # inconvenience, not a privacy or correctness issue.
 
-    def _build_crunch_awareness_section(self, layout: QVBoxLayout) -> None:
+    def _build_crunch_awareness_section(self) -> None:
+        container, layout = self._section_container()
         self._crunch_note = QLabel("")
         self._crunch_note.setObjectName("Muted")
         self._crunch_note.setWordWrap(True)
@@ -293,6 +386,7 @@ class ContextPanel(QFrame):
         self._crunch_dismiss_btn.setVisible(False)
         self._crunch_dismiss_btn.clicked.connect(self._on_dismiss_crunch_note)
         layout.addWidget(self._crunch_dismiss_btn)
+        self._register_section("crunch_note", container)
 
     def _on_dismiss_crunch_note(self) -> None:
         self._crunch_dismissed = True
@@ -327,7 +421,8 @@ class ContextPanel(QFrame):
     # only projects, unlinked team projects, no discipline set, or a
     # discipline this panel doesn't cover yet (e.g. "design").
 
-    def _build_role_dashboard_section(self, layout: QVBoxLayout) -> None:
+    def _build_role_dashboard_section(self) -> None:
+        container, layout = self._section_container()
         self._role_title = QLabel("Your discipline")
         self._role_title.setObjectName("SectionTitle")
         self._role_title.setVisible(False)
@@ -338,6 +433,7 @@ class ContextPanel(QFrame):
         self._role_summary.setWordWrap(True)
         self._role_summary.setVisible(False)
         layout.addWidget(self._role_summary)
+        self._register_section("role_dashboard", container)
 
     def _refresh_role_dashboard(self) -> None:
         project = self._services.active_project()

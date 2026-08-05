@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.backend_client import config as backend_config
 from spiced.backend_client.api_client import TeamTask
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.comments_widget import CommentsWidget
@@ -131,11 +133,76 @@ class TeamScreen(QWidget):
         layout.addWidget(self._context_label)
 
         self._build_discipline_section(layout)
+        self._build_mobile_link_section(layout)
         self._build_new_task_section(layout)
         self._build_board(layout)
         self._build_selected_task_section(layout)
 
         self.refresh()
+
+    # --- Companion Mobile View (Phase L, Stretch tier): the link ------------
+    #
+    # The backend's /mobile/teams/{team_id} route (routers/mobile.py) needs a
+    # bearer token, but it's a plain HTML page a phone browser navigates to
+    # directly -- it can't set an Authorization header the way this desktop
+    # app's own API calls do. So the desktop app is the one place that can
+    # hand the developer a ready-to-open link carrying the token as a
+    # ?token= query param (see app.auth.get_current_user_for_html's own
+    # docstring on the backend side for why that fallback exists). This is
+    # the SAME long-lived session token this app already uses for every
+    # other authenticated call -- not a separate short-lived token minting
+    # flow, which would need new backend infrastructure this session didn't
+    # build. Copied to the clipboard, never displayed/logged in full, since
+    # it is a live credential for as long as this session's token is valid.
+
+    def _build_mobile_link_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Companion mobile view")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "A read-only page (build alerts, player crash reports, open tasks) you can open "
+            "on your phone. The link carries your current sign-in -- keep it private, same as "
+            "a password."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._mobile_link_btn = QPushButton("Copy mobile link")
+        self._mobile_link_btn.setObjectName("Ghost")
+        self._mobile_link_btn.clicked.connect(self._on_copy_mobile_link)
+        row.addWidget(self._mobile_link_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self._mobile_link_status = QLabel("")
+        self._mobile_link_status.setObjectName("Muted")
+        self._mobile_link_status.setWordWrap(True)
+        layout.addWidget(self._mobile_link_status)
+
+    def _on_copy_mobile_link(self) -> None:
+        project = self._services.active_project()
+        token = self._services.auth.access_token()
+        if project is None or not project.project_uuid or self._team_id is None:
+            self._mobile_link_status.setText(
+                "Select a team-linked project first -- the board above must finish loading."
+            )
+            return
+        if not token:
+            self._mobile_link_status.setText("Sign in to Small-Team Mode first (Settings).")
+            return
+
+        base = backend_config.backend_base_url().rstrip("/")
+        link = (
+            f"{base}/mobile/teams/{self._team_id}"
+            f"?project_uuid={project.project_uuid}&token={token}"
+        )
+        QApplication.clipboard().setText(link)
+        self._mobile_link_status.setText(
+            "Link copied to clipboard. It's private -- treat it like a password."
+        )
 
     # --- Discipline self-service (Role-Based Dashboards, #4) ------------------
 

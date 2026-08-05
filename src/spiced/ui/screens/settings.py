@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -18,6 +21,15 @@ from PySide6.QtWidgets import (
 
 from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
+from spiced.core.keyboard_shortcuts import (
+    ACTIONS as SHORTCUT_ACTIONS,
+)
+from spiced.core.keyboard_shortcuts import (
+    binding_for,
+    dump_bindings,
+    load_bindings,
+    reset_binding,
+)
 from spiced.core.notification_routing import (
     DEFAULT_EVENT_KIND_DISCIPLINES,
     KNOWN_EVENT_KINDS,
@@ -26,6 +38,7 @@ from spiced.core.notification_routing import (
 from spiced.core.plans import PLANS
 from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.screens.team import SUGGESTED_DISCIPLINES
+from spiced.ui.theme import TEXT_SIZES, build_stylesheet
 from spiced.ui.thread_utils import launch_worker
 
 
@@ -244,6 +257,8 @@ class SettingsScreen(QWidget):
         prototype_note.setWordWrap(True)
         layout.addWidget(prototype_note)
 
+        self._build_accessibility_section(layout)
+        self._build_keyboard_shortcuts_section(layout)
         self._build_notification_routing_section(layout)
         self._build_notification_preferences_section(layout)
 
@@ -325,6 +340,193 @@ class SettingsScreen(QWidget):
 
     def _on_plan_changed(self, _index: int) -> None:
         self._services.usage.set_plan(self._plan_box.currentData())
+        self.settings_changed.emit()
+
+    # --- In-App Accessibility Settings (Phase L, Core tier) -----------------
+    #
+    # All four controls apply live -- the stylesheet is rebuilt and
+    # reapplied to the running QApplication immediately (see
+    # ``_apply_accessibility_stylesheet``), no restart needed. The one
+    # exception, called out honestly rather than silently: motion reduction
+    # is a currently-no-op toggle, since this app's UI has no animations to
+    # reduce yet (see ``ui.theme``'s module docstring) -- it's still saved
+    # and applied end-to-end so a future animation has something to check.
+
+    def _build_accessibility_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Accessibility")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Applies immediately across Spiced's own UI -- no restart needed. Text size and "
+            "the high-contrast / colorblind-safe palettes make real, measurable changes to the "
+            "stylesheet (see ui.theme). Motion reduction is saved but currently a no-op: "
+            "Spiced's UI has no animations to reduce yet."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        self._text_size_box = QComboBox()
+        for size_key in TEXT_SIZES:
+            self._text_size_box.addItem(size_key.capitalize(), size_key)
+        idx = self._text_size_box.findData(self._services.accessibility_text_size())
+        if idx >= 0:
+            self._text_size_box.setCurrentIndex(idx)
+        self._text_size_box.currentIndexChanged.connect(self._on_text_size_changed)
+        form.addRow("Text size", self._text_size_box)
+        layout.addLayout(form)
+
+        self._high_contrast_toggle = QCheckBox("High-contrast palette")
+        self._high_contrast_toggle.setChecked(self._services.accessibility_high_contrast_enabled())
+        self._high_contrast_toggle.toggled.connect(self._on_high_contrast_toggled)
+        layout.addWidget(self._high_contrast_toggle)
+
+        self._colorblind_safe_toggle = QCheckBox("Colorblind-safe palette")
+        self._colorblind_safe_toggle.setChecked(
+            self._services.accessibility_colorblind_safe_enabled()
+        )
+        self._colorblind_safe_toggle.toggled.connect(self._on_colorblind_safe_toggled)
+        layout.addWidget(self._colorblind_safe_toggle)
+
+        palette_note = QLabel(
+            "If both are on, high-contrast takes priority -- it's the stronger accessibility "
+            "need and its near-black-on-white values already read clearly under color vision "
+            "deficiency too."
+        )
+        palette_note.setObjectName("Muted")
+        palette_note.setWordWrap(True)
+        layout.addWidget(palette_note)
+
+        self._reduce_motion_toggle = QCheckBox("Reduce motion (currently a no-op -- see above)")
+        self._reduce_motion_toggle.setChecked(self._services.accessibility_reduce_motion_enabled())
+        self._reduce_motion_toggle.toggled.connect(self._on_reduce_motion_toggled)
+        layout.addWidget(self._reduce_motion_toggle)
+
+    def _on_text_size_changed(self, _index: int) -> None:
+        self._services.set_accessibility_text_size(self._text_size_box.currentData())
+        self._apply_accessibility_stylesheet()
+        self.settings_changed.emit()
+
+    def _on_high_contrast_toggled(self, checked: bool) -> None:
+        self._services.set_accessibility_high_contrast_enabled(checked)
+        self._apply_accessibility_stylesheet()
+        self.settings_changed.emit()
+
+    def _on_colorblind_safe_toggled(self, checked: bool) -> None:
+        self._services.set_accessibility_colorblind_safe_enabled(checked)
+        self._apply_accessibility_stylesheet()
+        self.settings_changed.emit()
+
+    def _on_reduce_motion_toggled(self, checked: bool) -> None:
+        self._services.set_accessibility_reduce_motion_enabled(checked)
+        self.settings_changed.emit()
+
+    def _apply_accessibility_stylesheet(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.setStyleSheet(
+            build_stylesheet(
+                text_size=self._services.accessibility_text_size(),
+                high_contrast=self._services.accessibility_high_contrast_enabled(),
+                colorblind_safe=self._services.accessibility_colorblind_safe_enabled(),
+                reduce_motion=self._services.accessibility_reduce_motion_enabled(),
+            )
+        )
+
+    # --- Keyboard Shortcuts for Power Users (Phase L, Phase 2 tier) --------
+    #
+    # Rebinding here saves a new action->key-sequence override
+    # (core.keyboard_shortcuts); MainWindow rebuilds every QShortcut from
+    # this screen's settings_changed signal, so a rebind (or reset) takes
+    # effect immediately, no restart needed -- see
+    # MainWindow._setup_keyboard_shortcuts.
+
+    def _build_keyboard_shortcuts_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Keyboard shortcuts")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Press \"?\" anywhere to see the full cheat sheet. Pick an action below, click into "
+            "the box and press your new key combination, then Save -- or Reset to go back to "
+            "its default."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._shortcuts_list = QTextEdit()
+        self._shortcuts_list.setReadOnly(True)
+        self._shortcuts_list.setFixedHeight(150)
+        layout.addWidget(self._shortcuts_list)
+
+        row = QHBoxLayout()
+        self._shortcut_action_box = QComboBox()
+        for action in SHORTCUT_ACTIONS:
+            self._shortcut_action_box.addItem(action.label, action.id)
+        self._shortcut_action_box.currentIndexChanged.connect(self._on_shortcut_action_changed)
+        row.addWidget(self._shortcut_action_box, 1)
+
+        self._shortcut_edit = QKeySequenceEdit()
+        row.addWidget(self._shortcut_edit, 1)
+
+        save_btn = QPushButton("Save binding")
+        save_btn.clicked.connect(self._on_save_shortcut)
+        row.addWidget(save_btn)
+
+        reset_btn = QPushButton("Reset to default")
+        reset_btn.setObjectName("Ghost")
+        reset_btn.clicked.connect(self._on_reset_shortcut)
+        row.addWidget(reset_btn)
+        layout.addLayout(row)
+
+        self._on_shortcut_action_changed(0)
+        self._refresh_shortcuts_list()
+
+    def _current_bindings(self) -> dict[str, str]:
+        return load_bindings(self._services.keyboard_shortcuts_json())
+
+    def _refresh_shortcuts_list(self) -> None:
+        bindings = self._current_bindings()
+        lines = [f"{binding_for(a.id, bindings)}   —   {a.label}" for a in SHORTCUT_ACTIONS]
+        self._shortcuts_list.setPlainText("\n".join(lines))
+
+    def _on_shortcut_action_changed(self, _index: int) -> None:
+        action_id = self._shortcut_action_box.currentData()
+        if not action_id:
+            return
+        bindings = self._current_bindings()
+        self._shortcut_edit.setKeySequence(QKeySequence(binding_for(action_id, bindings)))
+
+    def _on_save_shortcut(self) -> None:
+        action_id = self._shortcut_action_box.currentData()
+        if not action_id:
+            return
+        sequence = self._shortcut_edit.keySequence().toString()
+        if not sequence:
+            QMessageBox.information(
+                self, "No key combination", "Press a key combination in the box first."
+            )
+            return
+        bindings = self._current_bindings()
+        bindings[action_id] = sequence
+        self._services.set_keyboard_shortcuts_json(dump_bindings(bindings))
+        self._refresh_shortcuts_list()
+        self.settings_changed.emit()
+
+    def _on_reset_shortcut(self) -> None:
+        action_id = self._shortcut_action_box.currentData()
+        if not action_id:
+            return
+        bindings = reset_binding(self._current_bindings(), action_id)
+        self._services.set_keyboard_shortcuts_json(dump_bindings(bindings))
+        self._on_shortcut_action_changed(self._shortcut_action_box.currentIndex())
+        self._refresh_shortcuts_list()
         self.settings_changed.emit()
 
     # --- Relevance-Based Notifications: routing config (Phase J, #6) --------

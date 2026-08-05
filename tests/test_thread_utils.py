@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QCoreApplication, QObject, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
 from spiced.ui.thread_utils import launch_worker
 
@@ -127,3 +127,83 @@ def test_launch_worker_runs_two_real_concurrent_threads_to_completion():
     assert sorted(results) == [1, 2]
     assert owner._active_threads == []
     assert owner._active_workers == []
+
+
+# --- Live Task Progress Transparency (Phase L): progress_slot ---------------
+#
+# Backward compatibility is the headline requirement here: every one of this
+# app's 40+ existing launch_worker(owner, worker) call sites passes neither
+# a progress signal on the worker nor a progress_slot kwarg, and must keep
+# working completely unchanged.
+
+
+def test_launch_worker_with_no_progress_slot_and_no_progress_signal_is_unaffected():
+    """The exact shape of every existing call site: a worker with no
+    ``progress`` signal, called with no ``progress_slot``."""
+    owner = _Owner()
+    worker = _DummyWorker()
+    thread = launch_worker(owner, worker)
+    assert isinstance(thread, QThread)
+    assert owner._active_threads == [thread]
+
+
+def test_launch_worker_progress_slot_given_but_worker_has_no_progress_signal():
+    """A caller could pass progress_slot for a worker that doesn't declare
+    progress -- must degrade to a silent no-op, not raise."""
+    owner = _Owner()
+    worker = _DummyWorker()
+    received: list[str] = []
+    thread = launch_worker(owner, worker, progress_slot=received.append)
+    assert isinstance(thread, QThread)
+    assert received == []
+
+
+class _ProgressWorker(QObject):
+    done = Signal()
+    progress = Signal(str)
+
+    def run(self) -> None:
+        self.progress.emit("step one")
+        self.progress.emit("step two")
+        self.done.emit()
+
+
+def test_launch_worker_connects_progress_slot_when_worker_declares_progress():
+    app = QCoreApplication.instance() or QCoreApplication([])
+    owner = _Owner()
+    worker = _ProgressWorker()
+    received: list[str] = []
+
+    thread = launch_worker(owner, worker, progress_slot=received.append)
+    thread.started.connect(worker.run)
+    worker.done.connect(thread.quit)
+    thread.start()
+
+    deadline = time.time() + 5
+    while owner._active_threads and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert received == ["step one", "step two"]
+
+
+def test_launch_worker_with_progress_worker_but_no_progress_slot_still_works():
+    """A worker that HAS a progress signal, called the old way (no
+    progress_slot) -- must behave exactly as if progress didn't exist."""
+    app = QCoreApplication.instance() or QCoreApplication([])
+    owner = _Owner()
+    worker = _ProgressWorker()
+    done_flag: list[bool] = []
+
+    thread = launch_worker(owner, worker)
+    thread.started.connect(worker.run)
+    worker.done.connect(lambda: done_flag.append(True))
+    worker.done.connect(thread.quit)
+    thread.start()
+
+    deadline = time.time() + 5
+    while owner._active_threads and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert done_flag == [True]

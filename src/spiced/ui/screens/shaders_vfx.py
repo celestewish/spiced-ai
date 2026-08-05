@@ -13,6 +13,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -32,6 +33,7 @@ from spiced.core.shader_performance_profiling import (
 from spiced.core.shader_performance_profiling import ShaderProfilingResult
 from spiced.core.visual_regression import UnreadableImageError, VisualRegressionResult
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.diff_viewer import DiffViewerDialog
 
 
 class _ShaderProfilingWorker(QObject):
@@ -146,6 +148,7 @@ class ShadersVfxScreen(QWidget):
         self._services = services
         self._before_dir = ""
         self._after_dir = ""
+        self._vr_pairs_by_name: dict[str, object] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -310,6 +313,22 @@ class ShadersVfxScreen(QWidget):
         self._vr_result.setFixedHeight(240)
         layout.addWidget(self._vr_result)
 
+        # Visual Diff Viewer (Phase L, Phase 2 tier): opens the reusable
+        # DiffViewer (ui.widgets.diff_viewer) in image mode for one matched
+        # pair from the run above -- a side-by-side or highlighted-overlay
+        # look, rather than only the numeric changed-pixel-ratio line.
+        diff_viewer_row = QHBoxLayout()
+        diff_viewer_row.addWidget(QLabel("View pair:"))
+        self._vr_pair_picker = QComboBox()
+        self._vr_pair_picker.setEnabled(False)
+        diff_viewer_row.addWidget(self._vr_pair_picker, 1)
+        self._vr_open_diff_btn = QPushButton("Open diff viewer")
+        self._vr_open_diff_btn.setObjectName("Ghost")
+        self._vr_open_diff_btn.setEnabled(False)
+        self._vr_open_diff_btn.clicked.connect(self._on_view_diff_pair)
+        diff_viewer_row.addWidget(self._vr_open_diff_btn)
+        layout.addLayout(diff_viewer_row)
+
         history_title = QLabel("Recent diffs")
         history_title.setObjectName("SectionTitle")
         layout.addWidget(history_title)
@@ -363,11 +382,39 @@ class ShadersVfxScreen(QWidget):
         self._vr_result.setPlainText(_format_visual_regression(result))
         self.usage_changed.emit()
         self._refresh_vr_history()
+        self._refresh_diff_pair_picker(result)
 
     def _on_vr_failed(self, message: str) -> None:
         self._vr_run_btn.setEnabled(True)
         self._vr_run_btn.setText("Diff screenshots")
         self._vr_result.setPlainText(message)
+        self._refresh_diff_pair_picker(None)
+
+    def _refresh_diff_pair_picker(self, result: VisualRegressionResult | None) -> None:
+        self._vr_pairs_by_name = {p.name: p for p in result.pairs} if result else {}
+        self._vr_pair_picker.clear()
+        # Changed pairs first -- the ones actually worth opening a viewer for.
+        ordered = sorted(self._vr_pairs_by_name.values(), key=lambda p: not p.changed)
+        for pair in ordered:
+            flag = " (changed)" if pair.changed else ""
+            self._vr_pair_picker.addItem(f"{pair.name}{flag}", pair.name)
+        has_pairs = bool(ordered)
+        self._vr_pair_picker.setEnabled(has_pairs)
+        self._vr_open_diff_btn.setEnabled(has_pairs)
+
+    def _on_view_diff_pair(self) -> None:
+        name = self._vr_pair_picker.currentData()
+        pair = self._vr_pairs_by_name.get(name) if name else None
+        if pair is None:
+            return
+        try:
+            dialog = DiffViewerDialog.for_images(
+                pair.before_path, pair.after_path, title=f"Compare: {pair.name}", parent=self
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Couldn't open diff viewer", str(exc))
+            return
+        dialog.exec()
 
     def _refresh_vr_history(self) -> None:
         project = self._services.active_project()

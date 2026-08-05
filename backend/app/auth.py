@@ -100,6 +100,44 @@ async def get_current_user(
     return get_or_create_user(db, user_id, email)
 
 
+async def get_current_user_for_html(
+    token: str | None = None,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> User:
+    """Same Supabase bearer-token validation as ``get_current_user``, but
+    also accepts the token as a ``?token=`` query-string fallback.
+
+    Used only by the read-only Mobile Companion View
+    (``routers.mobile``) -- that endpoint returns a plain server-rendered
+    HTML page a phone browser navigates to directly, not a JSON response an
+    API client fetches with a custom ``Authorization`` header. The desktop
+    app is expected to hand the developer a short-lived link carrying the
+    token this way (a normal, documented pattern for "open this page on
+    your phone" links, e.g. Grafana/Datadog share links) rather than asking
+    a mobile browser to somehow set a bearer header of its own. The header
+    always wins when both are present, so an API client that *can* set
+    ``Authorization`` behaves exactly as it would against ``get_current_user``.
+    """
+    bearer = credentials.credentials if credentials is not None else None
+    resolved = bearer or (token or "").strip()
+    if not resolved:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token (Authorization header or ?token=).",
+        )
+    payload = await _fetch_supabase_user(resolved, settings)
+    user_id = payload.get("id")
+    email = payload.get("email")
+    if not user_id or not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Supabase user response missing id/email.",
+        )
+    return get_or_create_user(db, user_id, email)
+
+
 async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: Session = Depends(get_db),

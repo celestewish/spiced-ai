@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.core.keyboard_shortcuts import ACTIONS, binding_for, load_bindings
 from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
@@ -32,6 +33,7 @@ from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.shaders_vfx import ShadersVfxScreen
 from spiced.ui.screens.team import TeamScreen
 from spiced.ui.screens.testing import TestingScreen
+from spiced.ui.shortcuts_cheatsheet import ShortcutsCheatSheet
 from spiced.ui.top_bar import TopBar
 
 NAV_ITEMS = [
@@ -121,8 +123,16 @@ class MainWindow(QWidget):
         # macOS -- QKeySequence("Ctrl+K") maps the portable "Ctrl" text to
         # each platform's own standard modifier).
         self._command_palette = CommandPalette(self._build_palette_items, self)
-        self._palette_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
-        self._palette_shortcut.activated.connect(self._command_palette.open)
+
+        # Keyboard Shortcuts for Power Users (Phase L, Phase 2 tier): the
+        # Command Palette's own Ctrl+K trigger becomes one managed action
+        # ("command_palette") below rather than a separate, disconnected
+        # QShortcut, so rebinding it in Settings actually changes the real
+        # trigger too -- see core.keyboard_shortcuts and _setup_keyboard_shortcuts.
+        self._cheat_sheet = ShortcutsCheatSheet(self._current_shortcut_bindings, self)
+        self._shortcuts: dict[str, QShortcut] = {}
+        self._setup_keyboard_shortcuts()
+        self._settings_screen.settings_changed.connect(self._setup_keyboard_shortcuts)
 
         # Automated Build Pipeline (Phase D): in-app-only nightly scheduler.
         # Lives for as long as this window does; a failure is a quiet Context
@@ -222,6 +232,77 @@ class MainWindow(QWidget):
         self._services.set_active_project(project_id)
         self._on_top_bar_project_switched()
         self._top_bar.refresh()
+
+    # --- Keyboard Shortcuts for Power Users (Phase L, Phase 2 tier) --------
+
+    def _current_shortcut_bindings(self) -> dict[str, str]:
+        return load_bindings(self._services.keyboard_shortcuts_json())
+
+    def _shortcut_action_callbacks(self) -> dict[str, object]:
+        """action id -> zero-arg callable, for every action this window
+        actually knows how to perform. ``run_tests``/``open_chatbox`` are
+        scoped down to *navigating* to the relevant screen rather than also
+        triggering that screen's Run/Analyze button -- doing the latter
+        safely from a window-global shortcut would need every target screen
+        to expose a stable "run my primary action" hook, which none do
+        today; navigating there is one click from actually running it.
+        """
+        callbacks: dict[str, object] = {
+            "command_palette": self._command_palette.open,
+            "cheat_sheet": self._cheat_sheet.open,
+            "next_project": lambda: self._cycle_active_project(1),
+            "previous_project": lambda: self._cycle_active_project(-1),
+        }
+        if "Automated Testing" in NAV_ITEMS:
+            index = NAV_ITEMS.index("Automated Testing")
+            callbacks["run_tests"] = lambda i=index: self._stack.setCurrentIndex(i)
+        if "Debugging Buddy" in NAV_ITEMS:
+            index = NAV_ITEMS.index("Debugging Buddy")
+            callbacks["open_chatbox"] = lambda i=index: self._stack.setCurrentIndex(i)
+        for action in ACTIONS:
+            if not action.id.startswith("goto_"):
+                continue
+            page_label = action.label.removeprefix("Go to ")
+            if page_label in NAV_ITEMS:
+                index = NAV_ITEMS.index(page_label)
+                callbacks[action.id] = lambda i=index: self._stack.setCurrentIndex(i)
+        return callbacks
+
+    def _setup_keyboard_shortcuts(self) -> None:
+        """(Re)build every managed QShortcut from the currently-saved
+        bindings -- called once at startup and again whenever Settings
+        saves a rebind, so a customized shortcut takes effect immediately,
+        no restart needed."""
+        for shortcut in self._shortcuts.values():
+            shortcut.setParent(None)
+            shortcut.deleteLater()
+        self._shortcuts = {}
+
+        bindings = self._current_shortcut_bindings()
+        callbacks = self._shortcut_action_callbacks()
+        for action in ACTIONS:
+            callback = callbacks.get(action.id)
+            if callback is None:
+                continue
+            sequence = binding_for(action.id, bindings)
+            if not sequence:
+                continue
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(callback)
+            self._shortcuts[action.id] = shortcut
+
+    def _cycle_active_project(self, direction: int) -> None:
+        projects = self._services.projects.list_projects()
+        if not projects:
+            return
+        active = self._services.active_project()
+        ids = [p.id for p in projects]
+        try:
+            index = ids.index(active.id) if active is not None else -1
+        except ValueError:
+            index = -1
+        target = projects[(index + direction) % len(projects)]
+        self._switch_active_project(target.id)
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()

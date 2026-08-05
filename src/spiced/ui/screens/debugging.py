@@ -69,6 +69,8 @@ from spiced.core.scope_creep import detect_scope_creep
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.diff_viewer import DiffViewerDialog
+from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 
@@ -188,10 +190,16 @@ class _CodeHealthWorker(QObject):
 
 
 class _ProjectHealthScanWorker(QObject):
-    """Naming Consistency + Dead Reference Detection, folded into Code Health."""
+    """Naming Consistency + Dead Reference Detection, folded into Code Health.
+
+    Emits ``progress`` (Live Task Progress Transparency, Phase L) between
+    its two real, independently-timed scan passes over the project's .cs
+    scripts.
+    """
 
     done = Signal(object, object)  # NamingConventionResult, ReferenceScanResult
     failed = Signal(str)
+    progress = Signal(str)
 
     def __init__(self, services: Services, project) -> None:
         super().__init__()
@@ -200,8 +208,11 @@ class _ProjectHealthScanWorker(QObject):
 
     def run(self) -> None:
         try:
+            self.progress.emit("Scanning naming conventions… (1 of 2)")
             naming = self._services.code_health.scan_naming_convention(self._project)
+            self.progress.emit("Scanning for dead references… (2 of 2)")
             refs = self._services.code_health.scan_dead_references(self._project)
+            self.progress.emit("Project health scan complete.")
             self.done.emit(naming, refs)
         except CodeHealthNoUnityFolderError as exc:
             self.failed.emit(str(exc))
@@ -704,6 +715,11 @@ class DebuggingScreen(QWidget):
         project_scan_row.addStretch(1)
         body.addLayout(project_scan_row)
 
+        # Live Task Progress Transparency (Phase L): the two independent
+        # scan passes below -- see _ProjectHealthScanWorker.progress.
+        self._project_scan_progress_trail = ProgressTrail()
+        body.addWidget(self._project_scan_progress_trail)
+
         self._project_scan_result = QTextEdit()
         self._project_scan_result.setReadOnly(True)
         self._project_scan_result.setPlaceholderText(
@@ -727,8 +743,11 @@ class DebuggingScreen(QWidget):
             "Scanning Assets/ for naming patterns and references — this can take a moment on "
             "a large project…"
         )
+        self._project_scan_progress_trail.reset()
         worker = _ProjectHealthScanWorker(self._services, project)
-        thread = launch_worker(self, worker)
+        thread = launch_worker(
+            self, worker, progress_slot=self._project_scan_progress_trail.add_step
+        )
         thread.started.connect(worker.run)
         worker.done.connect(self._on_project_scan_done)
         worker.failed.connect(self._on_project_scan_failed)
@@ -952,6 +971,18 @@ class DebuggingScreen(QWidget):
         self._dev_docs_history.setFixedHeight(90)
         layout.addWidget(self._dev_docs_history)
 
+        # Visual Diff Viewer (Phase L, Phase 2 tier), text mode: Dev Docs
+        # snapshots are explicitly a versioned history (see core.dev_docs's
+        # module docstring) -- comparing the two most recent ones' AI
+        # summaries is a natural "what changed since last time" moment.
+        compare_row = QHBoxLayout()
+        compare_row.addStretch(1)
+        self._dev_docs_compare_btn = QPushButton("Compare last two snapshots")
+        self._dev_docs_compare_btn.setObjectName("Ghost")
+        self._dev_docs_compare_btn.clicked.connect(self._on_compare_dev_docs_snapshots)
+        compare_row.addWidget(self._dev_docs_compare_btn)
+        layout.addLayout(compare_row)
+
     def _on_dev_docs_generate(self) -> None:
         project = self._services.active_project()
         if project is None:
@@ -1006,6 +1037,32 @@ class DebuggingScreen(QWidget):
             for s in snapshots
         ]
         self._dev_docs_history.setPlainText("\n".join(lines))
+
+    def _on_compare_dev_docs_snapshots(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        snapshots = self._services.dev_docs.history(project.id, limit=2)
+        if len(snapshots) < 2:
+            QMessageBox.information(
+                self,
+                "Not enough snapshots yet",
+                "Generate Dev Docs at least twice for this project before comparing.",
+            )
+            return
+        newer, older = snapshots[0], snapshots[1]
+        dialog = DiffViewerDialog.for_text(
+            older.ai_summary or "",
+            newer.ai_summary or "",
+            left_label=f"Snapshot #{older.id} ({older.created_at})",
+            right_label=f"Snapshot #{newer.id} ({newer.created_at})",
+            title="Compare Dev Docs snapshots",
+            parent=self,
+        )
+        dialog.exec()
 
     # --- Design Drift (Design Doc Sync) + Scope-Creep Flagging ----------------
     #
