@@ -522,6 +522,52 @@ CREATE TABLE IF NOT EXISTS draft_translations (
     provider         TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Asset Review Queue (Phase I, section 8, Core tier). One row per saved
+-- review run: local, deterministic Pillow + .meta-text findings per asset
+-- (core.asset_review_queue). No AI call -- findings_json holds a list, one
+-- entry per reviewed asset, same shape as screenshot_checklist_reports.
+CREATE TABLE IF NOT EXISTS asset_review_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Audio Implementation Checklist (Phase I, section 8, Core tier). One row
+-- per saved scan cross-referencing .cs audio-triggering code against audio
+-- assets under Assets/ (core.audio_implementation_checklist). No AI call.
+CREATE TABLE IF NOT EXISTS audio_checklist_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Mix/Level QA (Phase I, section 8, Phase 2 tier). One row per saved WAV
+-- batch analysis -- peak/RMS/clipping/silence-gap findings plus relative
+-- loudness outliers (core.mix_level_qa, pure wave/struct/array, no
+-- audioop -- see that module's docstring). No AI call.
+CREATE TABLE IF NOT EXISTS mix_qa_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- State Machine Sanity Check (Phase I, section 8, Phase 2 tier). One row
+-- per saved static-analysis pass over the project's .controller files --
+-- unreachable states and missing transition targets
+-- (core.animation_state_machine_check). No AI call. Animation Bug Detection
+-- (Core tier, the same section) is deliberately NOT wired to its own table
+-- here -- it's a live, un-persisted scan, same as Code Health's Naming
+-- Consistency / Dead Reference Detection checks.
+CREATE TABLE IF NOT EXISTS animation_state_machine_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

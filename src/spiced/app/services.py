@@ -14,7 +14,10 @@ from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
 from spiced.core.accessibility import AccessibilityService
+from spiced.core.animation_state_machine_check import AnimationStateMachineCheckService
+from spiced.core.asset_review_queue import AssetReviewQueueService
 from spiced.core.asset_scan import AssetScanService
+from spiced.core.audio_implementation_checklist import AudioImplementationChecklistService
 from spiced.core.auth_service import AuthService
 from spiced.core.budget_tracker import BudgetTrackerService
 from spiced.core.build_pipeline import run_build_pipeline
@@ -35,6 +38,7 @@ from spiced.core.draft_translation import DraftTranslationService
 from spiced.core.economy_simulator import EconomySimulationService
 from spiced.core.feedback import FeedbackService
 from spiced.core.localization_readiness import LocalizationReadinessService
+from spiced.core.mix_level_qa import MixLevelQaService
 from spiced.core.performance import PerformanceService
 from spiced.core.player_crash_reports import PlayerCrashSyncService
 from spiced.core.playtester_recruitment import PlaytesterRecruitmentService
@@ -53,7 +57,10 @@ from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
 from spiced.core.wishlist_analytics import WishlistAnalyticsService
 from spiced.storage.accessibility_reports import AccessibilityReportRepository
+from spiced.storage.animation_state_machine_reports import AnimationStateMachineReportRepository
+from spiced.storage.asset_review_reports import AssetReviewReportRepository
 from spiced.storage.asset_scan_reports import AssetScanReportRepository
+from spiced.storage.audio_checklist_reports import AudioChecklistReportRepository
 from spiced.storage.budget_entries import BudgetRepository
 from spiced.storage.build_reports import BuildReport, BuildReportRepository
 from spiced.storage.changelog_drafts import ChangelogDraftRepository
@@ -74,6 +81,7 @@ from spiced.storage.feedback_tasks import FeedbackTaskRepository
 from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.localization_readiness_reports import LocalizationReadinessReportRepository
+from spiced.storage.mix_qa_reports import MixQaReportRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
 from spiced.storage.player_crash_sync import PlayerCrashSyncRepository
 from spiced.storage.playtester_signups import PlaytesterSignupRepository
@@ -225,6 +233,25 @@ class Services:
             LocalizationReadinessReportRepository(self.db)
         )
         self.draft_translation = DraftTranslationService(DraftTranslationRepository(self.db))
+
+        # Team Collaboration by Role: Art + Audio + Animation (Phase I,
+        # section 8 part 1). All eight features are local, deterministic
+        # scans -- no AI provider or backend call is involved anywhere in
+        # this group. Style Consistency Checker, In-Engine Placement
+        # Preview, Localization Audio Sync, and Animation Bug Detection have
+        # no dedicated report table (per the plan, they're live/un-persisted
+        # scans, the same pattern as Code Health's Naming Consistency / Dead
+        # Reference Detection) and so are deliberately not wired here as
+        # services -- they're called directly from the Art/Audio/Animation
+        # screens, same as core.grant_finder.
+        self.asset_review_queue = AssetReviewQueueService(AssetReviewReportRepository(self.db))
+        self.audio_implementation_checklist = AudioImplementationChecklistService(
+            AudioChecklistReportRepository(self.db)
+        )
+        self.mix_level_qa = MixLevelQaService(MixQaReportRepository(self.db))
+        self.animation_state_machine_check = AnimationStateMachineCheckService(
+            AnimationStateMachineReportRepository(self.db)
+        )
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.

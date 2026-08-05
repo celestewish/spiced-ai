@@ -1,0 +1,308 @@
+"""Animation: Animation Bug Detection, State Machine Health.
+
+Two sections, both static analysis of ``.controller`` files via
+``connectors.unity_controller_scan`` -- no AI provider is used anywhere on
+this screen. Animation Bug Detection surfaces *risk indicators*, never
+confirmed bugs; State Machine Sanity Check surfaces genuine structural
+problems (unreachable states, missing transition targets). Both scans run
+on a worker thread for UI responsiveness even though neither calls an AI
+provider.
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from spiced.app.services import Services
+from spiced.core.animation_bug_detection import AnimationBugScanResult, detect_animation_bugs
+from spiced.core.animation_state_machine_check import NoUnityFolderError, StateMachineScanResult
+from spiced.ui.thread_utils import launch_worker
+
+
+class _AnimationBugWorker(QObject):
+    done = Signal(object)  # AnimationBugScanResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_path: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_path = project_path
+
+    def run(self) -> None:
+        try:
+            result = detect_animation_bugs(self._project_path)
+            self._services.record_telemetry_event("animation.bug_detection_run")
+            self.done.emit(result)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning: {exc}")
+
+
+class _StateMachineCheckWorker(QObject):
+    done = Signal(object)  # StateMachineScanResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            result, _report = self._services.animation_state_machine_check.scan(self._project)
+            self._services.record_telemetry_event("animation.state_machine_check_run")
+            self.done.emit(result)
+        except NoUnityFolderError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning: {exc}")
+
+
+def _format_bug_scan(result: AnimationBugScanResult) -> str:
+    lines = [result.caveat, ""]
+    lines.append(f"{result.controllers_scanned} Animator Controller file(s) scanned.")
+    lines.append("")
+    lines.append("States with no motion assigned (T-posing risk):")
+    if result.empty_states:
+        for f in result.empty_states:
+            lines.append(f"- {f.controller_file}: state \"{f.state_name or f.state_file_id}\"")
+    else:
+        lines.append("None found.")
+    lines.append("")
+    lines.append("Zero-duration transitions (possible visible snap):")
+    if result.zero_duration_transitions:
+        for f in result.zero_duration_transitions:
+            frm = f.from_state_name or "(unknown source)"
+            to = f.to_state_name or "(unknown target)"
+            lines.append(f"- {f.controller_file}: {frm} -> {to}")
+    else:
+        lines.append("None found.")
+    return "\n".join(lines)
+
+
+def _format_state_machine_scan(result: StateMachineScanResult) -> str:
+    lines = [result.caveat, ""]
+    lines.append(f"{result.controllers_scanned} Animator Controller file(s) scanned.")
+    lines.append("")
+    lines.append("Unreachable states:")
+    if result.unreachable_states:
+        for f in result.unreachable_states:
+            lines.append(f"- {f.controller_file}: state \"{f.state_name or f.state_file_id}\"")
+    else:
+        lines.append("None found.")
+    lines.append("")
+    lines.append("Transitions pointing to a missing target:")
+    if result.missing_targets:
+        for f in result.missing_targets:
+            lines.append(
+                f"- {f.controller_file}: transition {f.transition_file_id} -> missing "
+                f"{f.missing_kind} {f.missing_file_id}"
+            )
+    else:
+        lines.append("None found.")
+    return "\n".join(lines)
+
+
+class AnimationScreen(QWidget):
+    usage_changed = Signal()
+
+    def __init__(self, services: Services) -> None:
+        super().__init__()
+        self._services = services
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(12)
+
+        title = QLabel("Animation")
+        title.setObjectName("ScreenTitle")
+        layout.addWidget(title)
+
+        self._context_label = QLabel()
+        self._context_label.setObjectName("Muted")
+        self._context_label.setWordWrap(True)
+        layout.addWidget(self._context_label)
+
+        self._build_bug_detection(layout)
+        self._build_state_machine_check(layout)
+
+        self.refresh()
+
+    # --- Animation Bug Detection ---------------------------------------------
+
+    def _build_bug_detection(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Animation Bug Detection")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Parses this project's Animator Controller (.controller) files for structural RISK "
+            "INDICATORS -- never confirmed bugs, since Spiced never runs your game and cannot "
+            "observe actual T-posing, foot-sliding, or a visible snap. Flags states with no "
+            "motion assigned and zero-duration transitions. See the results for the full caveat."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._bug_run_btn = QPushButton("Scan for risk indicators")
+        self._bug_run_btn.clicked.connect(self._on_bug_scan_run)
+        row.addWidget(self._bug_run_btn)
+        layout.addLayout(row)
+
+        self._bug_result = QTextEdit()
+        self._bug_result.setReadOnly(True)
+        self._bug_result.setPlaceholderText("Risk indicators will appear here.")
+        self._bug_result.setFixedHeight(220)
+        layout.addWidget(self._bug_result)
+
+    def _on_bug_scan_run(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.path:
+            QMessageBox.information(
+                self, "Pick a project first",
+                "Select a project with a connected Unity folder on the Projects screen.",
+            )
+            return
+        self._bug_run_btn.setEnabled(False)
+        self._bug_run_btn.setText("Scanning…")
+        self._bug_result.setPlainText("Scanning Animator Controller files…")
+
+        worker = _AnimationBugWorker(self._services, project.path)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_bug_scan_done)
+        worker.failed.connect(self._on_bug_scan_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_bug_scan_done(self, result: AnimationBugScanResult) -> None:
+        self._bug_run_btn.setEnabled(True)
+        self._bug_run_btn.setText("Scan for risk indicators")
+        self._bug_result.setPlainText(_format_bug_scan(result))
+        self.usage_changed.emit()
+
+    def _on_bug_scan_failed(self, message: str) -> None:
+        self._bug_run_btn.setEnabled(True)
+        self._bug_run_btn.setText("Scan for risk indicators")
+        self._bug_result.setPlainText(message)
+
+    # --- State Machine Sanity Check ------------------------------------------
+
+    def _build_state_machine_check(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("State Machine Health")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Real static analysis (like dead-code detection), not inference: flags states with "
+            "no incoming transition anywhere in the file (unreachable), and transitions pointing "
+            "to a fileID that doesn't exist in the file (missing target). See the results for the "
+            "full caveat, including what 'unreachable' cannot see (e.g. a script calling "
+            "Animator.Play by name)."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._sm_run_btn = QPushButton("Run state machine check")
+        self._sm_run_btn.clicked.connect(self._on_sm_check_run)
+        row.addWidget(self._sm_run_btn)
+        layout.addLayout(row)
+
+        self._sm_result = QTextEdit()
+        self._sm_result.setReadOnly(True)
+        self._sm_result.setPlaceholderText("Structural findings will appear here.")
+        self._sm_result.setFixedHeight(220)
+        layout.addWidget(self._sm_result)
+
+        history_title = QLabel("Recent checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._sm_history = QTextEdit()
+        self._sm_history.setReadOnly(True)
+        self._sm_history.setFixedHeight(80)
+        layout.addWidget(self._sm_history)
+
+    def _on_sm_check_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._sm_run_btn.setEnabled(False)
+        self._sm_run_btn.setText("Scanning…")
+        self._sm_result.setPlainText("Scanning Animator Controller files…")
+
+        worker = _StateMachineCheckWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_sm_check_done)
+        worker.failed.connect(self._on_sm_check_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_sm_check_done(self, result: StateMachineScanResult) -> None:
+        self._sm_run_btn.setEnabled(True)
+        self._sm_run_btn.setText("Run state machine check")
+        self._sm_result.setPlainText(_format_state_machine_scan(result))
+        self.usage_changed.emit()
+        self._refresh_sm_history()
+
+    def _on_sm_check_failed(self, message: str) -> None:
+        self._sm_run_btn.setEnabled(True)
+        self._sm_run_btn.setText("Run state machine check")
+        self._sm_result.setPlainText(message)
+
+    def _refresh_sm_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._sm_history.setPlainText("Checks are saved once you select an active project.")
+            return
+        reports = self._services.animation_state_machine_check.history(project.id, limit=5)
+        if not reports:
+            self._sm_history.setPlainText("No state machine checks saved yet.")
+            return
+        lines = [
+            f"[{r.created_at}] {r.findings.get('controllers_scanned', 0)} controller(s) scanned"
+            for r in reports
+        ]
+        self._sm_history.setPlainText("\n".join(lines))
+
+    # --- Refresh -----------------------------------------------------------
+
+    def refresh(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._context_label.setText(
+                "No active project selected. Choose or create one on the Projects screen to run "
+                "these scans."
+            )
+        else:
+            self._context_label.setText(f"Active project: {project.name}")
+        self._refresh_sm_history()
