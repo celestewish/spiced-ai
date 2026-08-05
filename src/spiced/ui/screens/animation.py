@@ -47,6 +47,46 @@ class _AnimationBugWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
+class _SendToTeamBoardWorker(QObject):
+    done = Signal(object)  # TeamTask | None
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str, title: str, description: str,
+                 source_ref: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+        self._title = title
+        self._description = description
+        self._source_ref = source_ref
+
+    def run(self) -> None:
+        try:
+            task = self._services.teams.send_finding_to_team_board(
+                self._project_uuid, self._title,
+                description=self._description,
+                assigned_discipline="animation",
+                source_type="animation",
+                source_ref=self._source_ref,
+            )
+            self.done.emit(task)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't send to the Team board: {exc}")
+
+
+def _animation_bug_source_ref(result: AnimationBugScanResult) -> str | None:
+    """A stable reference back to the first flagged finding -- matches the
+    'known_issue signature or feedback_task id' traceability spec calls for,
+    adapted to a finding kind with no persisted id of its own."""
+    if result.empty_states:
+        f = result.empty_states[0]
+        return f"empty-state:{f.controller_file}:{f.state_file_id}"
+    if result.zero_duration_transitions:
+        f = result.zero_duration_transitions[0]
+        return f"zero-duration-transition:{f.controller_file}:{f.transition_file_id}"
+    return None
+
+
 class _StateMachineCheckWorker(QObject):
     done = Signal(object)  # StateMachineScanResult
     failed = Signal(str)
@@ -176,6 +216,24 @@ class AnimationScreen(QWidget):
         self._bug_result.setFixedHeight(220)
         layout.addWidget(self._bug_result)
 
+        # "Send to Team Board" routing entry point (Phase J, #3): only
+        # enabled once a scan has findings AND the active project is
+        # team-linked -- creates a TeamTask pre-filled with discipline
+        # "animation" and a source_ref back to the first flagged finding.
+        team_board_row = QHBoxLayout()
+        team_board_row.addStretch(1)
+        self._bug_send_btn = QPushButton("Send to Team Board")
+        self._bug_send_btn.setObjectName("Ghost")
+        self._bug_send_btn.setEnabled(False)
+        self._bug_send_btn.clicked.connect(self._on_send_bug_findings_to_team_board)
+        team_board_row.addWidget(self._bug_send_btn)
+        layout.addLayout(team_board_row)
+        self._bug_send_status = QLabel("")
+        self._bug_send_status.setObjectName("Muted")
+        self._bug_send_status.setWordWrap(True)
+        layout.addWidget(self._bug_send_status)
+        self._last_bug_scan: AnimationBugScanResult | None = None
+
     def _on_bug_scan_run(self) -> None:
         project = self._services.active_project()
         if project is None or not project.path:
@@ -201,12 +259,56 @@ class AnimationScreen(QWidget):
         self._bug_run_btn.setEnabled(True)
         self._bug_run_btn.setText("Scan for risk indicators")
         self._bug_result.setPlainText(_format_bug_scan(result))
+        self._last_bug_scan = result
+        project = self._services.active_project()
+        team_linked = bool(project and project.project_uuid)
+        self._bug_send_btn.setEnabled(bool(result.flagged_count) and team_linked)
+        self._bug_send_status.setText(
+            "" if team_linked else
+            "Link this project to a team (Projects screen) to send findings to a Team Board."
+        )
         self.usage_changed.emit()
 
     def _on_bug_scan_failed(self, message: str) -> None:
         self._bug_run_btn.setEnabled(True)
         self._bug_run_btn.setText("Scan for risk indicators")
         self._bug_result.setPlainText(message)
+
+    def _on_send_bug_findings_to_team_board(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.project_uuid or self._last_bug_scan is None:
+            return
+        result = self._last_bug_scan
+        title = (
+            f"Animation Bug Detection: {result.flagged_count} risk indicator(s) in "
+            f"{project.name}"
+        )
+        source_ref = _animation_bug_source_ref(result)
+        self._bug_send_btn.setEnabled(False)
+        self._bug_send_status.setText("Sending…")
+
+        worker = _SendToTeamBoardWorker(
+            self._services, project.project_uuid, title, _format_bug_scan(result),
+            source_ref or "animation-bug-detection",
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_bug_findings_sent)
+        worker.failed.connect(self._on_bug_findings_send_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_bug_findings_sent(self, task) -> None:
+        self._bug_send_btn.setEnabled(True)
+        self._bug_send_status.setText(
+            "Sent to the Team board." if task is not None
+            else "This project isn't linked to a team."
+        )
+
+    def _on_bug_findings_send_failed(self, message: str) -> None:
+        self._bug_send_btn.setEnabled(True)
+        self._bug_send_status.setText(message)
 
     # --- State Machine Sanity Check ------------------------------------------
 

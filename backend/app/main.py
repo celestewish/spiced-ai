@@ -5,7 +5,16 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import player_crashes, roadmap, sessions, teams, telemetry
+from app.routers import (
+    comments,
+    notifications,
+    player_crashes,
+    roadmap,
+    sessions,
+    team_tasks,
+    teams,
+    telemetry,
+)
 
 app = FastAPI(title="Spiced Backend", version="0.0.1")
 
@@ -25,6 +34,9 @@ app.include_router(sessions.router)
 app.include_router(telemetry.router)
 app.include_router(roadmap.router)
 app.include_router(player_crashes.router)
+app.include_router(team_tasks.router)
+app.include_router(comments.router)
+app.include_router(notifications.router)
 
 
 @app.get("/health")

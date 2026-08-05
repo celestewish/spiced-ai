@@ -568,6 +568,32 @@ CREATE TABLE IF NOT EXISTS animation_state_machine_reports (
     findings_json TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Shader Performance Profiling (Phase J, section 8 part 2, Core tier). One
+-- row per saved static-heuristic scan of .shader/.shadergraph files under
+-- Assets/ (core.shader_performance_profiling). No AI call -- findings_json
+-- holds the same shape as the other local, deterministic report tables
+-- above (e.g. animation_state_machine_reports).
+CREATE TABLE IF NOT EXISTS shader_profiling_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Visual Regression Testing (Phase J, section 8 part 2, Phase 2 tier). One
+-- row per saved before/after screenshot-folder diff pass
+-- (core.visual_regression) -- local Pillow pixel-difference comparison
+-- only, no live engine screenshot capture, no AI call. findings_json holds
+-- the per-pair diff summary; the highlighted diff images themselves are
+-- saved as files alongside the report (see core.visual_regression for the
+-- output folder), not embedded in this row.
+CREATE TABLE IF NOT EXISTS visual_regression_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    findings_json TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

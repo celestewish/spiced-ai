@@ -48,6 +48,7 @@ from spiced.core.regression import RegressionService
 from spiced.core.roadmap_service import RoadmapService
 from spiced.core.save_load_tester import SaveLoadTesterService
 from spiced.core.session_summary import SessionSummaryService, now_sqlite
+from spiced.core.shader_performance_profiling import ShaderPerformanceProfilingService
 from spiced.core.store_page_advisor import StorePageAdvisorService
 from spiced.core.team_service import TeamService
 from spiced.core.test_generator import TestGeneratorService
@@ -55,6 +56,7 @@ from spiced.core.testing import TestingService
 from spiced.core.trailer_screenshot_checklist import TrailerScreenshotChecklistService
 from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
+from spiced.core.visual_regression import VisualRegressionService
 from spiced.core.wishlist_analytics import WishlistAnalyticsService
 from spiced.storage.accessibility_reports import AccessibilityReportRepository
 from spiced.storage.animation_state_machine_reports import AnimationStateMachineReportRepository
@@ -91,11 +93,13 @@ from spiced.storage.save_integrity_reports import SaveIntegrityReportRepository
 from spiced.storage.screenshot_checklist_reports import ScreenshotChecklistReportRepository
 from spiced.storage.session_summaries import SessionSummary, SessionSummaryRepository
 from spiced.storage.settings import SettingsRepository
+from spiced.storage.shader_profiling_reports import ShaderProfilingReportRepository
 from spiced.storage.store_page_reviews import StorePageReviewRepository
 from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
 from spiced.storage.usage import UsageRepository
 from spiced.storage.version_check_reports import VersionCheckReportRepository
+from spiced.storage.visual_regression_reports import VisualRegressionReportRepository
 from spiced.storage.wishlist_analytics_imports import WishlistAnalyticsImportRepository
 
 PROVIDER_SETTING_KEY = "ai_provider"
@@ -252,6 +256,20 @@ class Services:
         self.animation_state_machine_check = AnimationStateMachineCheckService(
             AnimationStateMachineReportRepository(self.db)
         )
+
+        # Shaders & VFX + Cross-Role & Team Glue (Phase J, section 8 part 2).
+        # Shader Performance Profiling and Visual Regression Testing are
+        # local, deterministic (no AI call) -- same shape as the Phase I
+        # scans above. Unified Task Board / Comment Threads / discipline /
+        # notification routing are all thin orchestration over
+        # TeamService/BackendClient (already constructed above) plus
+        # core.notification_routing -- no dedicated local report table for
+        # any of them, since that data lives on the team backend, not
+        # per-machine SQLite.
+        self.shader_performance_profiling = ShaderPerformanceProfilingService(
+            ShaderProfilingReportRepository(self.db)
+        )
+        self.visual_regression = VisualRegressionService(VisualRegressionReportRepository(self.db))
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.

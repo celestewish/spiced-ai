@@ -7,6 +7,7 @@ verifies it against Supabase Auth on each request (see backend/app/auth.py).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import httpx
 
@@ -43,6 +44,10 @@ class TeamMember:
     # Defaults to None so existing call sites/fakes built before this field
     # existed keep working.
     email: str | None = None
+    # Discipline/skill role (Phase J, Role-Based Dashboards) — see
+    # app.models.TeamMember.discipline. Defaults to None for the same
+    # backward-compatibility reason as ``email`` above.
+    discipline: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,64 @@ class RoadmapSuggestion:
     created_at: str
     vote_count: int
     voted_by_me: bool
+
+
+@dataclass(frozen=True)
+class TeamTask:
+    """Unified Task Board (Phase J) row. ``source_type``/``source_ref``
+    trace a task back to the finding that generated it, when created via a
+    "Send to Team Board" routing entry point rather than typed by hand."""
+
+    id: str
+    team_id: str
+    project_uuid: str | None
+    title: str
+    description: str | None
+    status: str
+    assigned_discipline: str | None
+    source_type: str
+    source_ref: str | None
+    created_by_user_id: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Comment:
+    """Comment Threads on Assets/Builds (Phase J) row."""
+
+    id: str
+    team_id: str
+    subject_type: str
+    subject_id: str
+    author_user_id: str
+    body: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class EventRoutingRule:
+    """One team's saved override of which discipline(s) an event kind
+    routes to (Phase J, Relevance-Based Notifications routing layer)."""
+
+    id: str
+    team_id: str
+    event_kind: str
+    discipline: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class NotificationPreference:
+    """One member's explicit per-event-kind opt-in/opt-out override
+    (Phase J, Relevance-Based Notifications routing layer)."""
+
+    id: str
+    team_id: str
+    user_id: str
+    event_kind: str
+    enabled: bool
+    created_at: str
 
 
 class BackendClient:
@@ -206,6 +269,133 @@ class BackendClient:
         payload = self._request("GET", f"/projects/{project_uuid}/player-crashes")
         return [_player_crash(row) for row in payload]
 
+    # --- Role-Based Dashboards: discipline (Phase J) --------------------------
+
+    def set_my_discipline(self, team_id: str, discipline: str | None) -> TeamMember:
+        payload = self._request(
+            "PATCH", f"/teams/{team_id}/members/me", json={"discipline": discipline}
+        )
+        return _member(payload)
+
+    def set_member_discipline(
+        self, team_id: str, member_id: str, discipline: str | None
+    ) -> TeamMember:
+        payload = self._request(
+            "PATCH", f"/teams/{team_id}/members/{member_id}", json={"discipline": discipline}
+        )
+        return _member(payload)
+
+    # --- Unified Task Board (Phase J) ------------------------------------------
+
+    def create_task(
+        self,
+        team_id: str,
+        title: str,
+        *,
+        description: str | None = None,
+        project_uuid: str | None = None,
+        assigned_discipline: str | None = None,
+        source_type: str = "manual",
+        source_ref: str | None = None,
+    ) -> TeamTask:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/tasks",
+            json={
+                "title": title,
+                "description": description,
+                "project_uuid": project_uuid,
+                "assigned_discipline": assigned_discipline,
+                "source_type": source_type,
+                "source_ref": source_ref,
+            },
+        )
+        return _task(payload)
+
+    def list_tasks(self, team_id: str, project_uuid: str | None = None) -> list[TeamTask]:
+        path = f"/teams/{team_id}/tasks"
+        if project_uuid:
+            path += f"?{urlencode({'project_uuid': project_uuid})}"
+        payload = self._request("GET", path)
+        return [_task(row) for row in payload]
+
+    def update_task(
+        self,
+        team_id: str,
+        task_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        status_value: str | None = None,
+        assigned_discipline: str | None = None,
+    ) -> TeamTask:
+        fields = {
+            "title": title,
+            "description": description,
+            "status": status_value,
+            "assigned_discipline": assigned_discipline,
+        }
+        payload = self._request(
+            "PATCH", f"/teams/{team_id}/tasks/{task_id}", json={k: v for k, v in fields.items()}
+        )
+        return _task(payload)
+
+    def delete_task(self, team_id: str, task_id: str) -> None:
+        self._request("DELETE", f"/teams/{team_id}/tasks/{task_id}")
+
+    # --- Comment Threads on Assets/Builds (Phase J) -----------------------------
+
+    def create_comment(
+        self, team_id: str, subject_type: str, subject_id: str, body: str
+    ) -> Comment:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/comments",
+            json={"subject_type": subject_type, "subject_id": subject_id, "body": body},
+        )
+        return _comment(payload)
+
+    def list_comments(self, team_id: str, subject_type: str, subject_id: str) -> list[Comment]:
+        query = urlencode({"subject_type": subject_type, "subject_id": subject_id})
+        payload = self._request("GET", f"/teams/{team_id}/comments?{query}")
+        return [_comment(row) for row in payload]
+
+    # --- Relevance-Based Notifications: routing layer only (Phase J) -----------
+    # No notification is ever delivered/displayed by this client -- see
+    # core.notification_routing's module docstring for the Phase K
+    # sequencing boundary. These calls only read/write the routing decision
+    # data (a team's routing rules, and members' explicit preference
+    # overrides) that ``relevant_members_for_event`` consumes.
+
+    def list_routing_rules(self, team_id: str) -> list[EventRoutingRule]:
+        payload = self._request("GET", f"/teams/{team_id}/routing-rules")
+        return [_routing_rule(row) for row in payload]
+
+    def add_routing_rule(self, team_id: str, event_kind: str, discipline: str) -> EventRoutingRule:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/routing-rules",
+            json={"event_kind": event_kind, "discipline": discipline},
+        )
+        return _routing_rule(payload)
+
+    def delete_routing_rule(self, team_id: str, rule_id: str) -> None:
+        self._request("DELETE", f"/teams/{team_id}/routing-rules/{rule_id}")
+
+    def list_notification_preferences(self, team_id: str) -> list[NotificationPreference]:
+        payload = self._request("GET", f"/teams/{team_id}/notification-preferences")
+        return [_notification_preference(row) for row in payload]
+
+    def set_notification_preference(
+        self, team_id: str, event_kind: str, enabled: bool
+    ) -> NotificationPreference:
+        payload = self._request(
+            "PUT",
+            f"/teams/{team_id}/notification-preferences/me",
+            json={"event_kind": event_kind, "enabled": enabled},
+        )
+        return _notification_preference(payload)
+
     def _request(self, method: str, path: str, json: dict | None = None, require_auth: bool = True):
         if require_auth and not self._token:
             raise NotAuthenticatedError("Sign in to Spiced Team Mode first.")
@@ -260,6 +450,7 @@ def _member(row: dict) -> TeamMember:
         invited_email=row.get("invited_email"),
         email=row.get("email"),
         role=row["role"],
+        discipline=row.get("discipline"),
         joined_at=row.get("joined_at"),
         created_at=row["created_at"],
     )
@@ -320,4 +511,54 @@ def _suggestion(row: dict) -> RoadmapSuggestion:
         created_at=row["created_at"],
         vote_count=row["vote_count"],
         voted_by_me=row["voted_by_me"],
+    )
+
+
+def _task(row: dict) -> TeamTask:
+    return TeamTask(
+        id=row["id"],
+        team_id=row["team_id"],
+        project_uuid=row.get("project_uuid"),
+        title=row["title"],
+        description=row.get("description"),
+        status=row["status"],
+        assigned_discipline=row.get("assigned_discipline"),
+        source_type=row["source_type"],
+        source_ref=row.get("source_ref"),
+        created_by_user_id=row["created_by_user_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _comment(row: dict) -> Comment:
+    return Comment(
+        id=row["id"],
+        team_id=row["team_id"],
+        subject_type=row["subject_type"],
+        subject_id=row["subject_id"],
+        author_user_id=row["author_user_id"],
+        body=row["body"],
+        created_at=row["created_at"],
+    )
+
+
+def _routing_rule(row: dict) -> EventRoutingRule:
+    return EventRoutingRule(
+        id=row["id"],
+        team_id=row["team_id"],
+        event_kind=row["event_kind"],
+        discipline=row["discipline"],
+        created_at=row["created_at"],
+    )
+
+
+def _notification_preference(row: dict) -> NotificationPreference:
+    return NotificationPreference(
+        id=row["id"],
+        team_id=row["team_id"],
+        user_id=row["user_id"],
+        event_kind=row["event_kind"],
+        enabled=row["enabled"],
+        created_at=row["created_at"],
     )
