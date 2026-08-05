@@ -76,6 +76,26 @@ class ChangelogEntry:
 
 
 @dataclass(frozen=True)
+class PlayerCrashReport:
+    """A crash/error report a real player of the shipped game submitted.
+
+    Fetched read-only by the desktop client (see
+    ``core.player_crash_reports.PlayerCrashSyncService``) to feed into Known
+    Issues. Submission itself is never done by Spiced's own UI — it's the
+    shipped game's own crash handler, per ``docs/player_crash_reporting.md``.
+    """
+
+    id: str
+    project_uuid: str
+    error_type: str
+    message: str
+    stack_excerpt: str | None
+    app_version: str | None
+    occurred_at: str
+    reported_at: str
+
+
+@dataclass(frozen=True)
 class RoadmapSuggestion:
     id: str
     author_user_id: str
@@ -175,6 +195,17 @@ class BackendClient:
     def unvote_suggestion(self, suggestion_id: str) -> None:
         self._request("DELETE", f"/roadmap/suggestions/{suggestion_id}/vote")
 
+    # --- Player Crash & Error Reporting (Phase G) ----------------------------
+    # Reading requires auth + team membership, same as every other team-
+    # visible resource. Submission is never done from this client — it's the
+    # shipped game's own crash handler posting directly, with no auth at
+    # all (see docs/player_crash_reporting.md); Spiced's desktop app only
+    # ever reads reports back.
+
+    def list_player_crashes(self, project_uuid: str) -> list[PlayerCrashReport]:
+        payload = self._request("GET", f"/projects/{project_uuid}/player-crashes")
+        return [_player_crash(row) for row in payload]
+
     def _request(self, method: str, path: str, json: dict | None = None, require_auth: bool = True):
         if require_auth and not self._token:
             raise NotAuthenticatedError("Sign in to Spiced Team Mode first.")
@@ -264,6 +295,19 @@ def _changelog_entry(row: dict) -> ChangelogEntry:
         title=row["title"],
         body=row["body"],
         published_at=row["published_at"],
+    )
+
+
+def _player_crash(row: dict) -> PlayerCrashReport:
+    return PlayerCrashReport(
+        id=row["id"],
+        project_uuid=row["project_uuid"],
+        error_type=row["error_type"],
+        message=row["message"],
+        stack_excerpt=row.get("stack_excerpt"),
+        app_version=row.get("app_version"),
+        occurred_at=row["occurred_at"],
+        reported_at=row["reported_at"],
     )
 
 

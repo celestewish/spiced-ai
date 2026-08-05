@@ -19,6 +19,7 @@ from spiced.ui.context_panel import ContextPanel
 from spiced.ui.screens.dashboard import DashboardScreen
 from spiced.ui.screens.debugging import DebuggingScreen
 from spiced.ui.screens.feedback import FeedbackScreen
+from spiced.ui.screens.marketing import MarketingScreen
 from spiced.ui.screens.projects import ProjectsScreen
 from spiced.ui.screens.roadmap import RoadmapScreen
 from spiced.ui.screens.settings import SettingsScreen
@@ -30,8 +31,13 @@ NAV_ITEMS = [
     "Debugging Buddy",
     "Automated Testing",
     "Feedback Review",
-    # Roadmap sits outside the three tool pages above (Debugging/Testing/
-    # Feedback), next to Settings — per the Section 5 spec's placement call.
+    # Marketing (Phase G, section 7): a new sidebar page per spec, sitting
+    # alongside the other tool pages rather than folded into an existing one
+    # — Store Page Advisor / Wishlist Analytics / Screenshot Checklist don't
+    # naturally belong to Debugging, Testing, or Feedback.
+    "Marketing",
+    # Roadmap sits outside the tool pages above, next to Settings — per the
+    # Section 5 spec's placement call.
     "Roadmap",
     "Settings",
 ]
@@ -121,20 +127,24 @@ class MainWindow(QWidget):
         self._debugging_screen = DebuggingScreen(self._services)
         self._testing_screen = TestingScreen(self._services)
         self._feedback_screen = FeedbackScreen(self._services)
+        self._marketing_screen = MarketingScreen(self._services)
         self._projects_screen.projects_changed.connect(self._context.refresh)
         self._projects_screen.projects_changed.connect(self._debugging_screen.refresh)
         self._projects_screen.projects_changed.connect(self._testing_screen.refresh)
         self._projects_screen.projects_changed.connect(self._feedback_screen.refresh)
+        self._projects_screen.projects_changed.connect(self._marketing_screen.refresh)
         self._projects_screen.projects_changed.connect(self._dashboard_screen.refresh)
 
-        # New AI analyses create debug/test/feedback records, so refresh the
-        # dashboard (and usage pill) whenever one completes.
+        # New AI analyses create debug/test/feedback/marketing records, so
+        # refresh the dashboard (and usage pill) whenever one completes.
         self._debugging_screen.usage_changed.connect(self._context.refresh)
         self._testing_screen.usage_changed.connect(self._context.refresh)
         self._feedback_screen.usage_changed.connect(self._context.refresh)
+        self._marketing_screen.usage_changed.connect(self._context.refresh)
         self._debugging_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._testing_screen.usage_changed.connect(self._dashboard_screen.refresh)
         self._feedback_screen.usage_changed.connect(self._dashboard_screen.refresh)
+        self._marketing_screen.usage_changed.connect(self._dashboard_screen.refresh)
 
         self._roadmap_screen = RoadmapScreen(self._services)
 
@@ -149,6 +159,7 @@ class MainWindow(QWidget):
         self._stack.addWidget(self._debugging_screen)
         self._stack.addWidget(self._testing_screen)
         self._stack.addWidget(self._feedback_screen)
+        self._stack.addWidget(self._marketing_screen)
         self._stack.addWidget(self._roadmap_screen)
         self._stack.addWidget(self._settings_screen)
         # Recompute the dashboard whenever the user navigates to it.

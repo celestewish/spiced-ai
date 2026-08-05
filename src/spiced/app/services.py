@@ -20,6 +20,7 @@ from spiced.core.build_pipeline import run_build_pipeline
 from spiced.core.changelog_draft import ChangelogService
 from spiced.core.code_health import CodeHealthService
 from spiced.core.community.base import CommunitySource
+from spiced.core.community.discord_poster import DiscordPoster
 from spiced.core.community_pulse import CommunityPulseService
 from spiced.core.dashboard import DashboardService
 from spiced.core.debugging import DebuggingService
@@ -30,17 +31,22 @@ from spiced.core.dev_docs import DevDocsService
 from spiced.core.economy_simulator import EconomySimulationService
 from spiced.core.feedback import FeedbackService
 from spiced.core.performance import PerformanceService
+from spiced.core.player_crash_reports import PlayerCrashSyncService
+from spiced.core.playtester_recruitment import PlaytesterRecruitmentService
 from spiced.core.precommit_hook import HookInstallResult, install_hook, uninstall_hook
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
 from spiced.core.roadmap_service import RoadmapService
 from spiced.core.save_load_tester import SaveLoadTesterService
 from spiced.core.session_summary import SessionSummaryService, now_sqlite
+from spiced.core.store_page_advisor import StorePageAdvisorService
 from spiced.core.team_service import TeamService
 from spiced.core.test_generator import TestGeneratorService
 from spiced.core.testing import TestingService
+from spiced.core.trailer_screenshot_checklist import TrailerScreenshotChecklistService
 from spiced.core.usage_counter import UsageCounter
 from spiced.core.version_check import VersionCheckService
+from spiced.core.wishlist_analytics import WishlistAnalyticsService
 from spiced.storage.accessibility_reports import AccessibilityReportRepository
 from spiced.storage.asset_scan_reports import AssetScanReportRepository
 from spiced.storage.build_reports import BuildReport, BuildReportRepository
@@ -59,15 +65,20 @@ from spiced.storage.feedback_tasks import FeedbackTaskRepository
 from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
+from spiced.storage.player_crash_sync import PlayerCrashSyncRepository
+from spiced.storage.playtester_signups import PlaytesterSignupRepository
 from spiced.storage.precommit_reviews import PrecommitReviewRepository
 from spiced.storage.projects import Project, ProjectRepository
 from spiced.storage.save_integrity_reports import SaveIntegrityReportRepository
+from spiced.storage.screenshot_checklist_reports import ScreenshotChecklistReportRepository
 from spiced.storage.session_summaries import SessionSummary, SessionSummaryRepository
 from spiced.storage.settings import SettingsRepository
+from spiced.storage.store_page_reviews import StorePageReviewRepository
 from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
 from spiced.storage.usage import UsageRepository
 from spiced.storage.version_check_reports import VersionCheckReportRepository
+from spiced.storage.wishlist_analytics_imports import WishlistAnalyticsImportRepository
 
 PROVIDER_SETTING_KEY = "ai_provider"
 ACTIVE_PROJECT_SETTING_KEY = "active_project_id"
@@ -82,6 +93,15 @@ TEAM_MODE_ENABLED_KEY = "team_mode_enabled"
 # developer happens to be signed in elsewhere for Team Mode.
 TELEMETRY_OPT_IN_ENABLED_KEY = "telemetry_opt_in_enabled"
 TELEMETRY_CLIENT_ID_KEY = "telemetry_anonymous_client_id"
+# Discord/Community Bot Integration (Phase G, section 7): posting is a
+# separate, bigger trust boundary than the existing read-only Community
+# Pulse toggle, so it gets its own opt-in settings. Off by default.
+DISCORD_POSTING_ENABLED_KEY = "discord_posting_enabled"
+# Documented future option (see core.community.discord_poster / the
+# Debugging Buddy screen's "Post to Discord" action): when on, skips the
+# confirm-before-send dialog. Off by default — approval-required is the
+# default path per spec.
+DISCORD_AUTO_POST_ENABLED_KEY = "discord_auto_post_enabled"
 
 
 class Services:
@@ -155,6 +175,24 @@ class Services:
             self.dev_docs,
         )
 
+        # Marketing & Discoverability + Community & Playtesting (Phase G,
+        # section 7).
+        self.store_page_advisor = StorePageAdvisorService(StorePageReviewRepository(self.db))
+        self.wishlist_analytics = WishlistAnalyticsService(
+            WishlistAnalyticsImportRepository(self.db)
+        )
+        self.screenshot_checklist = TrailerScreenshotChecklistService(
+            ScreenshotChecklistReportRepository(self.db)
+        )
+        self.playtester_recruitment = PlaytesterRecruitmentService(
+            PlaytesterSignupRepository(self.db)
+        )
+        # Player Crash & Error Reporting: only meaningful for a team-linked
+        # project, same reachability constraint as team_prompt_context above.
+        self.player_crash_sync = PlayerCrashSyncService(
+            self.teams, self.regression, PlayerCrashSyncRepository(self.db)
+        )
+
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.
 
@@ -194,6 +232,23 @@ class Services:
 
     def build_community_source(self) -> CommunitySource:
         return community_module.build_source(self.community_source_name())
+
+    # --- Discord/Community Bot Integration: posting (opt-in, off by default)
+
+    def discord_posting_enabled(self) -> bool:
+        return self._settings.get(DISCORD_POSTING_ENABLED_KEY, "") == "1"
+
+    def set_discord_posting_enabled(self, enabled: bool) -> None:
+        self._settings.set(DISCORD_POSTING_ENABLED_KEY, "1" if enabled else "")
+
+    def discord_auto_post_enabled(self) -> bool:
+        return self._settings.get(DISCORD_AUTO_POST_ENABLED_KEY, "") == "1"
+
+    def set_discord_auto_post_enabled(self, enabled: bool) -> None:
+        self._settings.set(DISCORD_AUTO_POST_ENABLED_KEY, "1" if enabled else "")
+
+    def build_discord_poster(self) -> DiscordPoster:
+        return DiscordPoster()
 
     # --- Opt-In Only Telemetry (opt-in, off by default) --------------------
 

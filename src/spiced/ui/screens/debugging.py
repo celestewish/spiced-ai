@@ -225,6 +225,35 @@ class _ChangelogWorker(QObject):
             self.failed.emit(f"Something went wrong while drafting the changelog: {exc}")
 
 
+class _DiscordPostWorker(QObject):
+    """Discord/Community Bot Integration: posting (Phase G, section 7).
+
+    Runs on a worker thread since it's a network call. The caller is
+    responsible for having already shown the developer the exact text and
+    gotten an explicit confirmation before launching this — see
+    ``_on_post_changelog_to_discord`` below.
+    """
+
+    done = Signal()
+    failed = Signal(str)
+
+    def __init__(self, services: Services, text: str) -> None:
+        super().__init__()
+        self._services = services
+        self._text = text
+
+    def run(self) -> None:
+        try:
+            poster = self._services.build_discord_poster()
+            poster.post_message(self._text)
+            self._services.record_telemetry_event("debugging.changelog_posted_to_discord")
+            self.done.emit()
+        except (RuntimeError, ValueError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while posting to Discord: {exc}")
+
+
 class _AssetScanWorker(QObject):
     done = Signal(object)  # AssetScanFindings
     failed = Signal(str)
@@ -713,6 +742,13 @@ class DebuggingScreen(QWidget):
         self._changelog_save_btn.setObjectName("Ghost")
         self._changelog_save_btn.clicked.connect(self._on_save_changelog_edit)
         row.addWidget(self._changelog_save_btn)
+        # Discord/Community Bot Integration (Phase G, section 7): posts the
+        # text currently in the box below, always with an explicit confirm-
+        # before-send step by default (see _on_post_changelog_to_discord).
+        self._discord_post_btn = QPushButton("Post to Discord")
+        self._discord_post_btn.setObjectName("Ghost")
+        self._discord_post_btn.clicked.connect(self._on_post_changelog_to_discord)
+        row.addWidget(self._discord_post_btn)
         layout.addLayout(row)
 
         self._changelog_text = QPlainTextEdit()
@@ -1464,6 +1500,66 @@ class DebuggingScreen(QWidget):
             self._current_changelog_draft_id, self._changelog_text.toPlainText()
         )
         self._refresh_changelog_history()
+
+    def _on_post_changelog_to_discord(self) -> None:
+        text = self._changelog_text.toPlainText().strip()
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to post", "Draft (or write) a changelog above first."
+            )
+            return
+        if not self._services.discord_posting_enabled():
+            QMessageBox.information(
+                self,
+                "Discord integration is off",
+                "Turn on \"Allow Spiced to post to Discord\" on the Settings screen first.",
+            )
+            return
+        poster = self._services.build_discord_poster()
+        if not poster.is_available():
+            QMessageBox.information(
+                self,
+                "Discord isn't configured",
+                "Set DISCORD_BOT_TOKEN and a channel id (DISCORD_CHANNEL_ID or "
+                "DISCORD_ANNOUNCE_CHANNEL_ID) in your environment or a local .env file first.",
+            )
+            return
+
+        # Approval-required is the default path per spec: always show the
+        # exact text and require a click, unless the developer has
+        # separately opted into auto-post on the Settings screen.
+        if not self._services.discord_auto_post_enabled():
+            confirm = QMessageBox.question(
+                self,
+                "Post to Discord?",
+                f"This will post the following to {poster.channel_label()}:\n\n{text}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
+        self._discord_post_btn.setEnabled(False)
+        self._discord_post_btn.setText("Posting…")
+
+        worker = _DiscordPostWorker(self._services, text)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_discord_post_done)
+        worker.failed.connect(self._on_discord_post_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_discord_post_done(self) -> None:
+        self._discord_post_btn.setEnabled(True)
+        self._discord_post_btn.setText("Post to Discord")
+        QMessageBox.information(self, "Posted", "Your changelog was posted to Discord.")
+
+    def _on_discord_post_failed(self, message: str) -> None:
+        self._discord_post_btn.setEnabled(True)
+        self._discord_post_btn.setText("Post to Discord")
+        QMessageBox.warning(self, "Couldn't post to Discord", message)
 
     def _refresh_changelog_history(self) -> None:
         project = self._services.active_project()

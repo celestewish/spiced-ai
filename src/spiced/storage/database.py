@@ -357,6 +357,83 @@ CREATE TABLE IF NOT EXISTS design_doc_sync_reports (
     provider              TEXT,
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Store Page Optimization Advisor (Phase G, section 7). One row per reviewed
+-- Steam/itch store page draft (title/description/tags the developer pasted
+-- or imported) plus the AI's suggestions-only review. Never a guarantee of
+-- sales, never published anywhere by Spiced.
+CREATE TABLE IF NOT EXISTS store_page_reviews (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id   INTEGER NOT NULL,
+    title        TEXT,
+    description  TEXT,
+    tags_json    TEXT,
+    ai_summary   TEXT,
+    provider     TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Wishlist/Analytics Summary (Phase G, section 7). Scoped down to a
+-- documented paste/import CSV format (see core.wishlist_analytics) rather
+-- than a live Steam/itch API — no public, OAuth-free wishlist/analytics API
+-- exists for either store. Each row is one snapshot; the developer's next
+-- import is diffed against the most recent previous one for the same
+-- project, purely locally (no AI call needed for a numeric diff).
+CREATE TABLE IF NOT EXISTS wishlist_analytics_imports (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL,
+    metrics_json     TEXT NOT NULL,
+    raw_excerpt      TEXT,
+    source_filename  TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Trailer & Screenshot Checklist (Phase G, section 7, Stretch tier). Scoped
+-- down to screenshots only (no video trailer analysis — see
+-- core.trailer_screenshot_checklist). findings_json holds Spiced's own
+-- deterministic per-image Pillow-based checks (resolution/aspect ratio,
+-- blank-shot heuristic); ai_summary is the AI's review of those structured
+-- findings plus any developer-supplied captions — raw image bytes are never
+-- sent to the AI provider.
+CREATE TABLE IF NOT EXISTS screenshot_checklist_reports (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL,
+    findings_json  TEXT,
+    ai_summary     TEXT,
+    provider       TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Playtester Recruitment Assistant (Phase G, section 7). Scoped down to a
+-- local sign-up list the developer tracks by hand (name/contact/status) —
+-- Spiced has no real build-distribution infrastructure and never sends
+-- anything on the developer's behalf. Separate from the AI-drafted
+-- recruitment post itself, which is not persisted (copy-paste scratch text,
+-- same philosophy as Changelog Generation's draft-then-copy flow).
+CREATE TABLE IF NOT EXISTS playtester_signups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    contact     TEXT,
+    status      TEXT NOT NULL DEFAULT 'invited',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Player Crash & Error Reporting (Phase G, section 7). Local idempotency
+-- log for ingesting player-submitted crash reports (fetched from the
+-- backend, see backend_client + docs/player_crash_reporting.md) into Known
+-- Issues via the same signature-matching pipeline as internally found
+-- issues (core.regression). Each remote report id is recorded here once so
+-- re-syncing never inflates known_issues.occurrences by re-counting a
+-- report Spiced already merged in.
+CREATE TABLE IF NOT EXISTS player_crash_sync_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER NOT NULL,
+    remote_report_id  TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, remote_report_id)
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

@@ -37,7 +37,10 @@ from spiced.app.services import Services
 from spiced.core.community_pulse import CommunityPulseResult, SourceNotReadyError
 from spiced.core.community_pulse import ProviderNotReadyError as PulseProviderNotReadyError
 from spiced.core.feedback import SOURCE_FILE, SOURCE_PASTE, FeedbackReview, ProviderNotReadyError
+from spiced.core.playtester_recruitment import ProviderNotReadyError as RecruitNotReadyError
+from spiced.core.playtester_recruitment import RecruitmentDraftResult
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
+from spiced.storage.playtester_signups import STATUSES as SIGNUP_STATUSES
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -114,6 +117,41 @@ class _PulseWorker(QObject):
             self.failed.emit(f"Something went wrong during the check-in: {exc}")
 
 
+class _RecruitmentWorker(QObject):
+    done = Signal(object)  # RecruitmentDraftResult
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, needs_description: str, target_platform: str, timeframe: str
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._needs_description = needs_description
+        self._target_platform = target_platform
+        self._timeframe = timeframe
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.playtester_recruitment.draft_post(
+                provider,
+                needs_description=self._needs_description,
+                target_platform=self._target_platform,
+                timeframe=self._timeframe,
+                project=self._services.active_project(),
+                record_usage=self._services.usage.record_prompt,
+            )
+            self._services.record_telemetry_event("feedback.playtester_recruitment_draft_run")
+            self.done.emit(result)
+        except RecruitNotReadyError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while drafting the post: {exc}")
+
+
+_SIGNUP_USER_ROLE = 0x0101
+
+
 class FeedbackScreen(QWidget):
     usage_changed = Signal()
 
@@ -150,6 +188,7 @@ class FeedbackScreen(QWidget):
         self._build_tasks(layout)
         self._build_ai_review(layout)
         self._build_history(layout)
+        self._build_playtester_recruitment(layout)
         self._build_community_pulse(layout)
 
         self.refresh()
@@ -379,6 +418,175 @@ class FeedbackScreen(QWidget):
         self._history.setFixedHeight(110)
         layout.addWidget(self._history)
 
+    # --- Recruit Playtesters (Playtester Recruitment Assistant) --------------
+
+    def _build_playtester_recruitment(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Recruit Playtesters")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Describe what you need testers for, the target platform, and a timeframe — Spiced "
+            "drafts a short recruitment post for you to copy and post yourself (Discord, "
+            "forums, an itch devlog, wherever). Sign-up tracking below is a simple local list "
+            "you maintain by hand — Spiced has no build-distribution system and never sends "
+            "anything (no emails, no build links) on your behalf."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._recruit_needs_input = QLineEdit()
+        self._recruit_needs_input.setPlaceholderText(
+            "What do you need testers for? e.g. \"new co-op mode before Early Access launch\""
+        )
+        layout.addWidget(self._recruit_needs_input)
+
+        detail_row = QHBoxLayout()
+        detail_row.addWidget(QLabel("Platform:"))
+        self._recruit_platform_input = QLineEdit()
+        self._recruit_platform_input.setPlaceholderText("e.g. Windows/Steam")
+        detail_row.addWidget(self._recruit_platform_input, 1)
+        detail_row.addWidget(QLabel("Timeframe:"))
+        self._recruit_timeframe_input = QLineEdit()
+        self._recruit_timeframe_input.setPlaceholderText("e.g. next 2 weeks")
+        detail_row.addWidget(self._recruit_timeframe_input, 1)
+        layout.addLayout(detail_row)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._recruit_draft_btn = QPushButton("Draft recruitment post")
+        self._recruit_draft_btn.clicked.connect(self._on_recruit_draft)
+        row.addWidget(self._recruit_draft_btn)
+        layout.addLayout(row)
+
+        self._recruit_result = QTextEdit()
+        self._recruit_result.setReadOnly(True)
+        self._recruit_result.setPlaceholderText("Your draft recruitment post will appear here.")
+        self._recruit_result.setFixedHeight(140)
+        layout.addWidget(self._recruit_result)
+
+        signup_heading = QLabel("Sign-up list (local only)")
+        signup_heading.setObjectName("SectionTitle")
+        layout.addWidget(signup_heading)
+
+        add_row = QHBoxLayout()
+        self._signup_name_input = QLineEdit()
+        self._signup_name_input.setPlaceholderText("Tester name")
+        add_row.addWidget(self._signup_name_input, 1)
+        self._signup_contact_input = QLineEdit()
+        self._signup_contact_input.setPlaceholderText("Contact (email/handle, optional)")
+        add_row.addWidget(self._signup_contact_input, 1)
+        self._signup_add_btn = QPushButton("Add")
+        self._signup_add_btn.clicked.connect(self._on_signup_add)
+        add_row.addWidget(self._signup_add_btn)
+        layout.addLayout(add_row)
+
+        self._signup_list = QListWidget()
+        self._signup_list.setFixedHeight(120)
+        self._signup_list.currentItemChanged.connect(self._on_signup_selected)
+        layout.addWidget(self._signup_list)
+
+        self._signups_empty = QLabel("No testers tracked yet — add one above.")
+        self._signups_empty.setObjectName("Muted")
+        layout.addWidget(self._signups_empty)
+
+        status_row = QHBoxLayout()
+        status_row.addWidget(QLabel("Set status:"))
+        self._signup_status_input = QComboBox()
+        self._signup_status_input.addItems(list(SIGNUP_STATUSES))
+        status_row.addWidget(self._signup_status_input)
+        self._signup_update_status_btn = QPushButton("Update")
+        self._signup_update_status_btn.clicked.connect(self._on_signup_update_status)
+        status_row.addWidget(self._signup_update_status_btn)
+        status_row.addStretch(1)
+        self._signup_delete_btn = QPushButton("Delete")
+        self._signup_delete_btn.clicked.connect(self._on_signup_delete)
+        status_row.addWidget(self._signup_delete_btn)
+        layout.addLayout(status_row)
+        self._selected_signup_id: int | None = None
+
+    def _on_recruit_draft(self) -> None:
+        self._recruit_draft_btn.setEnabled(False)
+        self._recruit_draft_btn.setText("Drafting…")
+        self._recruit_result.setPlainText("Thinking through a draft post…")
+
+        worker = _RecruitmentWorker(
+            self._services,
+            self._recruit_needs_input.text().strip(),
+            self._recruit_platform_input.text().strip(),
+            self._recruit_timeframe_input.text().strip(),
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_recruit_done)
+        worker.failed.connect(self._on_recruit_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_recruit_done(self, result: RecruitmentDraftResult) -> None:
+        self._recruit_draft_btn.setEnabled(True)
+        self._recruit_draft_btn.setText("Draft recruitment post")
+        self._recruit_result.setPlainText(result.response_text)
+        self.usage_changed.emit()
+
+    def _on_recruit_failed(self, message: str) -> None:
+        self._recruit_draft_btn.setEnabled(True)
+        self._recruit_draft_btn.setText("Draft recruitment post")
+        self._recruit_result.setPlainText(message)
+
+    def _on_signup_add(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        name = self._signup_name_input.text().strip()
+        if not name:
+            QMessageBox.information(self, "Name needed", "Enter a tester name first.")
+            return
+        self._services.playtester_recruitment.add_signup(
+            project.id, name, self._signup_contact_input.text().strip() or None
+        )
+        self._signup_name_input.clear()
+        self._signup_contact_input.clear()
+        self._refresh_signups()
+
+    def _on_signup_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
+        self._selected_signup_id = int(current.data(_SIGNUP_USER_ROLE)) if current else None
+
+    def _on_signup_update_status(self) -> None:
+        if self._selected_signup_id is None:
+            QMessageBox.information(self, "Select a tester", "Pick a tester from the list.")
+            return
+        self._services.playtester_recruitment.set_status(
+            self._selected_signup_id, self._signup_status_input.currentText()
+        )
+        self._refresh_signups()
+
+    def _on_signup_delete(self) -> None:
+        if self._selected_signup_id is None:
+            return
+        self._services.playtester_recruitment.delete_signup(self._selected_signup_id)
+        self._selected_signup_id = None
+        self._refresh_signups()
+
+    def _refresh_signups(self) -> None:
+        self._signup_list.blockSignals(True)
+        self._signup_list.clear()
+        project = self._services.active_project()
+        signups = self._services.playtester_recruitment.list_signups(project.id) if project else []
+        for signup in signups:
+            contact = f" ({signup.contact})" if signup.contact else ""
+            item = QListWidgetItem(f"[{signup.status}] {signup.name}{contact}")
+            item.setData(_SIGNUP_USER_ROLE, signup.id)
+            self._signup_list.addItem(item)
+        self._signup_list.blockSignals(False)
+        self._signups_empty.setVisible(not signups)
+        self._signup_list.setVisible(bool(signups))
+
     # --- Community Pulse (opt-in, off by default) -----------------------------
 
     def _build_community_pulse(self, layout: QVBoxLayout) -> None:
@@ -513,6 +721,7 @@ class FeedbackScreen(QWidget):
 
         self._refresh_history()
         self._refresh_tasks()
+        self._refresh_signups()
         self._refresh_pulse_history()
 
     def _refresh_history(self) -> None:

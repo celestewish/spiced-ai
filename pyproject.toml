@@ -17,6 +17,12 @@ dependencies = [
     "openai>=1.0",
     "python-dotenv>=1.0",
     "httpx>=0.27",
+    # Trailer & Screenshot Checklist (Phase G, section 7): local, deterministic
+    # resolution/aspect-ratio and blank-shot checks on screenshot images. The
+    # first new third-party dependency added since the original AI/PySide6/
+    # httpx set — a reasonable, well-established addition rather than hand-
+    # rolling image decoding.
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from spiced.backend_client.api_client import (
     BackendClient,
+    PlayerCrashReport,
     Team,
     TeamMember,
     TeamProject,
@@ -97,3 +98,14 @@ class TeamService:
         if team is None:
             return []
         return self._synced_client().list_session_summaries(team.id, project_uuid)
+
+    # --- Player Crash & Error Reporting (Phase G) ---------------------------
+
+    def list_player_crashes(self, project_uuid: str) -> list[PlayerCrashReport]:
+        """Crash reports real players sent in for this team-linked project.
+
+        The backend itself checks team membership (404s if the project
+        isn't team-linked at all, 403s if the signed-in user isn't a
+        member) — this is a thin, unfiltered pass-through.
+        """
+        return self._synced_client().list_player_crashes(project_uuid)
