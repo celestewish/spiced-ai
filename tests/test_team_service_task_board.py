@@ -7,6 +7,7 @@ from __future__ import annotations
 from spiced.backend_client.api_client import (
     Comment,
     EventRoutingRule,
+    Notification,
     NotificationPreference,
     Team,
     TeamMember,
@@ -42,6 +43,7 @@ class _FakeBackendClient:
         self.comments: list[Comment] = []
         self.routing_rules: list[EventRoutingRule] = []
         self.preferences: list[NotificationPreference] = []
+        self.notifications: list[Notification] = []
         self.members: list[TeamMember] = [
             TeamMember(
                 id="m1", team_id="team-1", user_id="u1", invited_email=None, role="owner",
@@ -146,13 +148,41 @@ class _FakeBackendClient:
     def list_notification_preferences(self, team_id):
         return [p for p in self.preferences if p.team_id == team_id]
 
-    def set_notification_preference(self, team_id, event_kind, enabled):
+    def set_notification_preference(self, team_id, event_kind, enabled, delivery="realtime"):
         pref = NotificationPreference(
             id=f"p{len(self.preferences) + 1}", team_id=team_id, user_id="u1",
             event_kind=event_kind, enabled=enabled, created_at="2026-08-04T00:00:00Z",
+            delivery=delivery,
         )
         self.preferences.append(pref)
         return pref
+
+    def create_notification(self, team_id, recipient_user_id, event_kind, title, body,
+                             *, subject_type=None, subject_id=None):
+        notification = Notification(
+            id=f"n{len(self.notifications) + 1}", team_id=team_id,
+            recipient_user_id=recipient_user_id, event_kind=event_kind, title=title,
+            body=body, subject_type=subject_type, subject_id=subject_id,
+            created_at="2026-08-04T00:00:00Z", read_at=None,
+        )
+        self.notifications.append(notification)
+        return notification
+
+    def list_notifications(self, team_id):
+        return [n for n in self.notifications if n.team_id == team_id]
+
+    def mark_notification_read(self, team_id, notification_id):
+        for i, n in enumerate(self.notifications):
+            if n.id == notification_id and n.team_id == team_id:
+                updated = Notification(
+                    id=n.id, team_id=n.team_id, recipient_user_id=n.recipient_user_id,
+                    event_kind=n.event_kind, title=n.title, body=n.body,
+                    subject_type=n.subject_type, subject_id=n.subject_id,
+                    created_at=n.created_at, read_at="2026-08-04T01:00:00Z",
+                )
+                self.notifications[i] = updated
+                return updated
+        raise KeyError(notification_id)
 
 
 def _setup():
@@ -237,3 +267,134 @@ def test_relevant_members_for_project_event_uses_routing():
 def test_relevant_members_for_unlinked_project_is_empty():
     teams, _backend = _setup()
     assert teams.relevant_members_for_project_event("unlinked", "audio_checklist_gap") == []
+
+
+# --- Notification Center: event sources wired through TeamService (Phase K) -
+
+
+def test_creating_a_task_with_a_discipline_notifies_the_relevant_member():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline="audio", joined_at="2026-08-04T00:00:00Z", created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    task = teams.create_task(
+        "team-1", "Mix the boss fight", project_uuid=PROJECT_UUID, assigned_discipline="audio"
+    )
+    assert len(backend.notifications) == 1
+    notification = backend.notifications[0]
+    assert notification.recipient_user_id == "u2"
+    assert notification.event_kind == "team_task_assigned"
+    assert notification.subject_type == "task"
+    assert notification.subject_id == task.id
+
+
+def test_creating_a_task_with_no_discipline_notifies_nobody():
+    teams, backend = _setup()
+    teams.create_task("team-1", "Untriaged", project_uuid=PROJECT_UUID)
+    assert backend.notifications == []
+
+
+def test_task_assignment_never_notifies_its_own_author():
+    """The signed-in user is 'u1' (see _setup) -- assigning a task to their
+    own discipline shouldn't notify themselves about their own action."""
+    teams, backend = _setup()
+    teams.create_task(
+        "team-1", "Self-assigned", project_uuid=PROJECT_UUID, assigned_discipline="animation"
+    )
+    assert backend.notifications == []
+
+
+def test_reassigning_a_task_on_update_also_notifies():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline="audio", joined_at="2026-08-04T00:00:00Z", created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    task = teams.create_task("team-1", "Task A", project_uuid=PROJECT_UUID)
+    assert backend.notifications == []
+    teams.update_task("team-1", task.id, assigned_discipline="audio")
+    assert len(backend.notifications) == 1
+    assert backend.notifications[0].recipient_user_id == "u2"
+
+
+def test_comment_on_a_task_notifies_the_tasks_assigned_discipline():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline="audio", joined_at="2026-08-04T00:00:00Z", created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    task = teams.create_task(
+        "team-1", "Task A", project_uuid=PROJECT_UUID, assigned_discipline="audio"
+    )
+    backend.notifications = []  # clear the assignment notification for a clean check below
+
+    teams.add_comment_for_project(PROJECT_UUID, "task", task.id, "Any update?")
+    assert len(backend.notifications) == 1
+    notification = backend.notifications[0]
+    assert notification.recipient_user_id == "u2"
+    assert notification.event_kind == "comment_posted"
+    assert notification.subject_type == "task"
+    assert notification.subject_id == task.id
+
+
+def test_comment_on_a_known_issue_notifies_programmers():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline="programmer", joined_at="2026-08-04T00:00:00Z",
+            created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    teams.add_comment_for_project(PROJECT_UUID, "known_issue", "42", "Regressed again")
+    assert len(backend.notifications) == 1
+    assert backend.notifications[0].recipient_user_id == "u2"
+
+
+def test_notify_relevant_members_for_project_event_creates_notifications():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline="programmer", joined_at="2026-08-04T00:00:00Z",
+            created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    created = teams.notify_relevant_members_for_project_event(
+        PROJECT_UUID, "build_failed", "Scheduled build failed: Demo", "boom: NRE",
+        subject_type="build", subject_id="1",
+    )
+    assert len(created) == 1
+    assert created[0].recipient_user_id == "u2"
+    assert backend.notifications == created
+
+
+def test_notify_relevant_members_for_unlinked_project_creates_nothing():
+    teams, backend = _setup()
+    created = teams.notify_relevant_members_for_project_event(
+        "unlinked", "build_failed", "title", "body"
+    )
+    assert created == []
+    assert backend.notifications == []
+
+
+def test_notify_relevant_members_excludes_members_with_no_user_id():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id=None, invited_email="pending@example.com",
+            role="member", discipline="programmer", joined_at=None,
+            created_at="2026-08-04T00:00:00Z",
+        )
+    )
+    created = teams.notify_relevant_members_for_project_event(
+        PROJECT_UUID, "build_failed", "title", "body"
+    )
+    assert created == []

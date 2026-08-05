@@ -323,6 +323,15 @@ class NotificationPreference(Base):
     decisions need everyone's overrides to compute who's relevant), but only
     writable by the row's own owner (see ``routers.notifications.
     set_my_notification_preference``, a ``.../me`` endpoint).
+
+    ``delivery`` (Phase K, section 9 part 1 -- Notification Center's digest
+    options) is the cadence this member wants this event kind delivered at:
+    'realtime' (the default -- surfaced as soon as the desktop client's
+    poller sees it), 'hourly', or 'daily'. The backend has no concept of a
+    held/batched notification -- every row in ``notifications`` is always
+    immediately listable; digest batching is entirely a desktop-side
+    decision (see ``core.notification_center.bucket_by_cadence``) keyed off
+    this field.
     """
 
     __tablename__ = "notification_preferences"
@@ -335,4 +344,38 @@ class NotificationPreference(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     event_kind: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    delivery: Mapped[str] = mapped_column(String(20), default="realtime")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Notification(Base):
+    """Notification Center: one delivered notification (Phase K, section 9
+    part 1, Core tier).
+
+    The actual delivery/storage layer Phase J's routing decision
+    (``core.notification_routing.relevant_members_for_event``) anticipated:
+    one row per relevant recipient, created (server-side logic doesn't exist
+    yet, so today always by the desktop client) whenever a wired event
+    source fires -- see ``core.team_service.TeamService._notify_event`` and
+    its callers (task assignment, comments, build failures, player crash
+    reports). ``subject_type``/``subject_id`` mirror ``Comment``'s shape
+    (see that model's docstring for why ``subject_id`` is a plain string)
+    but both are nullable here, since not every event kind has a specific
+    subject to point back to (e.g. a build failure points at the project,
+    not a team-scoped row with an id in this database).
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    recipient_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id"), index=True
+    )
+    event_kind: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    subject_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    subject_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

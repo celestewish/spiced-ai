@@ -167,6 +167,32 @@ class NotificationPreference:
     event_kind: str
     enabled: bool
     created_at: str
+    # Digest cadence (Phase K, section 9 part 1): "realtime" | "hourly" |
+    # "daily". Defaults to "realtime" so existing call sites/fakes built
+    # before this field existed keep working, same backward-compatibility
+    # reason as TeamMember.email/discipline above.
+    delivery: str = "realtime"
+
+
+@dataclass(frozen=True)
+class Notification:
+    """One delivered notification (Phase K, section 9 part 1, Core tier).
+
+    Mirrors ``Comment``'s subject_type/subject_id shape (both nullable here,
+    since not every event kind points at a specific team-scoped row -- see
+    ``app.models.Notification``'s docstring on the backend).
+    """
+
+    id: str
+    team_id: str
+    recipient_user_id: str
+    event_kind: str
+    title: str
+    body: str
+    subject_type: str | None
+    subject_id: str | None
+    created_at: str
+    read_at: str | None
 
 
 class BackendClient:
@@ -387,14 +413,51 @@ class BackendClient:
         return [_notification_preference(row) for row in payload]
 
     def set_notification_preference(
-        self, team_id: str, event_kind: str, enabled: bool
+        self, team_id: str, event_kind: str, enabled: bool, delivery: str = "realtime"
     ) -> NotificationPreference:
         payload = self._request(
             "PUT",
             f"/teams/{team_id}/notification-preferences/me",
-            json={"event_kind": event_kind, "enabled": enabled},
+            json={"event_kind": event_kind, "enabled": enabled, "delivery": delivery},
         )
         return _notification_preference(payload)
+
+    # --- Notification Center: the actual inbox (Phase K, section 9 part 1) -
+
+    def create_notification(
+        self,
+        team_id: str,
+        recipient_user_id: str,
+        event_kind: str,
+        title: str,
+        body: str,
+        *,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+    ) -> Notification:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/notifications",
+            json={
+                "recipient_user_id": recipient_user_id,
+                "event_kind": event_kind,
+                "title": title,
+                "body": body,
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+            },
+        )
+        return _notification(payload)
+
+    def list_notifications(self, team_id: str) -> list[Notification]:
+        payload = self._request("GET", f"/teams/{team_id}/notifications")
+        return [_notification(row) for row in payload]
+
+    def mark_notification_read(self, team_id: str, notification_id: str) -> Notification:
+        payload = self._request(
+            "POST", f"/teams/{team_id}/notifications/{notification_id}/read"
+        )
+        return _notification(payload)
 
     def _request(self, method: str, path: str, json: dict | None = None, require_auth: bool = True):
         if require_auth and not self._token:
@@ -561,4 +624,20 @@ def _notification_preference(row: dict) -> NotificationPreference:
         event_kind=row["event_kind"],
         enabled=row["enabled"],
         created_at=row["created_at"],
+        delivery=row.get("delivery", "realtime"),
+    )
+
+
+def _notification(row: dict) -> Notification:
+    return Notification(
+        id=row["id"],
+        team_id=row["team_id"],
+        recipient_user_id=row["recipient_user_id"],
+        event_kind=row["event_kind"],
+        title=row["title"],
+        body=row["body"],
+        subject_type=row.get("subject_type"),
+        subject_id=row.get("subject_id"),
+        created_at=row["created_at"],
+        read_at=row.get("read_at"),
     )

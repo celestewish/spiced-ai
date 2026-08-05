@@ -147,17 +147,103 @@ def test_routing_rule_crud():
 
 
 def test_set_notification_preference():
+    import json as _json
+
+    seen = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "PUT"
         assert request.url.path == "/teams/team1/notification-preferences/me"
+        seen["body"] = _json.loads(request.content)
         return httpx.Response(
             200,
             json={
                 "id": "p1", "team_id": "team1", "user_id": "u1",
                 "event_kind": "known_issue_opened", "enabled": False,
+                "delivery": "realtime",
                 "created_at": "2026-08-04T00:00:00Z",
             },
         )
 
     pref = _client(handler).set_notification_preference("team1", "known_issue_opened", False)
     assert pref.enabled is False
+    assert pref.delivery == "realtime"
+    assert seen["body"]["delivery"] == "realtime"
+
+
+def test_set_notification_preference_with_digest_cadence():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "p1", "team_id": "team1", "user_id": "u1",
+                "event_kind": "build_failed", "enabled": True,
+                "delivery": "hourly",
+                "created_at": "2026-08-04T00:00:00Z",
+            },
+        )
+
+    pref = _client(handler).set_notification_preference(
+        "team1", "build_failed", True, delivery="hourly"
+    )
+    assert pref.delivery == "hourly"
+
+
+# --- Notification Center: the actual inbox (Phase K) -------------------------
+
+
+def _notification_row(**overrides):
+    row = {
+        "id": "n1",
+        "team_id": "team1",
+        "recipient_user_id": "u2",
+        "event_kind": "team_task_assigned",
+        "title": "New task assigned to you",
+        "body": "Fix the flicker on the hub scene.",
+        "subject_type": "task",
+        "subject_id": "task1",
+        "created_at": "2026-08-05T00:00:00Z",
+        "read_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_create_notification_sends_expected_payload():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["method"] = request.method
+        return httpx.Response(201, json=_notification_row())
+
+    client = _client(handler)
+    notification = client.create_notification(
+        "team1", "u2", "team_task_assigned", "New task assigned to you",
+        "Fix the flicker on the hub scene.", subject_type="task", subject_id="task1",
+    )
+    assert seen["path"] == "/teams/team1/notifications"
+    assert seen["method"] == "POST"
+    assert notification.id == "n1"
+    assert notification.recipient_user_id == "u2"
+    assert notification.read_at is None
+
+
+def test_list_notifications():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/teams/team1/notifications"
+        assert request.method == "GET"
+        return httpx.Response(200, json=[_notification_row(), _notification_row(id="n2")])
+
+    notifications = _client(handler).list_notifications("team1")
+    assert [n.id for n in notifications] == ["n1", "n2"]
+
+
+def test_mark_notification_read():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/teams/team1/notifications/n1/read"
+        assert request.method == "POST"
+        return httpx.Response(200, json=_notification_row(read_at="2026-08-05T01:00:00Z"))
+
+    notification = _client(handler).mark_notification_read("team1", "n1")
+    assert notification.read_at == "2026-08-05T01:00:00Z"

@@ -1,7 +1,8 @@
-"""The main application window: sidebar · workspace · context panel."""
+"""The main application window: top bar · sidebar · workspace · context panel."""
 
 from __future__ import annotations
 
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.ui.build_scheduler import BuildScheduler
+from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
 from spiced.ui.screens.animation import AnimationScreen
 from spiced.ui.screens.art import ArtScreen
@@ -30,6 +32,7 @@ from spiced.ui.screens.settings import SettingsScreen
 from spiced.ui.screens.shaders_vfx import ShadersVfxScreen
 from spiced.ui.screens.team import TeamScreen
 from spiced.ui.screens.testing import TestingScreen
+from spiced.ui.top_bar import TopBar
 
 NAV_ITEMS = [
     "Dashboard",
@@ -58,9 +61,9 @@ NAV_ITEMS = [
     # discipline self-service, comment threads). Role-Based Dashboards (#4)
     # lives on the Context Panel instead (it's a summary, not its own
     # screen); Relevance-Based Notifications' routing config lives on the
-    # Settings screen (see SettingsScreen) rather than getting its own page,
-    # since Section 9's Notification Center (the actual inbox UI) is a
-    # later phase (Phase K) this one deliberately doesn't build.
+    # Settings screen (see SettingsScreen) rather than getting its own page
+    # -- the actual inbox UI (Phase K, section 9 part 1) is a bell icon in
+    # the new top bar (see ui.top_bar.TopBar), not a sidebar page.
     "Shaders/VFX",
     "Team",
     # Roadmap sits outside the tool pages above, next to Settings — per the
@@ -81,30 +84,144 @@ class MainWindow(QWidget):
         self.resize(1180, 760)
         self.setMinimumSize(920, 600)
 
-        root = QHBoxLayout(self)
+        # Top bar (Phase K, section 9 part 1, foundation): a thin strip
+        # above the existing three-region layout, holding the Multi-Project
+        # Switcher (next to the wordmark) and the Notification Center's
+        # bell icon (right-aligned) -- see ui.top_bar.TopBar.
+        root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root.setSpacing(12)
+
+        self._top_bar = TopBar(self._services)
+        root.addWidget(self._top_bar, 0)
+
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        root.addLayout(body, 1)
 
         self._context = ContextPanel(services)
         self._context.setFixedWidth(280)
 
-        root.addWidget(self._build_sidebar(), 0)
-        root.addWidget(self._build_workspace(), 1)
-        root.addWidget(self._context, 0)
+        body.addWidget(self._build_sidebar(), 0)
+        body.addWidget(self._build_workspace(), 1)
+        body.addWidget(self._context, 0)
 
         self._nav_buttons[0].setChecked(True)
         self._stack.setCurrentIndex(0)
 
+        # The top bar's project switcher fires the same projects_changed
+        # cascade the Projects screen's own selection already triggers, so
+        # every other screen updates exactly as it does today -- see
+        # ProjectsScreen.projects_changed's existing connections below.
+        self._top_bar.project_switched.connect(self._on_top_bar_project_switched)
+        self._projects_screen.projects_changed.connect(self._top_bar.refresh)
+        self._settings_screen.settings_changed.connect(self._top_bar.refresh)
+
+        # Command Palette / Quick Search (Ctrl+K on Windows/Linux, Cmd+K on
+        # macOS -- QKeySequence("Ctrl+K") maps the portable "Ctrl" text to
+        # each platform's own standard modifier).
+        self._command_palette = CommandPalette(self._build_palette_items, self)
+        self._palette_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        self._palette_shortcut.activated.connect(self._command_palette.open)
+
         # Automated Build Pipeline (Phase D): in-app-only nightly scheduler.
         # Lives for as long as this window does; a failure is a quiet Context
         # Panel note, a success (or failure) also refreshes Testing's history.
+        # It's also one of the Notification Center's wired event sources
+        # (Phase K, #a) -- see BuildScheduler._notify_build_failure, which
+        # creates a real Notification for a team-linked project alongside
+        # this quiet note (the note stays the only surfacing for a
+        # solo/local-only build, since Notifications require a team).
         self._build_scheduler = BuildScheduler(self._services, self)
         self._build_scheduler.build_failed.connect(self._context.show_build_failure)
         self._build_scheduler.build_report_saved.connect(self._testing_screen.refresh)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._build_scheduler.stop()
+        self._top_bar.stop()
         super().closeEvent(event)
+
+    def _on_top_bar_project_switched(self) -> None:
+        """Relay the top bar's switcher into the exact same cascade the
+        Projects screen's own selection change already triggers -- keeps
+        the Projects screen's list highlight in sync too, not just every
+        other screen's data."""
+        self._projects_screen.refresh()
+        self._projects_screen.projects_changed.emit()
+
+    def _build_palette_items(self) -> list[PaletteItem]:
+        """Built fresh on every Ctrl+K press (see CommandPalette.open) since
+        projects and recent items change over the app's lifetime.
+
+        Covers three representative recent-item types per spec (a recent
+        debug session, test run, and feedback batch for the active
+        project) -- each jumps to the screen that kind of record lives on,
+        since none of those screens has a "jump to this exact record" deep
+        link yet.
+        """
+        items: list[PaletteItem] = []
+        for index, name in enumerate(NAV_ITEMS):
+            items.append(
+                PaletteItem(
+                    kind="page",
+                    label=name,
+                    subtitle="Page",
+                    action=lambda i=index: self._stack.setCurrentIndex(i),
+                )
+            )
+        for project in self._services.projects.list_projects():
+            items.append(
+                PaletteItem(
+                    kind="project",
+                    label=project.name,
+                    subtitle="Switch to this project",
+                    action=lambda pid=project.id: self._switch_active_project(pid),
+                )
+            )
+
+        active = self._services.active_project()
+        if active is not None:
+            debugging_index = NAV_ITEMS.index("Debugging Buddy")
+            testing_index = NAV_ITEMS.index("Automated Testing")
+            feedback_index = NAV_ITEMS.index("Feedback Review")
+            for session in self._services.debugging.history(active.id, limit=3):
+                label = session.detected_error_type or session.summary or (
+                    f"Debug session #{session.id}"
+                )
+                items.append(
+                    PaletteItem(
+                        kind="recent",
+                        label=label,
+                        subtitle=f"Recent debug session ({session.created_at}) — Debugging Buddy",
+                        action=lambda i=debugging_index: self._stack.setCurrentIndex(i),
+                    )
+                )
+            for run in self._services.testing.history(active.id, limit=3):
+                label = run.source_filename or f"Test run #{run.id}"
+                items.append(
+                    PaletteItem(
+                        kind="recent",
+                        label=label,
+                        subtitle=f"Recent test run ({run.created_at}) — Automated Testing",
+                        action=lambda i=testing_index: self._stack.setCurrentIndex(i),
+                    )
+                )
+            for batch in self._services.feedback.history(active.id, limit=3):
+                label = batch.source_label or f"Feedback batch #{batch.id}"
+                items.append(
+                    PaletteItem(
+                        kind="recent",
+                        label=label,
+                        subtitle=f"Recent feedback batch ({batch.created_at}) — Feedback Review",
+                        action=lambda i=feedback_index: self._stack.setCurrentIndex(i),
+                    )
+                )
+        return items
+
+    def _switch_active_project(self, project_id: int) -> None:
+        self._services.set_active_project(project_id)
+        self._on_top_bar_project_switched()
+        self._top_bar.refresh()
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()

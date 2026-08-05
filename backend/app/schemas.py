@@ -235,6 +235,9 @@ class EventRoutingRuleOut(BaseModel):
 class NotificationPreferenceUpdate(BaseModel):
     event_kind: str
     enabled: bool = True
+    # Digest options (Phase K, section 9 part 1). Defaults to "realtime" so
+    # existing callers built before this field existed keep working.
+    delivery: Literal["realtime", "hourly", "daily"] = "realtime"
 
 
 class NotificationPreferenceOut(BaseModel):
@@ -245,4 +248,29 @@ class NotificationPreferenceOut(BaseModel):
     user_id: str
     event_kind: str
     enabled: bool
+    delivery: str
     created_at: datetime
+
+
+class NotificationCreate(BaseModel):
+    recipient_user_id: str
+    event_kind: str
+    title: str = Field(max_length=300)
+    body: str = Field(max_length=4000)
+    subject_type: str | None = None
+    subject_id: str | None = Field(default=None, max_length=100)
+
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    recipient_user_id: str
+    event_kind: str
+    title: str
+    body: str
+    subject_type: str | None
+    subject_id: str | None
+    created_at: datetime
+    read_at: datetime | None
