@@ -51,6 +51,7 @@ class RoadmapScreen(QWidget):
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)

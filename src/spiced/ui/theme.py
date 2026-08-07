@@ -330,6 +330,17 @@ QListWidget#ProgressTrailList::item {{
 }}
 
 QScrollArea {{ border: none; background: transparent; }}
+
+/* Every screen wraps its content in a QScrollArea, with the actual content
+   living in a plain QWidget passed to setWidget() (see e.g. dashboard.py's
+   `content = QWidget()`). That widget sits a level below QScrollArea's own
+   background rule above (it's a child of the scroll area's internal
+   viewport, not of QScrollArea directly, so the transparent rule above
+   never reached it) and was picking up Qt's raw default widget background
+   instead of the app's theme -- black under a dark OS theme, since nothing
+   here ever gave it an explicit color. Named consistently so every screen's
+   scroll content renders correctly regardless of the OS theme. */
+QWidget#ScrollContent {{ background: {p["CREAM"]}; }}
 """
 
 

@@ -43,6 +43,7 @@ class DashboardScreen(QWidget):
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         self._layout = QVBoxLayout(content)
         self._layout.setContentsMargins(28, 28, 28, 28)
@@ -256,6 +257,7 @@ def _card(object_name: str = "Card") -> QFrame:
 def _muted(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("Muted")
+    label.setWordWrap(True)
     return label
 
 

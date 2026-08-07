@@ -703,6 +703,7 @@ class TestingScreen(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         outer.addWidget(scroll)
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 12, 28, 28)
