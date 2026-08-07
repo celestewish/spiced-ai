@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -25,6 +24,7 @@ from spiced.connectors import unity_build
 from spiced.core.precommit_hook import ForeignHookExistsError, NotAGitRepoError
 from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.ui.auth_dialog import AuthDialog
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 _HHMM_PLACEHOLDER = "HH:MM, 24h (e.g. 02:00)"
 
@@ -70,7 +70,7 @@ class ProjectsScreen(QWidget):
         self._name_input = QLineEdit()
         self._name_input.setPlaceholderText("Project name (e.g. Moonlit Depths)")
         self._name_input.returnPressed.connect(self._create)
-        self._engine_input = QComboBox()
+        self._engine_input = ScrollSafeComboBox()
         self._engine_input.addItems(["Unity", "Godot", "Unreal", "Other"])
         self._create_btn = QPushButton("Create project")
         self._create_btn.clicked.connect(self._create)
@@ -178,6 +178,7 @@ class ProjectsScreen(QWidget):
         override = self._unity_editor_path_input.text().strip() or None
         self._services.projects.set_unity_test_run_settings(project.id, checked, override)
         self._update_unity_run_status()
+        self.projects_changed.emit()
 
     def _on_unity_editor_path_changed(self) -> None:
         project = self._services.active_project()
@@ -267,7 +268,7 @@ class ProjectsScreen(QWidget):
 
         platform_row = QHBoxLayout()
         platform_row.addWidget(QLabel("Default target platform:"))
-        self._build_platform_input = QComboBox()
+        self._build_platform_input = ScrollSafeComboBox()
         self._build_platform_input.addItems(list(unity_build.BUILD_TARGETS))
         self._build_platform_input.currentTextChanged.connect(self._on_build_platform_changed)
         platform_row.addWidget(self._build_platform_input)
@@ -298,6 +299,7 @@ class ProjectsScreen(QWidget):
         platform = self._build_platform_input.currentText()
         self._services.projects.set_build_pipeline_settings(project.id, checked, platform)
         self._update_build_pipeline_status()
+        self.projects_changed.emit()
 
     def _on_build_platform_changed(self, platform: str) -> None:
         project = self._services.active_project()
@@ -416,6 +418,7 @@ class ProjectsScreen(QWidget):
             return
         self._services.projects.set_precommit_review_settings(project.id, checked)
         self._update_precommit_status()
+        self.projects_changed.emit()
 
     def _on_precommit_install(self) -> None:
         project = self._services.active_project()
@@ -513,6 +516,7 @@ class ProjectsScreen(QWidget):
             return
         self._services.projects.set_design_doc_sync_settings(project.id, checked)
         self._update_design_doc_sync_status()
+        self.projects_changed.emit()
 
     def _update_design_doc_sync_status(self) -> None:
         project = self._services.active_project()
@@ -582,7 +586,7 @@ class ProjectsScreen(QWidget):
 
         link_row = QHBoxLayout()
         link_row.setSpacing(8)
-        self._team_select = QComboBox()
+        self._team_select = ScrollSafeComboBox()
         self._team_link_btn = QPushButton("Link active project")
         self._team_link_btn.clicked.connect(self._on_team_link_project)
         self._team_unlink_btn = QPushButton("Unlink")

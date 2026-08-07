@@ -17,7 +17,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -82,6 +81,7 @@ from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.comments_widget import CommentsWidget
 from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
@@ -730,10 +730,10 @@ class TestingScreen(QWidget):
         form = QFormLayout()
         self._title_input = QLineEdit()
         self._title_input.setPlaceholderText("e.g. Player takes damage from spikes")
-        self._category_input = QComboBox()
+        self._category_input = ScrollSafeComboBox()
         self._category_input.addItems(CATEGORIES)
         self._category_input.setCurrentText("General")
-        self._priority_input = QComboBox()
+        self._priority_input = ScrollSafeComboBox()
         self._priority_input.addItems(PRIORITIES)
         self._priority_input.setCurrentText("Medium")
         self._steps_input = QPlainTextEdit()
@@ -785,7 +785,7 @@ class TestingScreen(QWidget):
 
         status_row = QHBoxLayout()
         status_row.addWidget(QLabel("Set status:"))
-        self._status_input = QComboBox()
+        self._status_input = ScrollSafeComboBox()
         self._status_input.addItems(STATUSES)
         self._status_input.currentTextChanged.connect(self._on_status_choice_changed)
         status_row.addWidget(self._status_input)
@@ -819,7 +819,7 @@ class TestingScreen(QWidget):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Platform:"))
-        self._unity_platform_input = QComboBox()
+        self._unity_platform_input = ScrollSafeComboBox()
         self._unity_platform_input.addItems([EDIT_MODE, PLAY_MODE, _BOTH_PLATFORMS])
         row.addWidget(self._unity_platform_input)
         row.addStretch(1)
@@ -1175,7 +1175,7 @@ class TestingScreen(QWidget):
 
         hw_row = QHBoxLayout()
         hw_row.addWidget(QLabel("Target hardware:"))
-        self._hardware_input = QComboBox()
+        self._hardware_input = ScrollSafeComboBox()
         self._hardware_input.addItem(_NO_HARDWARE)
         self._hardware_input.addItems(available_tiers())
         hw_row.addWidget(self._hardware_input, 1)
@@ -1306,7 +1306,7 @@ class TestingScreen(QWidget):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Target platform:"))
-        self._build_platform_input = QComboBox()
+        self._build_platform_input = ScrollSafeComboBox()
         self._build_platform_input.addItems(list(unity_build.BUILD_TARGETS))
         row.addWidget(self._build_platform_input)
         row.addStretch(1)
@@ -1360,7 +1360,7 @@ class TestingScreen(QWidget):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Platform:"))
-        self._checklist_platform_input = QComboBox()
+        self._checklist_platform_input = ScrollSafeComboBox()
         for platform in PLATFORMS:
             self._checklist_platform_input.addItem(PLATFORM_LABELS[platform], platform)
         row.addWidget(self._checklist_platform_input)

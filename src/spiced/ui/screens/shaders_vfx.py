@@ -13,7 +13,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -34,6 +33,7 @@ from spiced.core.shader_performance_profiling import ShaderProfilingResult
 from spiced.core.visual_regression import UnreadableImageError, VisualRegressionResult
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.diff_viewer import DiffViewerDialog
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 
 class _ShaderProfilingWorker(QObject):
@@ -319,7 +319,7 @@ class ShadersVfxScreen(QWidget):
         # look, rather than only the numeric changed-pixel-ratio line.
         diff_viewer_row = QHBoxLayout()
         diff_viewer_row.addWidget(QLabel("View pair:"))
-        self._vr_pair_picker = QComboBox()
+        self._vr_pair_picker = ScrollSafeComboBox()
         self._vr_pair_picker.setEnabled(False)
         diff_viewer_row.addWidget(self._vr_pair_picker, 1)
         self._vr_open_diff_btn = QPushButton("Open diff viewer")

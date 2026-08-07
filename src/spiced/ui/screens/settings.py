@@ -7,7 +7,6 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QFormLayout,
     QHBoxLayout,
     QKeySequenceEdit,
@@ -41,6 +40,7 @@ from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.screens.team import SUGGESTED_DISCIPLINES
 from spiced.ui.theme import TEXT_SIZES, build_stylesheet
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 
 class _RoutingLoadWorker(QObject):
@@ -137,14 +137,14 @@ class SettingsScreen(QWidget):
         form.setSpacing(12)
 
         # AI provider (OpenAI is the default; mock is free/offline; Gemini optional)
-        self._provider_box = QComboBox()
+        self._provider_box = ScrollSafeComboBox()
         self._provider_box.addItems(available_providers())
         self._provider_box.setCurrentText(self._services.provider_name())
         self._provider_box.currentTextChanged.connect(self._on_provider_changed)
         form.addRow("AI provider", self._provider_box)
 
         # Mock plan
-        self._plan_box = QComboBox()
+        self._plan_box = ScrollSafeComboBox()
         for plan in PLANS.values():
             self._plan_box.addItem(plan.label, plan.key)
         current_key = self._services.usage.current_plan().key
@@ -379,7 +379,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(note)
 
         form = QFormLayout()
-        self._text_size_box = QComboBox()
+        self._text_size_box = ScrollSafeComboBox()
         for size_key in TEXT_SIZES:
             self._text_size_box.addItem(size_key.capitalize(), size_key)
         idx = self._text_size_box.findData(self._services.accessibility_text_size())
@@ -476,7 +476,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(self._shortcuts_list)
 
         row = QHBoxLayout()
-        self._shortcut_action_box = QComboBox()
+        self._shortcut_action_box = ScrollSafeComboBox()
         for action in SHORTCUT_ACTIONS:
             self._shortcut_action_box.addItem(action.label, action.id)
         self._shortcut_action_box.currentIndexChanged.connect(self._on_shortcut_action_changed)
@@ -575,10 +575,10 @@ class SettingsScreen(QWidget):
         layout.addWidget(self._routing_list)
 
         row = QHBoxLayout()
-        self._routing_event_box = QComboBox()
+        self._routing_event_box = ScrollSafeComboBox()
         self._routing_event_box.addItems(KNOWN_EVENT_KINDS)
         row.addWidget(self._routing_event_box, 1)
-        self._routing_discipline_box = QComboBox()
+        self._routing_discipline_box = ScrollSafeComboBox()
         self._routing_discipline_box.setEditable(True)
         self._routing_discipline_box.addItems(SUGGESTED_DISCIPLINES)
         row.addWidget(self._routing_discipline_box, 1)
@@ -624,14 +624,14 @@ class SettingsScreen(QWidget):
         layout.addWidget(self._pref_list)
 
         row = QHBoxLayout()
-        self._pref_event_box = QComboBox()
+        self._pref_event_box = ScrollSafeComboBox()
         self._pref_event_box.addItems(KNOWN_EVENT_KINDS)
         row.addWidget(self._pref_event_box, 1)
-        self._pref_enabled_box = QComboBox()
+        self._pref_enabled_box = ScrollSafeComboBox()
         self._pref_enabled_box.addItem("Enabled", True)
         self._pref_enabled_box.addItem("Disabled", False)
         row.addWidget(self._pref_enabled_box, 1)
-        self._pref_delivery_box = QComboBox()
+        self._pref_delivery_box = ScrollSafeComboBox()
         self._pref_delivery_box.addItems(["realtime", "hourly", "daily"])
         row.addWidget(self._pref_delivery_box, 1)
         self._pref_save_btn = QPushButton("Save preference")
