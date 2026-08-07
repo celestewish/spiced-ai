@@ -18,7 +18,6 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -36,6 +35,7 @@ from spiced.backend_client import config as backend_config
 from spiced.backend_client.api_client import TeamTask
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.comments_widget import CommentsWidget
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 STATUSES = ["open", "in_progress", "done"]
 STATUS_LABELS = {"open": "Open", "in_progress": "In Progress", "done": "Done"}
@@ -118,6 +118,7 @@ class TeamScreen(QWidget):
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)
@@ -221,7 +222,7 @@ class TeamScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._discipline_input = QComboBox()
+        self._discipline_input = ScrollSafeComboBox()
         self._discipline_input.setEditable(True)
         self._discipline_input.addItem("")
         self._discipline_input.addItems(SUGGESTED_DISCIPLINES)
@@ -289,7 +290,7 @@ class TeamScreen(QWidget):
         self._new_task_title = QLineEdit()
         self._new_task_title.setPlaceholderText("Task title")
         row.addWidget(self._new_task_title, 2)
-        self._new_task_discipline = QComboBox()
+        self._new_task_discipline = ScrollSafeComboBox()
         self._new_task_discipline.setEditable(True)
         self._new_task_discipline.addItem("")
         self._new_task_discipline.addItems(SUGGESTED_DISCIPLINES)
@@ -382,7 +383,7 @@ class TeamScreen(QWidget):
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Move to:"))
-        self._move_status_box = QComboBox()
+        self._move_status_box = ScrollSafeComboBox()
         for status in STATUSES:
             self._move_status_box.addItem(STATUS_LABELS[status], status)
         row.addWidget(self._move_status_box)

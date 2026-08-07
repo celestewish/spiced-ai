@@ -17,10 +17,11 @@ active-project-setting logic of its own.
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel
 
 from spiced.app.services import Services
 from spiced.ui.notification_center import NotificationBell
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 
 class TopBar(QFrame):
@@ -41,7 +42,7 @@ class TopBar(QFrame):
         brand.setObjectName("Brand")
         layout.addWidget(brand)
 
-        self._project_switcher = QComboBox()
+        self._project_switcher = ScrollSafeComboBox()
         self._project_switcher.setMinimumWidth(220)
         self._project_switcher.setToolTip("Switch active project")
         self._project_switcher.currentIndexChanged.connect(self._on_switcher_changed)

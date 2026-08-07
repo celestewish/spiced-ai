@@ -23,10 +23,25 @@ def main() -> int:
     _load_env()
 
     # Imported here so non-GUI tooling can import spiced.app.services without Qt.
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
 
     from spiced.ui.main_window import MainWindow
     from spiced.ui.theme import build_stylesheet
+
+    # At a non-integer Windows display scale (125%, 175%, ...), Qt's default
+    # DPI-scale rounding can mismatch what Windows reports as the window's
+    # size against what Qt lays out internally when maximized -- content
+    # (including the fixed-width sidebar) overflows the actual visible
+    # window with no scrollbar to reveal the rest, since Qt itself believes
+    # everything fits within its own (wrongly rounded) viewport. PassThrough
+    # uses the exact scale factor instead of rounding to the nearest
+    # integer, which is Qt's own documented fix for this class of bug. Must
+    # be set before QApplication is constructed.
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
 
     app = QApplication(sys.argv)
     app.setApplicationName("Spiced")

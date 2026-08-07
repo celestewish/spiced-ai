@@ -17,7 +17,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -42,6 +41,7 @@ from spiced.core.contract_checklist import ProviderNotReadyError as ContractNotR
 from spiced.core.grant_finder import INFORMATIONAL_ONLY_NOTICE, find_grants
 from spiced.storage.budget_entries import FREQUENCIES
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 _USER_ROLE = 0x0100
 
@@ -117,6 +117,7 @@ class BusinessScreen(QWidget):
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)
@@ -293,7 +294,7 @@ class BusinessScreen(QWidget):
         self._budget_amount_input = QLineEdit()
         self._budget_amount_input.setPlaceholderText("Amount")
         form_row.addWidget(self._budget_amount_input, 1)
-        self._budget_frequency_input = QComboBox()
+        self._budget_frequency_input = ScrollSafeComboBox()
         self._budget_frequency_input.addItems(list(FREQUENCIES))
         form_row.addWidget(self._budget_frequency_input, 1)
         layout.addLayout(form_row)

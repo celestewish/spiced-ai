@@ -15,7 +15,6 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -42,6 +41,7 @@ from spiced.core.playtester_recruitment import RecruitmentDraftResult
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
 from spiced.storage.playtester_signups import STATUSES as SIGNUP_STATUSES
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
@@ -169,6 +169,7 @@ class FeedbackScreen(QWidget):
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setObjectName("ScrollContent")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)
@@ -493,7 +494,7 @@ class FeedbackScreen(QWidget):
 
         status_row = QHBoxLayout()
         status_row.addWidget(QLabel("Set status:"))
-        self._signup_status_input = QComboBox()
+        self._signup_status_input = ScrollSafeComboBox()
         self._signup_status_input.addItems(list(SIGNUP_STATUSES))
         status_row.addWidget(self._signup_status_input)
         self._signup_update_status_btn = QPushButton("Update")
@@ -614,7 +615,7 @@ class FeedbackScreen(QWidget):
 
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("Source:"))
-        self._pulse_source = QComboBox()
+        self._pulse_source = ScrollSafeComboBox()
         self._pulse_source.addItems(["mock", "discord"])
         self._pulse_source.currentTextChanged.connect(self._on_pulse_source_changed)
         source_row.addWidget(self._pulse_source, 1)
