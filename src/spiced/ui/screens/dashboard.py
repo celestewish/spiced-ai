@@ -7,10 +7,12 @@ never a claim the game is ready to ship; the developer stays in control.
 
 from __future__ import annotations
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,7 +22,15 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
-from spiced.core.dashboard import DashboardSummary, ModuleCard, NextAction
+from spiced.core.dashboard import (
+    DEMO_CANDIDATE,
+    NEEDS_REVIEW,
+    NOT_ENOUGH_DATA,
+    STABILIZING,
+    DashboardSummary,
+    ModuleCard,
+    NextAction,
+)
 from spiced.core.widget_preferences import (
     DASHBOARD_WIDGETS,
     load_preferences,
@@ -28,6 +38,17 @@ from spiced.core.widget_preferences import (
     ordered_visible_ids,
 )
 from spiced.ui.widget_customize_dialog import WidgetCustomizeDialog
+
+# Frutiger Aqua theme (ui.theme): same label -> state mapping as
+# ui.widgets.readiness_badge.ReadinessBadge, kept in sync so the Dashboard's
+# own readiness card and Testing's Build Health Score badge color-code
+# identically for the same label.
+_READINESS_STATE_BY_LABEL = {
+    NOT_ENOUGH_DATA: "neutral",
+    NEEDS_REVIEW: "bad",
+    STABILIZING: "warn",
+    DEMO_CANDIDATE: "good",
+}
 
 
 class DashboardScreen(QWidget):
@@ -132,6 +153,8 @@ class DashboardScreen(QWidget):
         layout.addWidget(heading)
         label = QLabel(summary.readiness.label)
         label.setObjectName("ReadinessLabel")
+        state = _READINESS_STATE_BY_LABEL.get(summary.readiness.label, "neutral")
+        label.setProperty("state", state)
         layout.addWidget(label)
         layout.addWidget(_muted("Why:"))
         for item in summary.readiness.evidence:
@@ -251,6 +274,14 @@ def _card(object_name: str = "Card") -> QFrame:
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(18, 16, 18, 16)
     layout.setSpacing(6)
+    # Real drop-shadow elevation -- Qt QSS has no box-shadow (see ui.theme's
+    # module docstring). Applied here rather than once via findChildren in
+    # ui.main_window, since these frames are rebuilt fresh on every refresh().
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    frame.setGraphicsEffect(shadow)
     return frame
 
 

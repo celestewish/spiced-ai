@@ -167,10 +167,24 @@ class NotificationBell(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self._button = QPushButton("\U0001f514")  # bell emoji, kept minimal per spec
-        self._button.setObjectName("Ghost")
+        # Frutiger Aqua theme (ui.theme): its own object name rather than the
+        # generic Ghost style, so it can get a proper warm glossy orb instead
+        # of a flat outline button.
+        self._button.setObjectName("BellButton")
         self._button.setToolTip("Notifications")
         self._button.clicked.connect(self._toggle_dropdown)
         layout.addWidget(self._button)
+
+        # Unread-count dot (design handoff: "gold unread dot with glow") --
+        # a small overlay positioned over the bell's top-right corner rather
+        # than baked into the button's own text, so it reads as a genuine
+        # glanceable badge. Parented to this frame (not the button) so its
+        # position tracks the frame's own resizeEvent below; the button text
+        # stays a plain bell (the count moves to the tooltip instead).
+        self._dot = QLabel(self)
+        self._dot.setObjectName("UnreadDot")
+        self._dot.setFixedSize(12, 12)
+        self._dot.hide()
 
         self._dropdown = NotificationDropdown(self)
         self._dropdown.notification_clicked.connect(self._on_notification_clicked)
@@ -179,6 +193,14 @@ class NotificationBell(QFrame):
         self._poll_timer.setInterval(_POLL_INTERVAL_MS)
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._position_dot()
+
+    def _position_dot(self) -> None:
+        self._dot.move(self._button.x() + self._button.width() - self._dot.width() - 2, 2)
+        self._dot.raise_()
 
     def stop(self) -> None:
         self._poll_timer.stop()
@@ -257,9 +279,11 @@ class NotificationBell(QFrame):
         self._dropdown.set_status("Couldn't reach the Spiced backend.")
 
     def _update_badge(self, unread_count: int = 0) -> None:
-        self._button.setText(
-            "\U0001f514" if not unread_count else f"\U0001f514 {unread_count}"
+        self._button.setToolTip(
+            "Notifications" if not unread_count else f"Notifications ({unread_count} unread)"
         )
+        self._dot.setVisible(bool(unread_count))
+        self._position_dot()
 
     def _toggle_dropdown(self) -> None:
         if self._dropdown.isVisible():

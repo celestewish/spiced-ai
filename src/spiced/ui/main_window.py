@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPaintEvent, QRadialGradient, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -35,6 +37,21 @@ from spiced.ui.screens.team import TeamScreen
 from spiced.ui.screens.testing import TestingScreen
 from spiced.ui.shortcuts_cheatsheet import ShortcutsCheatSheet
 from spiced.ui.top_bar import TopBar
+from spiced.ui.widgets.mascot_logo import MascotLogo
+
+# Frutiger Aqua ambient background (MainWindow.paintEvent): two soft radial
+# "glow" blobs -- one warm (echoing the sunset horizon/mascot), one cool
+# (echoing the aqua accent) -- sitting behind the sidebar/workspace/context
+# panel chrome, per the design handoff. Static, not animated -- see
+# ui.theme's module docstring on why (no animation infra in this codebase).
+_GLOW_WARM = QColor(255, 240, 200, 130)
+_GLOW_COOL = QColor(127, 231, 255, 90)
+_TWINKLE = QColor(255, 255, 255, 160)
+# Card/ReadinessCard frames are dashboard.py's -- rebuilt fresh on every
+# refresh(), so they get their own shadow applied at construction time (see
+# dashboard.py's _card()) rather than here, where a one-time findChildren
+# pass would only ever catch the very first set built.
+_SHADOWED_FRAME_NAMES = {"Panel", "Sidebar", "ContextPanel", "TopBar"}
 
 NAV_ITEMS = [
     "Dashboard",
@@ -85,6 +102,11 @@ class MainWindow(QWidget):
         self.setWindowTitle("Spiced")
         self.resize(1180, 760)
         self.setMinimumSize(920, 600)
+        # Frutiger Aqua theme (ui.theme): lets the #Root QSS rule (the
+        # sunset-gradient shell) actually paint -- a plain QWidget subclass
+        # doesn't auto-paint a stylesheet background otherwise. paintEvent
+        # below then layers the ambient glow blobs on top of it.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         # Top bar (Phase K, section 9 part 1, foundation): a thin strip
         # above the existing three-region layout, holding the Multi-Project
@@ -145,6 +167,60 @@ class MainWindow(QWidget):
         self._build_scheduler = BuildScheduler(self._services, self)
         self._build_scheduler.build_failed.connect(self._context.show_build_failure)
         self._build_scheduler.build_report_saved.connect(self._testing_screen.refresh)
+
+        self._apply_glass_elevation()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 (Qt override)
+        """Paint the sunset-gradient shell (via the #Root QSS rule, see
+        WA_StyledBackground above) then layer two soft ambient "glow" blobs
+        and a few static twinkle dots on top -- Qt then draws the
+        sidebar/workspace/context-panel chrome as normal child widgets over
+        this, so the glow only shows through the gaps/margins around them,
+        matching the design handoff's "z-index 0 behind the chrome" glow
+        blobs.
+        """
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        warm_cx, warm_cy, warm_r = self.width() * 0.86, self.height() * 0.08, 420
+        warm = QRadialGradient(warm_cx, warm_cy, warm_r)
+        warm.setColorAt(0.0, _GLOW_WARM)
+        warm.setColorAt(1.0, QColor(_GLOW_WARM.red(), _GLOW_WARM.green(), _GLOW_WARM.blue(), 0))
+        painter.setBrush(warm)
+        painter.drawEllipse(
+            int(warm_cx - warm_r), int(warm_cy - warm_r), int(warm_r * 2), int(warm_r * 2)
+        )
+
+        cool_cx, cool_cy, cool_r = self.width() * 0.1, self.height() * 0.94, 520
+        cool = QRadialGradient(cool_cx, cool_cy, cool_r)
+        cool.setColorAt(0.0, _GLOW_COOL)
+        cool.setColorAt(1.0, QColor(_GLOW_COOL.red(), _GLOW_COOL.green(), _GLOW_COOL.blue(), 0))
+        painter.setBrush(cool)
+        painter.drawEllipse(
+            int(cool_cx - cool_r), int(cool_cy - cool_r), int(cool_r * 2), int(cool_r * 2)
+        )
+
+        painter.setBrush(_TWINKLE)
+        for x_frac, y_frac, radius in ((0.55, 0.12, 2.4), (0.68, 0.22, 1.6), (0.4, 0.06, 1.8)):
+            cx, cy = self.width() * x_frac, self.height() * y_frac
+            diameter = int(radius * 2)
+            painter.drawEllipse(int(cx - radius), int(cy - radius), diameter, diameter)
+
+    def _apply_glass_elevation(self) -> None:
+        """Real drop-shadow elevation on the glass panels/cards -- Qt QSS has
+        no ``box-shadow`` (see ui.theme's module docstring), so this is done
+        in code instead, in one central place rather than touching every one
+        of the 14 screen files that build a #Card."""
+        for frame in self.findChildren(QFrame):
+            if frame.objectName() not in _SHADOWED_FRAME_NAMES:
+                continue
+            shadow = QGraphicsDropShadowEffect(frame)
+            shadow.setBlurRadius(24)
+            shadow.setOffset(0, 6)
+            shadow.setColor(QColor(20, 10, 40, 90))
+            frame.setGraphicsEffect(shadow)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._build_scheduler.stop()
@@ -312,9 +388,14 @@ class MainWindow(QWidget):
         layout.setContentsMargins(14, 18, 14, 18)
         layout.setSpacing(4)
 
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(8)
+        brand_row.addWidget(MascotLogo(34))
         brand = QLabel("Spiced")
         brand.setObjectName("Brand")
-        layout.addWidget(brand)
+        brand_row.addWidget(brand)
+        brand_row.addStretch(1)
+        layout.addLayout(brand_row)
         tagline = QLabel("Your calm dev companion")
         tagline.setObjectName("Tagline")
         tagline.setWordWrap(True)

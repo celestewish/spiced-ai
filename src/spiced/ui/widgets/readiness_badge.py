@@ -17,8 +17,25 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from spiced.core.dashboard import ReadinessAssessment
+from spiced.core.dashboard import (
+    DEMO_CANDIDATE,
+    NEEDS_REVIEW,
+    NOT_ENOUGH_DATA,
+    STABILIZING,
+    ReadinessAssessment,
+)
 from spiced.ui.widgets.source_link import _ExpanderMixin
+
+# Frutiger Aqua theme (ui.theme): a color-coded gel pill instead of plain
+# text -- keyed off the same label strings core.dashboard already returns,
+# so neither call site (dashboard.py, testing.py) needs to change. Any label
+# not in this map (there shouldn't be one) falls back to "neutral".
+_STATE_BY_LABEL = {
+    NOT_ENOUGH_DATA: "neutral",
+    NEEDS_REVIEW: "bad",
+    STABILIZING: "warn",
+    DEMO_CANDIDATE: "good",
+}
 
 
 class ReadinessBadge(_ExpanderMixin, QFrame):
@@ -52,10 +69,12 @@ class ReadinessBadge(_ExpanderMixin, QFrame):
     ) -> None:
         if readiness is None:
             self._label.setText("Build health: no active project")
+            self._set_state("neutral")
             self._body.setText("Select an active project on the Projects screen.")
             return
 
         self._label.setText(f"Build health: {readiness.label}")
+        self._set_state(_STATE_BY_LABEL.get(readiness.label, "neutral"))
         lines = ["Why:"]
         lines += [f"• {item}" for item in readiness.evidence] or ["• (no evidence yet)"]
         lines += [f"Note: {c}" for c in readiness.caveats]
@@ -66,3 +85,11 @@ class ReadinessBadge(_ExpanderMixin, QFrame):
                 "built yet; this label still reflects only your local data."
             )
         self._body.setText("\n".join(lines))
+
+    def _set_state(self, state: str) -> None:
+        """Re-applies the ``QLabel#ReadinessLabel[state="..."]`` QSS rule
+        (ui.theme) -- Qt only re-evaluates dynamic-property selectors after
+        an explicit unpolish/polish, not just on setProperty."""
+        self._label.setProperty("state", state)
+        self._label.style().unpolish(self._label)
+        self._label.style().polish(self._label)

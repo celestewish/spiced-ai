@@ -44,6 +44,12 @@ Repository = "https://github.com/celestewish/spiced-ai"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Bundled Baloo 2 / Nunito font files (Frutiger Aqua theme, ui/theme.py) --
+# self-hosted rather than fetched at runtime, since Spiced is an offline-first
+# desktop app. See ui/assets/fonts/ for the SIL OFL license texts.
+[tool.setuptools.package-data]
+spiced = ["ui/assets/fonts/*.ttf"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

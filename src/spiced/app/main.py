@@ -19,6 +19,23 @@ def _load_env() -> None:
     load_dotenv()
 
 
+def _register_bundled_fonts() -> None:
+    """Register the Baloo 2 / Nunito variable fonts (ui/assets/fonts/) with
+    Qt's font database. Self-hosted rather than fetched at runtime -- Spiced
+    is offline-first, and Qt/QSS has no equivalent of a CSS @font-face web
+    request anyway. Missing/failed files are skipped quietly: the QSS in
+    ui.theme still names these families, so a missing font just falls back
+    to the platform default rather than crashing the app.
+    """
+    from pathlib import Path
+
+    from PySide6.QtGui import QFontDatabase
+
+    fonts_dir = Path(__file__).resolve().parent.parent / "ui" / "assets" / "fonts"
+    for font_file in sorted(fonts_dir.glob("*.ttf")):
+        QFontDatabase.addApplicationFont(str(font_file))
+
+
 def main() -> int:
     _load_env()
 
@@ -45,6 +62,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Spiced")
+    _register_bundled_fonts()
 
     services = Services()
     # In-App Accessibility Settings (Phase L, Core tier): apply whatever was
