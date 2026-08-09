@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QKeySequenceEdit,
     QLabel,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -40,6 +39,7 @@ from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.screens.team import SUGGESTED_DISCIPLINES
 from spiced.ui.theme import TEXT_SIZES, build_stylesheet
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 
@@ -289,8 +289,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(test_desc)
 
         row = QHBoxLayout()
-        self._test_btn = QPushButton("Send test prompt")
-        self._test_btn.setObjectName("Ghost")
+        self._test_btn = PillButton("Send test prompt", ghost=True)
         self._test_btn.clicked.connect(self._on_test)
         row.addWidget(self._test_btn)
         row.addStretch(1)
@@ -486,12 +485,11 @@ class SettingsScreen(QWidget):
         self._shortcut_edit = QKeySequenceEdit()
         row.addWidget(self._shortcut_edit, 1)
 
-        save_btn = QPushButton("Save binding")
+        save_btn = PillButton("Save binding")
         save_btn.clicked.connect(self._on_save_shortcut)
         row.addWidget(save_btn)
 
-        reset_btn = QPushButton("Reset to default")
-        reset_btn.setObjectName("Ghost")
+        reset_btn = PillButton("Reset to default", ghost=True)
         reset_btn.clicked.connect(self._on_reset_shortcut)
         row.addWidget(reset_btn)
         layout.addLayout(row)
@@ -583,7 +581,7 @@ class SettingsScreen(QWidget):
         self._routing_discipline_box.setEditable(True)
         self._routing_discipline_box.addItems(SUGGESTED_DISCIPLINES)
         row.addWidget(self._routing_discipline_box, 1)
-        self._routing_add_btn = QPushButton("Add rule")
+        self._routing_add_btn = PillButton("Add rule")
         self._routing_add_btn.clicked.connect(self._on_add_routing_rule)
         row.addWidget(self._routing_add_btn)
         layout.addLayout(row)
@@ -635,7 +633,7 @@ class SettingsScreen(QWidget):
         self._pref_delivery_box = ScrollSafeComboBox()
         self._pref_delivery_box.addItems(["realtime", "hourly", "daily"])
         row.addWidget(self._pref_delivery_box, 1)
-        self._pref_save_btn = QPushButton("Save preference")
+        self._pref_save_btn = PillButton("Save preference")
         self._pref_save_btn.clicked.connect(self._on_save_preference)
         row.addWidget(self._pref_save_btn)
         layout.addLayout(row)

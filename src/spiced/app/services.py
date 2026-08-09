@@ -177,7 +177,6 @@ class Services:
         self.version_check = VersionCheckService(VersionCheckReportRepository(self.db))
         self.code_health = CodeHealthService(CodeHealthReportRepository(self.db))
         self.community_pulse = CommunityPulseService(CommunityPulseRepository(self.db))
-        self.dashboard = DashboardService(self.debugging, self.testing, self.feedback)
         self.demo = DemoDataService(self.db)
 
         # Build & Release Automation + Asset Pipeline (Phase D, section 6).
@@ -202,6 +201,12 @@ class Services:
             SessionSummaryRepository(self.db), self.testing, self.feedback
         )
         self.app_started_at = now_sqlite()
+
+        # Depends on self.regression and self.session_summaries above, so it
+        # has to be built after both -- see DashboardService.summarize.
+        self.dashboard = DashboardService(
+            self.debugging, self.testing, self.feedback, self.regression, self.session_summaries
+        )
 
         # Code & Repo Hygiene + Systems & Balance (Phase E, section 6).
         self.dependency_check = DependencyCheckService(DependencyCheckReportRepository(self.db))
@@ -557,6 +562,27 @@ class Services:
             return self.projects.get_project(project_id)
         except KeyError:
             return None
+
+    def display_name(self) -> str:
+        """A real, non-fabricated name for the Dashboard's "Welcome back"
+        greeting. Solo-Dev Mode (the default) has no account at all, so
+        there's no app-level identity to draw on there -- this prefers the
+        Small-Team Mode signed-in email's local part when logged in, and
+        otherwise falls back to the actual OS account name (the one real
+        piece of "who is this" Spiced can see without requiring a sign-in).
+        Never returns a hardcoded or placeholder name."""
+        user = self.auth.current_user()
+        if user is not None and user.email:
+            return user.email.split("@", 1)[0]
+        try:
+            import getpass
+
+            name = getpass.getuser()
+            if name:
+                return name
+        except Exception:
+            pass
+        return "dev"
 
     def set_active_project(self, project_id: int | None) -> None:
         if project_id is None:

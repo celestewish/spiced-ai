@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +32,7 @@ from spiced.backend_client.api_client import Notification, NotificationPreferenc
 from spiced.core.notification_center import bucket_by_cadence
 from spiced.storage.projects import Project
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
 
 # Frequent enough that a new notification feels reasonably live, cheap
 # enough to poll continuously in the background.
@@ -166,7 +166,7 @@ class NotificationBell(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self._button = QPushButton("\U0001f514")  # bell emoji, kept minimal per spec
+        self._button = PillButton("\U0001f514", radius=18)  # bell emoji, kept minimal per spec
         # Frutiger Aqua theme (ui.theme): its own object name rather than the
         # generic Ghost style, so it can get a proper warm glossy orb instead
         # of a flat outline button.

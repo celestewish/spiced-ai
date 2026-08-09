@@ -1,18 +1,31 @@
-"""Projects screen: create projects, pick one as active, connect a Unity folder."""
+"""Projects screen: create projects, pick one as active, connect a Unity folder.
+
+Master-detail layout (Frutiger Aqua redesign): a left-hand project picker
+(create form + a scrollable list of glass-card rows, active one aqua-
+highlighted) drives a right-hand detail column for whichever project is
+active. The four opt-in settings (Run Unity Tests, Build Pipeline,
+Pre-Commit Review, Design Doc Sync) are collapsible accordion sections
+(``ui.widgets.accordion.AccordionSection``) so scanning what's on doesn't
+require expanding anything, and only one stays open at a time to keep the
+column short. This is a layout/disclosure change only -- every handler and
+``_update_*_status`` method below keeps its original settings logic
+unchanged; the only new responsibility they pick up is also syncing a small
+On/Off status pill in the section's collapsed header.
+"""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -23,7 +36,10 @@ from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedEr
 from spiced.connectors import unity_build
 from spiced.core.precommit_hook import ForeignHookExistsError, NotAGitRepoError
 from spiced.core.unity_test_runner import resolve_unity_editor
+from spiced.storage.projects import Project
 from spiced.ui.auth_dialog import AuthDialog
+from spiced.ui.widgets.accordion import AccordionSection
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 _HHMM_PLACEHOLDER = "HH:MM, 24h (e.g. 02:00)"
@@ -38,24 +54,15 @@ class ProjectsScreen(QWidget):
         super().__init__()
         self._services = services
         self._projects = services.projects
+        self._accordions: list[AccordionSection] = []
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        outer.addWidget(scroll)
-
-        content = QWidget()
-        content.setObjectName("ScrollContent")
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(14)
+        outer.setContentsMargins(28, 28, 28, 28)
+        outer.setSpacing(14)
 
         title = QLabel("Projects")
         title.setObjectName("ScreenTitle")
-        layout.addWidget(title)
+        outer.addWidget(title)
 
         intro = QLabel(
             "Add a game project to keep Spiced's help organized. Pick one as active, then "
@@ -63,82 +70,132 @@ class ProjectsScreen(QWidget):
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
-        layout.addWidget(intro)
+        outer.addWidget(intro)
 
-        # Create form
-        form = QHBoxLayout()
-        form.setSpacing(8)
+        columns = QHBoxLayout()
+        columns.setSpacing(18)
+        outer.addLayout(columns, 1)
+        columns.addWidget(self._build_left_column(), 0)
+        columns.addWidget(self._build_right_column(), 1)
+
+        self.refresh()
+
+    # --- Left column: project picker ----------------------------------------
+
+    def _build_left_column(self) -> QWidget:
+        column = QWidget()
+        column.setFixedWidth(300)
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        new_card = _card()
+        new_layout = new_card.layout()
+        new_heading = QLabel("New project")
+        new_heading.setObjectName("CardTitle")
+        new_layout.addWidget(new_heading)
+
         self._name_input = QLineEdit()
         self._name_input.setPlaceholderText("Project name (e.g. Moonlit Depths)")
         self._name_input.returnPressed.connect(self._create)
+        new_layout.addWidget(self._name_input)
         self._engine_input = ScrollSafeComboBox()
         self._engine_input.addItems(["Unity", "Godot", "Unreal", "Other"])
-        self._create_btn = QPushButton("Create project")
+        new_layout.addWidget(self._engine_input)
+        self._create_btn = PillButton("Create project")
         self._create_btn.clicked.connect(self._create)
-        form.addWidget(self._name_input, 3)
-        form.addWidget(self._engine_input, 1)
-        form.addWidget(self._create_btn, 0)
-        layout.addLayout(form)
+        new_layout.addWidget(self._create_btn)
 
         # Explicit, safe demo loader. Seeds one bundled sample project so every
         # screen has realistic data. No Unity, no AI, no network — and it never
         # touches projects you created yourself.
-        demo_row = QHBoxLayout()
-        demo_row.setSpacing(8)
-        self._demo_btn = QPushButton("Load demo project")
-        self._demo_btn.setObjectName("Ghost")
+        self._demo_btn = PillButton("Load demo project", ghost=True)
         self._demo_btn.clicked.connect(self._load_demo)
-        demo_row.addWidget(self._demo_btn, 0)
-        demo_hint = QLabel(
-            "Adds a bundled sample project (no Unity files, nothing sent anywhere) so you can "
-            "explore the Dashboard and every screen right away."
-        )
-        demo_hint.setObjectName("Muted")
-        demo_hint.setWordWrap(True)
-        demo_row.addWidget(demo_hint, 1)
-        layout.addLayout(demo_row)
+        new_layout.addWidget(self._demo_btn)
+        layout.addWidget(new_card)
 
         section = QLabel("Your projects")
         section.setObjectName("SectionTitle")
         layout.addWidget(section)
 
-        self._list = QListWidget()
-        self._list.currentItemChanged.connect(self._on_selection_changed)
-        layout.addWidget(self._list, 1)
-
         self._empty = QLabel("No projects yet. Create your first one above.")
         self._empty.setObjectName("Muted")
+        self._empty.setWordWrap(True)
         layout.addWidget(self._empty)
 
-        # Active-project detail + Unity folder controls
-        self._detail = QLabel()
-        self._detail.setObjectName("Muted")
-        self._detail.setWordWrap(True)
-        layout.addWidget(self._detail)
+        list_scroll = QScrollArea()
+        list_scroll.setWidgetResizable(True)
+        list_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        list_content = QWidget()
+        list_content.setObjectName("ScrollContent")
+        self._project_list_layout = QVBoxLayout(list_content)
+        self._project_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._project_list_layout.setSpacing(8)
+        self._project_list_layout.addStretch(1)
+        list_scroll.setWidget(list_content)
+        layout.addWidget(list_scroll, 1)
 
+        return column
+
+    # --- Right column: active project detail --------------------------------
+
+    def _build_right_column(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        content.setObjectName("ScrollContent")
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        header_card = _card()
+        header_layout = header_card.layout()
+        self._detail = QLabel()
+        self._detail.setObjectName("CardTitle")
+        self._detail.setWordWrap(True)
+        header_layout.addWidget(self._detail)
         controls = QHBoxLayout()
         controls.setSpacing(8)
-        self._folder_btn = QPushButton("Choose Unity Folder…")
+        self._folder_btn = PillButton("Choose Unity Folder…")
         self._folder_btn.clicked.connect(self._choose_folder)
         controls.addWidget(self._folder_btn)
         controls.addStretch(1)
-        layout.addLayout(controls)
+        header_layout.addLayout(controls)
+        layout.addWidget(header_card)
 
-        self._build_unity_test_run(layout)
-        self._build_build_pipeline(layout)
-        self._build_precommit_review(layout)
-        self._build_design_doc_sync(layout)
+        self._build_unity_test_run(self._new_accordion(layout, "Run Unity Tests"))
+        self._build_build_pipeline(self._new_accordion(layout, "Build Pipeline"))
+        self._build_precommit_review(self._new_accordion(layout, "Pre-Commit Review"))
+        self._build_design_doc_sync(self._new_accordion(layout, "Design Doc Sync"))
+
         self._build_team_section(layout)
+        layout.addStretch(1)
+        return scroll
 
-        self.refresh()
+    def _new_accordion(self, layout: QVBoxLayout, title: str) -> AccordionSection:
+        accordion = AccordionSection(title)
+        accordion.toggled.connect(
+            lambda expanded, a=accordion: self._on_accordion_toggled(a, expanded)
+        )
+        self._accordions.append(accordion)
+        layout.addWidget(accordion)
+        return accordion
+
+    def _on_accordion_toggled(self, accordion: AccordionSection, expanded: bool) -> None:
+        """Only one settings section stays open at a time, per the redesign."""
+        if not expanded:
+            return
+        for other in self._accordions:
+            if other is not accordion:
+                other.set_expanded(False)
 
     # --- Run Unity Tests opt-in ---------------------------------------------
 
-    def _build_unity_test_run(self, layout: QVBoxLayout) -> None:
-        section = QLabel("Run Unity tests")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
-
+    def _build_unity_test_run(self, accordion: AccordionSection) -> None:
+        layout = accordion.body_layout
         intro = QLabel(
             "Off by default. When enabled, the Testing screen can launch this project's "
             "Unity Editor headlessly to run its tests — the one place Spiced executes an "
@@ -148,11 +205,13 @@ class ProjectsScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        self._unity_run_pill = _status_pill()
+        accordion.header_extra.addWidget(self._unity_run_pill)
         self._unity_run_toggle = QCheckBox(
             "Allow Spiced to run this project's Unity tests"
         )
         self._unity_run_toggle.toggled.connect(self._on_unity_run_toggle)
-        layout.addWidget(self._unity_run_toggle)
+        accordion.header_extra.addWidget(self._unity_run_toggle)
 
         override_row = QHBoxLayout()
         override_row.addWidget(QLabel("Unity Editor path (optional override):"))
@@ -162,7 +221,7 @@ class ProjectsScreen(QWidget):
         )
         self._unity_editor_path_input.editingFinished.connect(self._on_unity_editor_path_changed)
         override_row.addWidget(self._unity_editor_path_input, 1)
-        self._unity_editor_browse_btn = QPushButton("Browse…")
+        self._unity_editor_browse_btn = PillButton("Browse…")
         self._unity_editor_browse_btn.clicked.connect(self._on_browse_unity_editor)
         override_row.addWidget(self._unity_editor_browse_btn)
         layout.addLayout(override_row)
@@ -211,6 +270,7 @@ class ProjectsScreen(QWidget):
         self._unity_run_toggle.setChecked(bool(enabled))
         self._unity_run_toggle.blockSignals(False)
         self._unity_run_toggle.setEnabled(has_project)
+        _set_pill_state(self._unity_run_pill, bool(enabled))
 
         override = project.unity_editor_path_override if project else None
         self._unity_editor_path_input.blockSignals(True)
@@ -245,11 +305,8 @@ class ProjectsScreen(QWidget):
 
     # --- Automated Build Pipeline opt-in -------------------------------------
 
-    def _build_build_pipeline(self, layout: QVBoxLayout) -> None:
-        section = QLabel("Build Pipeline")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
-
+    def _build_build_pipeline(self, accordion: AccordionSection) -> None:
+        layout = accordion.body_layout
         intro = QLabel(
             "Off by default. When enabled, Spiced writes a standard Editor build script into "
             "this project (only if one doesn't already exist) and can trigger a headless build "
@@ -261,11 +318,13 @@ class ProjectsScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        self._build_pipeline_pill = _status_pill()
+        accordion.header_extra.addWidget(self._build_pipeline_pill)
         self._build_pipeline_toggle = QCheckBox(
             "Allow Spiced to write/trigger this project's build script"
         )
         self._build_pipeline_toggle.toggled.connect(self._on_build_pipeline_toggle)
-        layout.addWidget(self._build_pipeline_toggle)
+        accordion.header_extra.addWidget(self._build_pipeline_toggle)
 
         platform_row = QHBoxLayout()
         platform_row.addWidget(QLabel("Default target platform:"))
@@ -337,6 +396,7 @@ class ProjectsScreen(QWidget):
         self._build_pipeline_toggle.setChecked(bool(enabled))
         self._build_pipeline_toggle.blockSignals(False)
         self._build_pipeline_toggle.setEnabled(has_project)
+        _set_pill_state(self._build_pipeline_pill, bool(enabled))
 
         self._build_platform_input.blockSignals(True)
         if project and project.build_target_platform:
@@ -375,11 +435,8 @@ class ProjectsScreen(QWidget):
 
     # --- Pre-Commit Review opt-in -------------------------------------------
 
-    def _build_precommit_review(self, layout: QVBoxLayout) -> None:
-        section = QLabel("Pre-Commit Review")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
-
+    def _build_precommit_review(self, accordion: AccordionSection) -> None:
+        layout = accordion.body_layout
         intro = QLabel(
             "Off by default. When enabled, click \"Install hook\" to add a .git/hooks/"
             "pre-commit script to this project that flags obvious TODOs, stray Debug.Log/"
@@ -393,16 +450,17 @@ class ProjectsScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        self._precommit_pill = _status_pill()
+        accordion.header_extra.addWidget(self._precommit_pill)
         self._precommit_toggle = QCheckBox("Allow Spiced to install a pre-commit hook")
         self._precommit_toggle.toggled.connect(self._on_precommit_toggle)
-        layout.addWidget(self._precommit_toggle)
+        accordion.header_extra.addWidget(self._precommit_toggle)
 
         row = QHBoxLayout()
-        self._precommit_install_btn = QPushButton("Install hook")
+        self._precommit_install_btn = PillButton("Install hook")
         self._precommit_install_btn.clicked.connect(self._on_precommit_install)
         row.addWidget(self._precommit_install_btn)
-        self._precommit_uninstall_btn = QPushButton("Remove hook")
-        self._precommit_uninstall_btn.setObjectName("Ghost")
+        self._precommit_uninstall_btn = PillButton("Remove hook", ghost=True)
         self._precommit_uninstall_btn.clicked.connect(self._on_precommit_uninstall)
         row.addWidget(self._precommit_uninstall_btn)
         row.addStretch(1)
@@ -470,6 +528,7 @@ class ProjectsScreen(QWidget):
         self._precommit_toggle.setEnabled(has_project)
         self._precommit_install_btn.setEnabled(has_project)
         self._precommit_uninstall_btn.setEnabled(has_project)
+        _set_pill_state(self._precommit_pill, bool(enabled))
 
         if not has_project:
             self._precommit_status.setText("")
@@ -485,11 +544,8 @@ class ProjectsScreen(QWidget):
 
     # --- Design Doc Sync opt-in ----------------------------------------------
 
-    def _build_design_doc_sync(self, layout: QVBoxLayout) -> None:
-        section = QLabel("Design Doc Sync")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
-
+    def _build_design_doc_sync(self, accordion: AccordionSection) -> None:
+        layout = accordion.body_layout
         intro = QLabel(
             "Off by default. When enabled, the Debugging Buddy page's Design Drift section "
             "lets you upload or paste your own game's design doc for this project and compare "
@@ -500,11 +556,13 @@ class ProjectsScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        self._design_doc_sync_pill = _status_pill()
+        accordion.header_extra.addWidget(self._design_doc_sync_pill)
         self._design_doc_sync_toggle = QCheckBox(
             "Enable Design Doc Sync for this project"
         )
         self._design_doc_sync_toggle.toggled.connect(self._on_design_doc_sync_toggle)
-        layout.addWidget(self._design_doc_sync_toggle)
+        accordion.header_extra.addWidget(self._design_doc_sync_toggle)
 
         self._design_doc_sync_status = QLabel()
         self._design_doc_sync_status.setObjectName("Muted")
@@ -528,6 +586,7 @@ class ProjectsScreen(QWidget):
         self._design_doc_sync_toggle.setChecked(bool(enabled))
         self._design_doc_sync_toggle.blockSignals(False)
         self._design_doc_sync_toggle.setEnabled(has_project)
+        _set_pill_state(self._design_doc_sync_pill, bool(enabled))
 
         if not has_project:
             self._design_doc_sync_status.setText("")
@@ -544,9 +603,11 @@ class ProjectsScreen(QWidget):
     # --- Team Mode (opt-in) -------------------------------------------------
 
     def _build_team_section(self, layout: QVBoxLayout) -> None:
-        section = QLabel("Team")
-        section.setObjectName("SectionTitle")
-        layout.addWidget(section)
+        card = _card()
+        card_layout = card.layout()
+        heading = QLabel("Team")
+        heading.setObjectName("CardTitle")
+        card_layout.addWidget(heading)
 
         intro = QLabel(
             "Off by default. Sign in and link the active project to a team so "
@@ -555,53 +616,52 @@ class ProjectsScreen(QWidget):
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
-        layout.addWidget(intro)
+        card_layout.addWidget(intro)
 
         self._team_account_status = QLabel()
         self._team_account_status.setObjectName("Muted")
         self._team_account_status.setWordWrap(True)
-        layout.addWidget(self._team_account_status)
+        card_layout.addWidget(self._team_account_status)
 
         account_row = QHBoxLayout()
         account_row.setSpacing(8)
-        self._team_signin_btn = QPushButton("Sign in / Sign up")
-        self._team_signin_btn.setObjectName("Ghost")
+        self._team_signin_btn = PillButton("Sign in / Sign up", ghost=True)
         self._team_signin_btn.clicked.connect(self._on_team_sign_in)
         account_row.addWidget(self._team_signin_btn)
-        self._team_signout_btn = QPushButton("Sign out")
-        self._team_signout_btn.setObjectName("Ghost")
+        self._team_signout_btn = PillButton("Sign out", ghost=True)
         self._team_signout_btn.clicked.connect(self._on_team_sign_out)
         account_row.addWidget(self._team_signout_btn)
         account_row.addStretch(1)
-        layout.addLayout(account_row)
+        card_layout.addLayout(account_row)
 
         create_row = QHBoxLayout()
         create_row.setSpacing(8)
         self._team_name_input = QLineEdit()
         self._team_name_input.setPlaceholderText("New team name")
-        self._team_create_btn = QPushButton("Create team")
+        self._team_create_btn = PillButton("Create team")
         self._team_create_btn.clicked.connect(self._on_team_create)
         create_row.addWidget(self._team_name_input, 3)
         create_row.addWidget(self._team_create_btn, 0)
-        layout.addLayout(create_row)
+        card_layout.addLayout(create_row)
 
         link_row = QHBoxLayout()
         link_row.setSpacing(8)
         self._team_select = ScrollSafeComboBox()
-        self._team_link_btn = QPushButton("Link active project")
+        self._team_link_btn = PillButton("Link active project")
         self._team_link_btn.clicked.connect(self._on_team_link_project)
-        self._team_unlink_btn = QPushButton("Unlink")
-        self._team_unlink_btn.setObjectName("Ghost")
+        self._team_unlink_btn = PillButton("Unlink", ghost=True)
         self._team_unlink_btn.clicked.connect(self._on_team_unlink_project)
         link_row.addWidget(self._team_select, 3)
         link_row.addWidget(self._team_link_btn, 0)
         link_row.addWidget(self._team_unlink_btn, 0)
-        layout.addLayout(link_row)
+        card_layout.addLayout(link_row)
 
         self._team_link_status = QLabel()
         self._team_link_status.setObjectName("Muted")
         self._team_link_status.setWordWrap(True)
-        layout.addWidget(self._team_link_status)
+        card_layout.addWidget(self._team_link_status)
+
+        layout.addWidget(card)
 
     def _on_team_sign_in(self) -> None:
         if not self._services.auth.is_configured():
@@ -730,14 +790,13 @@ class ProjectsScreen(QWidget):
         )
         QMessageBox.information(self, project.name, message)
 
-    def _on_selection_changed(self, current: QListWidgetItem | None, _prev=None) -> None:
-        if current is None:
+    def _on_project_card_clicked(self, project_id: int) -> None:
+        active = self._services.active_project()
+        if active is not None and active.id == project_id:
             return
-        project_id = current.data(0x0100)  # Qt.UserRole
-        if project_id is None:
-            return
-        self._services.set_active_project(int(project_id))
+        self._services.set_active_project(project_id)
         self._update_detail()
+        self._refresh_project_cards()
         self.projects_changed.emit()
 
     def _choose_folder(self) -> None:
@@ -771,26 +830,26 @@ class ProjectsScreen(QWidget):
         self.projects_changed.emit()
 
     def refresh(self) -> None:
-        active = self._services.active_project()
-        self._list.blockSignals(True)
-        self._list.clear()
-        items = self._projects.list_projects()
-        active_row = -1
-        for row, project in enumerate(items):
-            marker = "✓ Unity" if project.is_valid_unity else project.engine
-            label = f"{project.name}   ·   {marker}   ·   {project.created_at}"
-            item = QListWidgetItem(label)
-            item.setData(0x0100, project.id)  # Qt.UserRole
-            self._list.addItem(item)
-            if active is not None and project.id == active.id:
-                active_row = row
-        self._list.blockSignals(False)
-        if active_row >= 0:
-            self._list.setCurrentRow(active_row)
-        self._empty.setVisible(not items)
-        self._list.setVisible(bool(items))
+        self._refresh_project_cards()
         self._update_detail()
         self._refresh_team_section()
+
+    def _refresh_project_cards(self) -> None:
+        active = self._services.active_project()
+        items = self._projects.list_projects()
+        # Last layout item is the trailing stretch (added once in
+        # _build_left_column) -- clear everything before it and re-add rows.
+        while self._project_list_layout.count() > 1:
+            item = self._project_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for project in items:
+            is_active = active is not None and project.id == active.id
+            card = _ProjectCard(project, is_active)
+            card.clicked.connect(self._on_project_card_clicked)
+            self._project_list_layout.insertWidget(self._project_list_layout.count() - 1, card)
+        self._empty.setVisible(not items)
 
     def _update_detail(self) -> None:
         self._update_unity_run_status()
@@ -814,3 +873,65 @@ class ProjectsScreen(QWidget):
         status = "valid Unity project" if project.is_valid_unity else "not recognized as Unity"
         version_note = f" · Unity {version}" if version else ""
         self._detail.setText(f"Active: {project.name}\n{project.path}\n({status}{version_note})")
+
+
+# --- Small widget helpers ----------------------------------------------------
+
+
+class _ProjectCard(QFrame):
+    """One glass-card row in the left column's project picker (replaces the
+    old QListWidget row) -- the active project gets the aqua-highlighted
+    look via the ``active`` dynamic property (see ui.theme's
+    ``QFrame#ProjectCard[active="true"]`` rule)."""
+
+    clicked = Signal(int)
+
+    def __init__(self, project: Project, active: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ProjectCard")
+        self.setProperty("active", "true" if active else "false")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._project_id = project.id
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(2)
+        name = QLabel(project.name)
+        name.setObjectName("CardTitle")
+        layout.addWidget(name)
+        marker = "✓ Unity" if project.is_valid_unity else project.engine
+        meta = QLabel(f"{marker}  ·  {project.created_at}")
+        meta.setObjectName("Muted")
+        layout.addWidget(meta)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self.clicked.emit(self._project_id)
+        super().mousePressEvent(event)
+
+
+def _card() -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 16, 18, 16)
+    layout.setSpacing(8)
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    frame.setGraphicsEffect(shadow)
+    return frame
+
+
+def _status_pill() -> QLabel:
+    pill = QLabel("Off")
+    pill.setObjectName("StatusPill")
+    pill.setProperty("state", "off")
+    return pill
+
+
+def _set_pill_state(pill: QLabel, enabled: bool) -> None:
+    pill.setText("On" if enabled else "Off")
+    pill.setProperty("state", "on" if enabled else "off")
+    pill.style().unpolish(pill)
+    pill.style().polish(pill)

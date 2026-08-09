@@ -12,10 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -24,9 +28,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
+    QProgressBar,
     QScrollArea,
-    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -41,8 +44,26 @@ from spiced.core.playtester_recruitment import RecruitmentDraftResult
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
 from spiced.storage.playtester_signups import STATUSES as SIGNUP_STATUSES
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.accordion import AccordionSection
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 from spiced.ui.widgets.source_link import SourceLinkExpander
+
+_THEME_GRID_COLUMNS = 3
+
+
+def _card() -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 16, 18, 16)
+    layout.setSpacing(8)
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    frame.setGraphicsEffect(shadow)
+    return frame
 
 _USER_ROLE = 0x0100
 
@@ -184,13 +205,42 @@ class FeedbackScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_input(layout)
-        self._build_theme_cards(layout)
-        self._build_tasks(layout)
-        self._build_ai_review(layout)
-        self._build_history(layout)
-        self._build_playtester_recruitment(layout)
-        self._build_community_pulse(layout)
+        input_card = _card()
+        self._build_input(input_card.layout())
+        layout.addWidget(input_card)
+
+        themes_card = _card()
+        self._build_theme_cards(themes_card.layout())
+        layout.addWidget(themes_card)
+
+        # Drafted Tasks + AI Review: both are "what happened as a result of
+        # the themes above," so they sit side by side rather than each
+        # getting a full-width section. Recent feedback batches (formerly
+        # its own full-width section, _build_history) folds into the AI
+        # Review card, right under its result box.
+        two_up = QHBoxLayout()
+        two_up.setSpacing(14)
+        tasks_card = _card()
+        self._build_tasks(tasks_card.layout())
+        two_up.addWidget(tasks_card, 1)
+        review_card = _card()
+        review_layout = review_card.layout()
+        self._build_ai_review(review_layout)
+        self._build_history(review_layout)
+        two_up.addWidget(review_card, 1)
+        layout.addLayout(two_up)
+
+        recruit_accordion = AccordionSection("Recruit Playtesters")
+        self._build_playtester_recruitment(recruit_accordion.body_layout)
+        layout.addWidget(recruit_accordion)
+
+        pulse_accordion = AccordionSection("Community Pulse")
+        self._pulse_status_pill = QLabel("Off")
+        self._pulse_status_pill.setObjectName("StatusPill")
+        self._pulse_status_pill.setProperty("state", "off")
+        pulse_accordion.header_extra.addWidget(self._pulse_status_pill)
+        self._build_community_pulse(pulse_accordion.body_layout, pulse_accordion)
+        layout.addWidget(pulse_accordion)
 
         self.refresh()
 
@@ -198,20 +248,16 @@ class FeedbackScreen(QWidget):
 
     def _build_input(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Add feedback")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "Paste playtester comments or import a .txt/.md/.csv/.json file. Spiced parses it "
             "locally, groups it into theme cards, and separates bugs from design preferences — "
             "it never scrapes anything and never decides your design for you."
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.addWidget(heading)
 
         label_row = QHBoxLayout()
-        label_row.addWidget(QLabel("Source label (optional):"))
+        label_row.addWidget(QLabel("Source:"))
         self._label_input = QLineEdit()
         self._label_input.setPlaceholderText("e.g. Playtest 1, Discord, Survey, itch.io comments")
         label_row.addWidget(self._label_input, 1)
@@ -219,18 +265,18 @@ class FeedbackScreen(QWidget):
 
         self._feedback_input = QPlainTextEdit()
         self._feedback_input.setPlaceholderText("Paste player feedback here…")
-        self._feedback_input.setFixedHeight(150)
+        self._feedback_input.setFixedHeight(80)
         layout.addWidget(self._feedback_input)
 
         row = QHBoxLayout()
-        self._import_btn = QPushButton("Import feedback file…")
+        self._import_btn = PillButton("Import feedback file…")
         self._import_btn.clicked.connect(self._on_import)
         row.addWidget(self._import_btn)
-        self._preview_btn = QPushButton("Preview (local only)")
+        self._preview_btn = PillButton("Preview (local only)")
         self._preview_btn.clicked.connect(self._on_preview)
         row.addWidget(self._preview_btn)
         row.addStretch(1)
-        self._analyze_btn = QPushButton("Analyze")
+        self._analyze_btn = PillButton("Analyze")
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -239,7 +285,7 @@ class FeedbackScreen(QWidget):
 
     def _build_theme_cards(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Themes")
-        heading.setObjectName("SectionTitle")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
 
         self._theme_hint = QLabel(
@@ -249,43 +295,54 @@ class FeedbackScreen(QWidget):
         self._theme_hint.setWordWrap(True)
         layout.addWidget(self._theme_hint)
 
-        self._theme_list = QListWidget()
-        self._theme_list.setFixedHeight(220)
-        layout.addWidget(self._theme_list)
+        # The visual centerpiece of the screen -- a wrapping grid
+        # (repeat(auto-fit, minmax(240px,1fr)) in the design handoff) rather
+        # than a single-column QListWidget, since this is what a dev opens
+        # the screen to see.
+        self._theme_grid_widget = QWidget()
+        self._theme_grid = QGridLayout(self._theme_grid_widget)
+        self._theme_grid.setSpacing(14)
+        self._theme_grid_widget.setVisible(False)
+        layout.addWidget(self._theme_grid_widget)
 
     def _refresh_theme_cards(self, cards) -> None:
-        self._theme_list.clear()
+        while self._theme_grid.count():
+            item = self._theme_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         self._theme_hint.setVisible(not cards)
-        self._theme_list.setVisible(bool(cards))
-        for card in cards:
-            item = QListWidgetItem()
-            self._theme_list.addItem(item)
-            widget = self._theme_card_widget(card)
-            item.setSizeHint(widget.sizeHint())
-            self._theme_list.setItemWidget(item, widget)
+        self._theme_grid_widget.setVisible(bool(cards))
+        for index, card in enumerate(cards):
+            row, col = divmod(index, _THEME_GRID_COLUMNS)
+            self._theme_grid.addWidget(self._theme_card_widget(card), row, col)
 
     def _theme_card_widget(self, card) -> QWidget:
-        widget = QWidget()
-        row = QHBoxLayout(widget)
-        row.setContentsMargins(6, 6, 6, 6)
+        widget = _card()
+        col = widget.layout()
 
-        text_col = QVBoxLayout()
-        heading = QLabel(f"{card.category} — {card.count} ({card.percentage:g}%)")
-        heading.setObjectName("SectionTitle")
-        text_col.addWidget(heading)
+        heading = QLabel(card.category)
+        heading.setObjectName("CardTitle")
+        col.addWidget(heading)
+        caption = QLabel(f"{card.percentage:g}% of comments ({card.count})")
+        caption.setObjectName("Muted")
+        col.addWidget(caption)
+
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(round(max(0.0, min(100.0, card.percentage))))
+        bar.setTextVisible(False)
+        col.addWidget(bar)
+
         if card.representative_text:
             example = QLabel(f"“{card.representative_text[:140]}”")
             example.setObjectName("Muted")
             example.setWordWrap(True)
-            text_col.addWidget(example)
-        text_widget = QWidget()
-        text_widget.setLayout(text_col)
-        text_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row.addWidget(text_widget, 1)
+            col.addWidget(example)
 
-        task_btn = QPushButton("Turn into task")
+        task_btn = PillButton("Turn into task")
         task_btn.clicked.connect(lambda _checked=False, c=card: self._on_turn_into_task(c))
-        row.addWidget(task_btn)
+        col.addWidget(task_btn)
         return widget
 
     def _on_turn_into_task(self, card) -> None:
@@ -345,27 +402,27 @@ class FeedbackScreen(QWidget):
         label.setWordWrap(True)
         row.addWidget(label, 1)
 
-        edit_btn = QPushButton("Edit")
+        edit_btn = PillButton("Edit")
         edit_btn.clicked.connect(lambda _checked=False, t=task: self._on_edit_task(t))
         row.addWidget(edit_btn)
 
-        accept_btn = QPushButton("Accept")
+        accept_btn = PillButton("Accept")
         accept_btn.clicked.connect(
             lambda _checked=False, t=task: self._on_task_status(t, STATUS_ACCEPTED)
         )
         row.addWidget(accept_btn)
 
-        copy_btn = QPushButton("Copy")
+        copy_btn = PillButton("Copy")
         copy_btn.clicked.connect(lambda _checked=False, t=task: self._on_copy_task(t))
         row.addWidget(copy_btn)
 
-        dismiss_btn = QPushButton("Dismiss")
+        dismiss_btn = PillButton("Dismiss")
         dismiss_btn.clicked.connect(
             lambda _checked=False, t=task: self._on_task_status(t, STATUS_DISMISSED)
         )
         row.addWidget(dismiss_btn)
 
-        delete_btn = QPushButton("Delete")
+        delete_btn = PillButton("Delete")
         delete_btn.clicked.connect(lambda _checked=False, t=task: self._on_delete_task(t))
         row.addWidget(delete_btn)
         return widget
@@ -422,10 +479,6 @@ class FeedbackScreen(QWidget):
     # --- Recruit Playtesters (Playtester Recruitment Assistant) --------------
 
     def _build_playtester_recruitment(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Recruit Playtesters")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
         intro = QLabel(
             "Describe what you need testers for, the target platform, and a timeframe — Spiced "
             "drafts a short recruitment post for you to copy and post yourself (Discord, "
@@ -456,7 +509,7 @@ class FeedbackScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._recruit_draft_btn = QPushButton("Draft recruitment post")
+        self._recruit_draft_btn = PillButton("Draft recruitment post")
         self._recruit_draft_btn.clicked.connect(self._on_recruit_draft)
         row.addWidget(self._recruit_draft_btn)
         layout.addLayout(row)
@@ -478,7 +531,7 @@ class FeedbackScreen(QWidget):
         self._signup_contact_input = QLineEdit()
         self._signup_contact_input.setPlaceholderText("Contact (email/handle, optional)")
         add_row.addWidget(self._signup_contact_input, 1)
-        self._signup_add_btn = QPushButton("Add")
+        self._signup_add_btn = PillButton("Add")
         self._signup_add_btn.clicked.connect(self._on_signup_add)
         add_row.addWidget(self._signup_add_btn)
         layout.addLayout(add_row)
@@ -497,11 +550,11 @@ class FeedbackScreen(QWidget):
         self._signup_status_input = ScrollSafeComboBox()
         self._signup_status_input.addItems(list(SIGNUP_STATUSES))
         status_row.addWidget(self._signup_status_input)
-        self._signup_update_status_btn = QPushButton("Update")
+        self._signup_update_status_btn = PillButton("Update")
         self._signup_update_status_btn.clicked.connect(self._on_signup_update_status)
         status_row.addWidget(self._signup_update_status_btn)
         status_row.addStretch(1)
-        self._signup_delete_btn = QPushButton("Delete")
+        self._signup_delete_btn = PillButton("Delete")
         self._signup_delete_btn.clicked.connect(self._on_signup_delete)
         status_row.addWidget(self._signup_delete_btn)
         layout.addLayout(status_row)
@@ -590,14 +643,11 @@ class FeedbackScreen(QWidget):
 
     # --- Community Pulse (opt-in, off by default) -----------------------------
 
-    def _build_community_pulse(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Community Pulse")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
+    def _build_community_pulse(self, layout: QVBoxLayout, accordion: AccordionSection) -> None:
+        self._pulse_accordion = accordion
         self._pulse_toggle = QCheckBox("Enable Community Pulse (opt-in)")
         self._pulse_toggle.toggled.connect(self._on_pulse_toggle)
-        layout.addWidget(self._pulse_toggle)
+        accordion.header_extra.addWidget(self._pulse_toggle)
 
         self._pulse_panel = QWidget()
         pulse_layout = QVBoxLayout(self._pulse_panel)
@@ -619,7 +669,7 @@ class FeedbackScreen(QWidget):
         self._pulse_source.addItems(["mock", "discord"])
         self._pulse_source.currentTextChanged.connect(self._on_pulse_source_changed)
         source_row.addWidget(self._pulse_source, 1)
-        self._pulse_run_btn = QPushButton("Run pulse check-in")
+        self._pulse_run_btn = PillButton("Run pulse check-in")
         self._pulse_run_btn.clicked.connect(self._on_pulse_run)
         source_row.addWidget(self._pulse_run_btn)
         pulse_layout.addLayout(source_row)
@@ -645,7 +695,8 @@ class FeedbackScreen(QWidget):
 
     def _on_pulse_toggle(self, checked: bool) -> None:
         self._services.set_community_pulse_enabled(checked)
-        self._pulse_panel.setVisible(checked)
+        self._pulse_accordion.set_expanded(checked)
+        self._sync_pulse_pill(checked)
 
     def _on_pulse_source_changed(self, name: str) -> None:
         self._services.set_community_source_name(name)
@@ -712,10 +763,12 @@ class FeedbackScreen(QWidget):
             self._context_label.setText(f"Active project: {project.name}")
         self._analyze_btn.setEnabled(has_project)
 
+        pulse_enabled = self._services.community_pulse_enabled()
         self._pulse_toggle.blockSignals(True)
-        self._pulse_toggle.setChecked(self._services.community_pulse_enabled())
+        self._pulse_toggle.setChecked(pulse_enabled)
         self._pulse_toggle.blockSignals(False)
-        self._pulse_panel.setVisible(self._services.community_pulse_enabled())
+        self._pulse_accordion.set_expanded(pulse_enabled)
+        self._sync_pulse_pill(pulse_enabled)
         self._pulse_source.blockSignals(True)
         self._pulse_source.setCurrentText(self._services.community_source_name())
         self._pulse_source.blockSignals(False)
@@ -724,6 +777,12 @@ class FeedbackScreen(QWidget):
         self._refresh_tasks()
         self._refresh_signups()
         self._refresh_pulse_history()
+
+    def _sync_pulse_pill(self, enabled: bool) -> None:
+        self._pulse_status_pill.setText("On" if enabled else "Off")
+        self._pulse_status_pill.setProperty("state", "on" if enabled else "off")
+        self._pulse_status_pill.style().unpolish(self._pulse_status_pill)
+        self._pulse_status_pill.style().polish(self._pulse_status_pill)
 
     def _refresh_history(self) -> None:
         project = self._services.active_project()

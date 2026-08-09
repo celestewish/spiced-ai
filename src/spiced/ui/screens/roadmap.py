@@ -14,14 +14,14 @@ team data) rather than introducing new QThread machinery for this screen.
 
 from __future__ import annotations
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -30,12 +30,33 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.backend_client.api_client import (
     BackendAPIError,
+    ChangelogEntry,
     NotAuthenticatedError,
     RoadmapSuggestion,
 )
 from spiced.ui.auth_dialog import AuthDialog
+from spiced.ui.widgets.pill_button import PillButton
 
-_USER_ROLE = 0x0100
+
+def _card() -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 16, 18, 16)
+    layout.setSpacing(8)
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    frame.setGraphicsEffect(shadow)
+    return frame
+
+
+def _hairline() -> QFrame:
+    line = QFrame()
+    line.setObjectName("Hairline")
+    line.setFixedHeight(1)
+    return line
 
 
 class RoadmapScreen(QWidget):
@@ -55,11 +76,23 @@ class RoadmapScreen(QWidget):
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
+        title_row = QHBoxLayout()
         title = QLabel("Roadmap")
         title.setObjectName("ScreenTitle")
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        self._account_status = QLabel()
+        self._account_status.setObjectName("UsagePill")
+        title_row.addWidget(self._account_status)
+        title_row.addStretch(1)
+        self._refresh_btn = PillButton("Refresh", ghost=True)
+        self._refresh_btn.clicked.connect(self.refresh)
+        title_row.addWidget(self._refresh_btn)
+        self._signin_btn = PillButton("Sign in / Sign up")
+        self._signin_btn.clicked.connect(self._on_sign_in)
+        title_row.addWidget(self._signin_btn)
+        layout.addLayout(title_row)
 
         intro = QLabel(
             "What's already shipped, and what's being considered next — the same list every "
@@ -70,24 +103,13 @@ class RoadmapScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        self._account_status = QLabel()
-        self._account_status.setObjectName("Muted")
-        self._account_status.setWordWrap(True)
-        layout.addWidget(self._account_status)
+        changelog_card = _card()
+        self._build_changelog(changelog_card.layout())
+        layout.addWidget(changelog_card)
 
-        account_row = QHBoxLayout()
-        self._signin_btn = QPushButton("Sign in / Sign up")
-        self._signin_btn.setObjectName("Ghost")
-        self._signin_btn.clicked.connect(self._on_sign_in)
-        account_row.addWidget(self._signin_btn)
-        account_row.addStretch(1)
-        self._refresh_btn = QPushButton("Refresh")
-        self._refresh_btn.clicked.connect(self.refresh)
-        account_row.addWidget(self._refresh_btn)
-        layout.addLayout(account_row)
-
-        self._build_changelog(layout)
-        self._build_suggestions(layout)
+        suggestions_card = _card()
+        self._build_suggestions(suggestions_card.layout())
+        layout.addWidget(suggestions_card)
 
         self.refresh()
 
@@ -95,12 +117,19 @@ class RoadmapScreen(QWidget):
 
     def _build_changelog(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Changelog")
-        heading.setObjectName("SectionTitle")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
 
-        self._changelog_list = QListWidget()
-        self._changelog_list.setFixedHeight(220)
-        layout.addWidget(self._changelog_list)
+        changelog_scroll = QScrollArea()
+        changelog_scroll.setWidgetResizable(True)
+        changelog_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        changelog_scroll.setFixedHeight(240)
+        changelog_content = QWidget()
+        self._changelog_layout = QVBoxLayout(changelog_content)
+        self._changelog_layout.setContentsMargins(0, 0, 0, 0)
+        self._changelog_layout.setSpacing(4)
+        changelog_scroll.setWidget(changelog_content)
+        layout.addWidget(changelog_scroll)
 
         self._changelog_empty = QLabel("No changelog entries yet.")
         self._changelog_empty.setObjectName("Muted")
@@ -110,6 +139,27 @@ class RoadmapScreen(QWidget):
         self._changelog_error.setObjectName("Muted")
         self._changelog_error.setWordWrap(True)
         layout.addWidget(self._changelog_error)
+
+    def _changelog_row(self, entry: ChangelogEntry) -> QWidget:
+        row = QWidget()
+        row_layout = QVBoxLayout(row)
+        row_layout.setContentsMargins(0, 8, 0, 8)
+        row_layout.setSpacing(4)
+        top = QHBoxLayout()
+        chip = QLabel(entry.version_or_phase_label)
+        chip.setObjectName("UsagePill")
+        top.addWidget(chip, 0)
+        title_label = QLabel(entry.title)
+        title_label.setStyleSheet("font-weight: 700;")
+        title_label.setWordWrap(True)
+        top.addWidget(title_label, 1)
+        row_layout.addLayout(top)
+        if entry.body:
+            body_label = QLabel(entry.body)
+            body_label.setObjectName("Muted")
+            body_label.setWordWrap(True)
+            row_layout.addWidget(body_label)
+        return row
 
     # --- Suggestion board (voting requires sign-in) ---------------------------
 
@@ -123,14 +173,21 @@ class RoadmapScreen(QWidget):
         self._suggestion_input.setPlaceholderText("A short suggestion title…")
         self._suggestion_input.setFixedHeight(50)
         row.addWidget(self._suggestion_input, 1)
-        self._submit_btn = QPushButton("Submit suggestion")
+        self._submit_btn = PillButton("Submit suggestion")
         self._submit_btn.clicked.connect(self._on_submit_suggestion)
         row.addWidget(self._submit_btn)
         layout.addLayout(row)
 
-        self._suggestions_list = QListWidget()
-        self._suggestions_list.setFixedHeight(260)
-        layout.addWidget(self._suggestions_list)
+        suggestions_scroll = QScrollArea()
+        suggestions_scroll.setWidgetResizable(True)
+        suggestions_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        suggestions_scroll.setFixedHeight(280)
+        suggestions_content = QWidget()
+        self._suggestions_layout = QVBoxLayout(suggestions_content)
+        self._suggestions_layout.setContentsMargins(0, 0, 0, 0)
+        self._suggestions_layout.setSpacing(4)
+        suggestions_scroll.setWidget(suggestions_content)
+        layout.addWidget(suggestions_scroll)
 
         self._suggestions_empty = QLabel("No suggestions yet — be the first.")
         self._suggestions_empty.setObjectName("Muted")
@@ -144,10 +201,11 @@ class RoadmapScreen(QWidget):
     def _suggestion_widget(self, suggestion: RoadmapSuggestion) -> QWidget:
         widget = QWidget()
         row = QHBoxLayout(widget)
-        row.setContentsMargins(6, 4, 6, 4)
+        row.setContentsMargins(0, 8, 0, 8)
 
         text_col = QVBoxLayout()
         title_label = QLabel(suggestion.title)
+        title_label.setStyleSheet("font-weight: 700;")
         title_label.setWordWrap(True)
         text_col.addWidget(title_label)
         if suggestion.body:
@@ -159,11 +217,13 @@ class RoadmapScreen(QWidget):
         text_widget.setLayout(text_col)
         row.addWidget(text_widget, 1)
 
-        vote_btn = QPushButton(
+        vote_btn = PillButton(
             f"▲ Unvote ({suggestion.vote_count})"
             if suggestion.voted_by_me
             else f"▲ Upvote ({suggestion.vote_count})"
         )
+        vote_btn.setObjectName("VoteButton")
+        vote_btn.setProperty("voted", "true" if suggestion.voted_by_me else "false")
         vote_btn.clicked.connect(
             lambda _checked=False, s=suggestion: self._on_toggle_vote(s)
         )
@@ -223,44 +283,46 @@ class RoadmapScreen(QWidget):
         logged_in = auth.is_logged_in()
         user = auth.current_user()
         self._account_status.setText(
-            f"Signed in as {user.email}" if logged_in and user else "Not signed in."
+            f"Signed in as {user.email}" if logged_in and user else "Not signed in"
         )
         self._signin_btn.setEnabled(not logged_in)
         self._refresh_changelog()
         self._refresh_suggestions()
 
     def _refresh_changelog(self) -> None:
-        self._changelog_list.clear()
+        _clear_layout(self._changelog_layout)
         try:
             entries = self._services.roadmap.list_changelog()
         except (BackendAPIError, NotAuthenticatedError) as exc:
             self._changelog_error.setText(f"Couldn't reach the roadmap backend: {exc}")
             self._changelog_empty.setVisible(False)
-            self._changelog_list.setVisible(False)
             return
         self._changelog_error.setText("")
         self._changelog_empty.setVisible(not entries)
-        self._changelog_list.setVisible(bool(entries))
-        for entry in entries:
-            label = f"[{entry.version_or_phase_label}] {entry.title}\n{entry.body}"
-            item = QListWidgetItem(label)
-            self._changelog_list.addItem(item)
+        for index, entry in enumerate(entries):
+            if index > 0:
+                self._changelog_layout.addWidget(_hairline())
+            self._changelog_layout.addWidget(self._changelog_row(entry))
 
     def _refresh_suggestions(self) -> None:
-        self._suggestions_list.clear()
+        _clear_layout(self._suggestions_layout)
         try:
             suggestions = self._services.roadmap.list_suggestions()
         except (BackendAPIError, NotAuthenticatedError) as exc:
             self._suggestions_error.setText(f"Couldn't reach the roadmap backend: {exc}")
             self._suggestions_empty.setVisible(False)
-            self._suggestions_list.setVisible(False)
             return
         self._suggestions_error.setText("")
         self._suggestions_empty.setVisible(not suggestions)
-        self._suggestions_list.setVisible(bool(suggestions))
-        for suggestion in suggestions:
-            item = QListWidgetItem()
-            self._suggestions_list.addItem(item)
-            widget = self._suggestion_widget(suggestion)
-            item.setSizeHint(widget.sizeHint())
-            self._suggestions_list.setItemWidget(item, widget)
+        for index, suggestion in enumerate(suggestions):
+            if index > 0:
+                self._suggestions_layout.addWidget(_hairline())
+            self._suggestions_layout.addWidget(self._suggestion_widget(suggestion))
+
+
+def _clear_layout(layout: QVBoxLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.deleteLater()

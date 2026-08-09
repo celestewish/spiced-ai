@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QSpinBox,
     QTextEdit,
@@ -52,6 +51,8 @@ from spiced.core.style_consistency import (
     UnreadableImageError as StyleUnreadableImageError,
 )
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.tool_switcher import build_tool_switcher
 
 
 class _AssetReviewWorker(QObject):
@@ -159,9 +160,15 @@ class ArtScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_review_queue(layout)
-        self._build_style_consistency(layout)
-        self._build_placement_preview(layout)
+        columns, self._stack, self._tool_group = build_tool_switcher(
+            self,
+            [
+                ("Asset Review Queue", self._build_review_queue),
+                ("Style Consistency", self._build_style_consistency),
+                ("Placement Preview", self._build_placement_preview),
+            ],
+        )
+        layout.addLayout(columns, 1)
 
         self.refresh()
 
@@ -184,13 +191,13 @@ class ArtScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._review_pick_btn = QPushButton("Pick files…")
+        self._review_pick_btn = PillButton("Pick files…")
         self._review_pick_btn.clicked.connect(self._on_review_pick_files)
         row.addWidget(self._review_pick_btn)
         self._review_folder_input = QLineEdit()
         self._review_folder_input.setPlaceholderText("...or paste a folder path")
         row.addWidget(self._review_folder_input, 1)
-        self._review_folder_btn = QPushButton("Browse…")
+        self._review_folder_btn = PillButton("Browse…")
         self._review_folder_btn.clicked.connect(self._on_review_browse_folder)
         row.addWidget(self._review_folder_btn)
         layout.addLayout(row)
@@ -200,12 +207,11 @@ class ArtScreen(QWidget):
         layout.addWidget(self._review_list)
 
         action_row = QHBoxLayout()
-        self._review_clear_btn = QPushButton("Clear")
-        self._review_clear_btn.setObjectName("Ghost")
+        self._review_clear_btn = PillButton("Clear", ghost=True)
         self._review_clear_btn.clicked.connect(self._on_review_clear)
         action_row.addWidget(self._review_clear_btn)
         action_row.addStretch(1)
-        self._review_run_btn = QPushButton("Review assets")
+        self._review_run_btn = PillButton("Review assets")
         self._review_run_btn.clicked.connect(self._on_review_run)
         action_row.addWidget(self._review_run_btn)
         layout.addLayout(action_row)
@@ -321,7 +327,7 @@ class ArtScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._style_run_btn = QPushButton("Check style consistency")
+        self._style_run_btn = PillButton("Check style consistency")
         self._style_run_btn.clicked.connect(self._on_style_run)
         row.addWidget(self._style_run_btn)
         layout.addLayout(row)
@@ -388,10 +394,10 @@ class ArtScreen(QWidget):
         layout.addWidget(intro)
 
         pick_row = QHBoxLayout()
-        self._bg_pick_btn = QPushButton("Pick background image…")
+        self._bg_pick_btn = PillButton("Pick background image…")
         self._bg_pick_btn.clicked.connect(self._on_pick_background)
         pick_row.addWidget(self._bg_pick_btn)
-        self._asset_pick_btn = QPushButton("Pick asset image…")
+        self._asset_pick_btn = PillButton("Pick asset image…")
         self._asset_pick_btn.clicked.connect(self._on_pick_placement_asset)
         pick_row.addWidget(self._asset_pick_btn)
         layout.addLayout(pick_row)
@@ -415,7 +421,7 @@ class ArtScreen(QWidget):
         self._scale_input.setRange(1, 500)
         self._scale_input.setValue(100)
         pos_row.addWidget(self._scale_input)
-        self._center_checkbox_btn = QPushButton("Center on background")
+        self._center_checkbox_btn = PillButton("Center on background")
         self._center_checkbox_btn.setCheckable(True)
         self._center_checkbox_btn.setChecked(True)
         pos_row.addWidget(self._center_checkbox_btn)
@@ -424,7 +430,7 @@ class ArtScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._placement_run_btn = QPushButton("Create preview…")
+        self._placement_run_btn = PillButton("Create preview…")
         self._placement_run_btn.clicked.connect(self._on_create_placement_preview)
         row.addWidget(self._placement_run_btn)
         layout.addLayout(row)

@@ -16,11 +16,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
     QVBoxLayout,
 )
 
 from spiced.core.widget_preferences import WidgetPreference, WidgetSpec
+from spiced.ui.widgets.pill_button import PillButton
 
 _ID_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -54,12 +54,10 @@ class WidgetCustomizeDialog(QDialog):
             self._list.addItem(item)
 
         button_row = QHBoxLayout()
-        up_btn = QPushButton("Move up")
-        up_btn.setObjectName("Ghost")
+        up_btn = PillButton("Move up", ghost=True)
         up_btn.clicked.connect(self._move_up)
         button_row.addWidget(up_btn)
-        down_btn = QPushButton("Move down")
-        down_btn.setObjectName("Ghost")
+        down_btn = PillButton("Move down", ghost=True)
         down_btn.clicked.connect(self._move_down)
         button_row.addWidget(down_btn)
         button_row.addStretch(1)
@@ -67,11 +65,10 @@ class WidgetCustomizeDialog(QDialog):
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setObjectName("Ghost")
+        cancel_btn = PillButton("Cancel", ghost=True)
         cancel_btn.clicked.connect(self.reject)
         action_row.addWidget(cancel_btn)
-        save_btn = QPushButton("Save")
+        save_btn = PillButton("Save")
         save_btn.clicked.connect(self.accept)
         action_row.addWidget(save_btn)
         layout.addLayout(action_row)

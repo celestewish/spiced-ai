@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -27,6 +26,8 @@ from spiced.app.services import Services
 from spiced.core.animation_bug_detection import AnimationBugScanResult, detect_animation_bugs
 from spiced.core.animation_state_machine_check import NoUnityFolderError, StateMachineScanResult
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.tool_switcher import build_tool_switcher
 
 
 class _AnimationBugWorker(QObject):
@@ -182,8 +183,14 @@ class AnimationScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_bug_detection(layout)
-        self._build_state_machine_check(layout)
+        columns, self._stack, self._tool_group = build_tool_switcher(
+            self,
+            [
+                ("Animation Bug Detection", self._build_bug_detection),
+                ("State Machine Health", self._build_state_machine_check),
+            ],
+        )
+        layout.addLayout(columns, 1)
 
         self.refresh()
 
@@ -206,7 +213,7 @@ class AnimationScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._bug_run_btn = QPushButton("Scan for risk indicators")
+        self._bug_run_btn = PillButton("Scan for risk indicators")
         self._bug_run_btn.clicked.connect(self._on_bug_scan_run)
         row.addWidget(self._bug_run_btn)
         layout.addLayout(row)
@@ -223,8 +230,7 @@ class AnimationScreen(QWidget):
         # "animation" and a source_ref back to the first flagged finding.
         team_board_row = QHBoxLayout()
         team_board_row.addStretch(1)
-        self._bug_send_btn = QPushButton("Send to Team Board")
-        self._bug_send_btn.setObjectName("Ghost")
+        self._bug_send_btn = PillButton("Send to Team Board", ghost=True)
         self._bug_send_btn.setEnabled(False)
         self._bug_send_btn.clicked.connect(self._on_send_bug_findings_to_team_board)
         team_board_row.addWidget(self._bug_send_btn)
@@ -331,7 +337,7 @@ class AnimationScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._sm_run_btn = QPushButton("Run state machine check")
+        self._sm_run_btn = PillButton("Run state machine check")
         self._sm_run_btn.clicked.connect(self._on_sm_check_run)
         row.addWidget(self._sm_run_btn)
         layout.addLayout(row)

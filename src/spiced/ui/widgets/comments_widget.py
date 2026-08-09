@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
 )
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.backend_client.api_client import Comment
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
 
 
 class _CommentsLoadWorker(QObject):
@@ -105,7 +105,7 @@ class CommentsWidget(QFrame):
         self._input.setPlaceholderText("Add a comment…")
         self._input.returnPressed.connect(self._on_post)
         row.addWidget(self._input, 1)
-        self._post_btn = QPushButton("Post")
+        self._post_btn = PillButton("Post")
         self._post_btn.clicked.connect(self._on_post)
         row.addWidget(self._post_btn)
         layout.addLayout(row)

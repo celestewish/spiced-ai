@@ -13,11 +13,15 @@ from spiced.core.dashboard import (
 )
 from spiced.core.debugging import DebuggingService
 from spiced.core.feedback import FeedbackService
+from spiced.core.regression import RegressionService
+from spiced.core.session_summary import SessionSummaryService
 from spiced.core.testing import TestingService
 from spiced.storage.database import Database
 from spiced.storage.debug_sessions import DebugSessionRepository
 from spiced.storage.feedback_batches import FeedbackBatchRepository
+from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.projects import ProjectRepository
+from spiced.storage.session_summaries import SessionSummaryRepository
 from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
 
@@ -28,7 +32,9 @@ def _fixture():
     debugging = DebuggingService(DebugSessionRepository(db))
     testing = TestingService(TestCaseRepository(db), TestRunRepository(db))
     feedback = FeedbackService(FeedbackBatchRepository(db))
-    service = DashboardService(debugging, testing, feedback)
+    regression = RegressionService(KnownIssueRepository(db))
+    session_summaries = SessionSummaryService(SessionSummaryRepository(db), testing, feedback)
+    service = DashboardService(debugging, testing, feedback, regression, session_summaries)
     return db, project, debugging, testing, feedback, service
 
 

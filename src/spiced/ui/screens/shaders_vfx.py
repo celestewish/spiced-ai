@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -33,7 +32,9 @@ from spiced.core.shader_performance_profiling import ShaderProfilingResult
 from spiced.core.visual_regression import UnreadableImageError, VisualRegressionResult
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.diff_viewer import DiffViewerDialog
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
+from spiced.ui.widgets.tool_switcher import build_tool_switcher
 
 
 class _ShaderProfilingWorker(QObject):
@@ -173,8 +174,14 @@ class ShadersVfxScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_shader_profiling(layout)
-        self._build_visual_regression(layout)
+        columns, self._stack, self._tool_group = build_tool_switcher(
+            self,
+            [
+                ("Shader Performance Profiling", self._build_shader_profiling),
+                ("Visual Regression Testing", self._build_visual_regression),
+            ],
+        )
+        layout.addLayout(columns, 1)
 
         self.refresh()
 
@@ -197,7 +204,7 @@ class ShadersVfxScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._shader_run_btn = QPushButton("Scan shaders")
+        self._shader_run_btn = PillButton("Scan shaders")
         self._shader_run_btn.clicked.connect(self._on_shader_scan_run)
         row.addWidget(self._shader_run_btn)
         layout.addLayout(row)
@@ -286,7 +293,7 @@ class ShadersVfxScreen(QWidget):
         self._before_input = QLineEdit()
         self._before_input.setPlaceholderText("Screenshots from the earlier build")
         before_row.addWidget(self._before_input, 1)
-        before_browse = QPushButton("Browse…")
+        before_browse = PillButton("Browse…")
         before_browse.clicked.connect(self._on_browse_before)
         before_row.addWidget(before_browse)
         layout.addLayout(before_row)
@@ -296,14 +303,14 @@ class ShadersVfxScreen(QWidget):
         self._after_input = QLineEdit()
         self._after_input.setPlaceholderText("Screenshots from the newer build")
         after_row.addWidget(self._after_input, 1)
-        after_browse = QPushButton("Browse…")
+        after_browse = PillButton("Browse…")
         after_browse.clicked.connect(self._on_browse_after)
         after_row.addWidget(after_browse)
         layout.addLayout(after_row)
 
         run_row = QHBoxLayout()
         run_row.addStretch(1)
-        self._vr_run_btn = QPushButton("Diff screenshots")
+        self._vr_run_btn = PillButton("Diff screenshots")
         self._vr_run_btn.clicked.connect(self._on_vr_run)
         run_row.addWidget(self._vr_run_btn)
         layout.addLayout(run_row)
@@ -323,8 +330,7 @@ class ShadersVfxScreen(QWidget):
         self._vr_pair_picker = ScrollSafeComboBox()
         self._vr_pair_picker.setEnabled(False)
         diff_viewer_row.addWidget(self._vr_pair_picker, 1)
-        self._vr_open_diff_btn = QPushButton("Open diff viewer")
-        self._vr_open_diff_btn.setObjectName("Ghost")
+        self._vr_open_diff_btn = PillButton("Open diff viewer", ghost=True)
         self._vr_open_diff_btn.setEnabled(False)
         self._vr_open_diff_btn.clicked.connect(self._on_view_diff_pair)
         diff_viewer_row.addWidget(self._vr_open_diff_btn)

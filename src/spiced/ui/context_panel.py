@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +24,7 @@ from spiced.core.widget_preferences import (
 from spiced.storage.projects import Project
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widget_customize_dialog import WidgetCustomizeDialog
+from spiced.ui.widgets.pill_button import PillButton
 
 # Role-Based Dashboards (Phase J, Cross-Role & Team Glue #4): the
 # disciplines this panel knows how to summarize, each backed by a genuinely
@@ -167,8 +167,7 @@ class ContextPanel(QFrame):
         # down to show/hide + reorder, see core.widget_preferences): opens a
         # small list dialog for the sections below, rather than the full
         # spec's drag-and-drop resize.
-        self._customize_btn = QPushButton("Customize")
-        self._customize_btn.setObjectName("Ghost")
+        self._customize_btn = PillButton("Customize", ghost=True)
         self._customize_btn.clicked.connect(self._on_customize)
         header_row.addWidget(self._customize_btn)
         layout.addLayout(header_row)
@@ -293,8 +292,7 @@ class ContextPanel(QFrame):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        self._end_session_btn = QPushButton("Summarize / end session")
-        self._end_session_btn.setObjectName("Ghost")
+        self._end_session_btn = PillButton("Summarize / end session", ghost=True)
         self._end_session_btn.clicked.connect(self._on_end_session)
         layout.addWidget(self._end_session_btn)
 
@@ -381,8 +379,7 @@ class ContextPanel(QFrame):
         self._crunch_note.setVisible(False)
         layout.addWidget(self._crunch_note)
 
-        self._crunch_dismiss_btn = QPushButton("Dismiss")
-        self._crunch_dismiss_btn.setObjectName("Ghost")
+        self._crunch_dismiss_btn = PillButton("Dismiss", ghost=True)
         self._crunch_dismiss_btn.setVisible(False)
         self._crunch_dismiss_btn.clicked.connect(self._on_dismiss_crunch_note)
         layout.addWidget(self._crunch_dismiss_btn)

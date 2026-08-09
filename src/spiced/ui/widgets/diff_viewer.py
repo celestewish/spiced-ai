@@ -46,12 +46,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from spiced.core.visual_regression import diff_ratio_and_highlight
+from spiced.ui.widgets.pill_button import PillButton
 
 _PIXMAP_MAX_DIM = 420
 
@@ -154,8 +154,7 @@ class DiffViewer(QWidget):
         outer.setSpacing(8)
 
         toggle_row = QHBoxLayout()
-        self._toggle_btn = QPushButton("Toggle view")
-        self._toggle_btn.setObjectName("Ghost")
+        self._toggle_btn = PillButton("Toggle view", ghost=True)
         self._toggle_btn.clicked.connect(self._on_toggle)
         toggle_row.addWidget(self._toggle_btn)
         toggle_row.addStretch(1)
@@ -257,8 +256,7 @@ class DiffViewerDialog(QDialog):
 
         close_row = QHBoxLayout()
         close_row.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.setObjectName("Ghost")
+        close_btn = PillButton("Close", ghost=True)
         close_btn.clicked.connect(self.close)
         close_row.addWidget(close_btn)
         layout.addLayout(close_row)

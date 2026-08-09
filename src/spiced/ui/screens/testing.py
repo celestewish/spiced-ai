@@ -15,10 +15,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,9 +30,9 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -57,15 +61,6 @@ from spiced.core.release_checklist import (
     analyze_checklist,
     build_checklist,
 )
-from spiced.core.save_load_tester import (
-    SAVE_PATH_ENV_VAR,
-    STATUS_PASSED,
-    NoExecutableError,
-    NoSavesFolderError,
-    SaveIntegrityRun,
-)
-from spiced.core.test_generator import ProviderNotReadyError as TestGenNotReadyError
-from spiced.core.test_generator import TestGenerationResult
 from spiced.core.testing import (
     SOURCE_FILE,
     SOURCE_PASTE,
@@ -78,13 +73,22 @@ from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.bar_chart import FrameRateBarChart
 from spiced.ui.widgets.comments_widget import CommentsWidget
+from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.pill_tab_widget import PillTabWidget
 from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.readiness_badge import ReadinessBadge
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 _USER_ROLE = 0x0100
+# Distinguishes a "case" row from an "issue" row in the merged Test Cases &
+# Known Issues list (ui.screens.testing._build_case_and_issue_list) -- both
+# kinds share one QListWidget/status-row visual, but keep their existing,
+# separate selection state (_selected_case_id/_selected_issue_id) and
+# action controls underneath.
+_ITEM_KIND_ROLE = 0x0101
 _NO_HARDWARE = "(none — no simulation)"
 _BOTH_PLATFORMS = "Both"
 
@@ -121,6 +125,135 @@ def _format_economy_findings(findings: EconomySimulationFindings) -> str:
     else:
         lines.append("- Every item was bought in at least one playthrough.")
     return "\n".join(lines)
+
+
+_CASE_STATUS_STATE = {
+    "Pass": "pass",
+    "Fail": "fail",
+    "Blocked": "warn",
+    "Not Run": "neutral",
+}
+
+
+# --- Frutiger Aqua visual-alignment helpers ---------------------------------
+#
+# Reusable pieces for the restyle: a dark-glass "hero card" wrapper for a
+# tab's one primary action (Run Unity Tests, Build Pipeline), a colored
+# status-orb row (Known Issues, Test cases), and a checklist row (label left,
+# colored status right -- Accessibility, Economy Dominant Strategies). None
+# of these touch how their data is computed -- only how it's laid out.
+
+
+def _hero_section(parent_layout: QVBoxLayout) -> QVBoxLayout:
+    """Wraps whatever gets built into the returned layout in a dark-glass
+    hero card (reusing ui.theme's QFrame#ToolHeroCard recipe from the
+    Debugging Buddy tool switcher) and adds that card to ``parent_layout``."""
+    card = QFrame()
+    card.setObjectName("ToolHeroCard")
+    inner = QVBoxLayout(card)
+    inner.setContentsMargins(20, 18, 20, 18)
+    inner.setSpacing(10)
+    parent_layout.addWidget(card)
+    return inner
+
+
+def _card_section(parent_layout: QVBoxLayout) -> QVBoxLayout:
+    """Wraps whatever gets built into the returned layout in a light glass
+    card (ui.theme's QFrame#Card recipe, with real drop-shadow elevation --
+    Qt QSS has no box-shadow) and adds that card to ``parent_layout``. Every
+    tab's sections used to just stack straight onto the page background
+    with only a heading to separate them; wrapping each in its own card is
+    what actually makes the screen read as distinct, compact sections
+    instead of one long undifferentiated scroll."""
+    card = QFrame()
+    card.setObjectName("Card")
+    inner = QVBoxLayout(card)
+    inner.setContentsMargins(18, 16, 18, 16)
+    inner.setSpacing(8)
+    shadow = QGraphicsDropShadowEffect(card)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    card.setGraphicsEffect(shadow)
+    parent_layout.addWidget(card)
+    return inner
+
+
+def _status_row(state: str, title: str, subtitle: str) -> QWidget:
+    """A colored status-orb list row: used as a QListWidget item widget for
+    both Known Issues and Test cases (see _refresh_known_issues/_refresh_cases)."""
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(6, 6, 6, 6)
+    layout.setSpacing(10)
+    dot = QLabel()
+    dot.setObjectName("StatusDot")
+    dot.setProperty("state", state)
+    dot.setFixedSize(14, 14)
+    layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+    text_col = QVBoxLayout()
+    text_col.setSpacing(1)
+    title_label = QLabel(title)
+    title_label.setStyleSheet("font-weight: 700;")
+    title_label.setWordWrap(True)
+    text_col.addWidget(title_label)
+    if subtitle:
+        sub_label = QLabel(subtitle)
+        sub_label.setObjectName("Muted")
+        sub_label.setWordWrap(True)
+        text_col.addWidget(sub_label)
+    layout.addLayout(text_col, 1)
+    return row
+
+
+def _checklist_row(label: str, status_text: str, state: str) -> QWidget:
+    """A checklist row: label left, bold colored status right -- used for
+    Accessibility's WCAG/caption/control checks and Economy's dominant-
+    strategy findings."""
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 4, 0, 4)
+    layout.setSpacing(10)
+    left = QLabel(label)
+    left.setWordWrap(True)
+    layout.addWidget(left, 1)
+    right = QLabel(status_text)
+    right.setObjectName("ChecklistStatus")
+    right.setProperty("state", state)
+    layout.addWidget(right, 0)
+    return row
+
+
+def _progress_row(label: str, pct: float, caption: str) -> QWidget:
+    """A labeled progress-bar row -- Economy Dominant Strategies' pick-rate
+    bars, same "item name, N% of playthroughs, gradient bar" shape as the
+    Feedback screen's theme cards."""
+    row = QWidget()
+    layout = QVBoxLayout(row)
+    layout.setContentsMargins(0, 4, 0, 4)
+    layout.setSpacing(2)
+    top = QHBoxLayout()
+    name = QLabel(label)
+    name.setStyleSheet("font-weight: 700;")
+    top.addWidget(name, 1)
+    caption_label = QLabel(caption)
+    caption_label.setObjectName("Muted")
+    top.addWidget(caption_label, 0)
+    layout.addLayout(top)
+    bar = QProgressBar()
+    bar.setRange(0, 100)
+    bar.setValue(round(max(0.0, min(100.0, pct))))
+    bar.setTextVisible(False)
+    layout.addWidget(bar)
+    return row
+
+
+def _clear_layout(layout: QVBoxLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.deleteLater()
 
 
 class _FunctionalWorker(QObject):
@@ -402,61 +535,6 @@ class _ChecklistAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
-class _TestGenerationWorker(QObject):
-    done = Signal(object)  # TestGenerationResult
-    failed = Signal(str)
-
-    def __init__(
-        self, services: Services, project, source_code: str, system_label: str | None
-    ) -> None:
-        super().__init__()
-        self._services = services
-        self._project = project
-        self._source_code = source_code
-        self._system_label = system_label
-
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.test_generator.generate_draft(
-                provider,
-                self._project,
-                self._source_code,
-                system_label=self._system_label,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(result)
-        except TestGenNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while drafting tests: {exc}")
-
-
-class _SaveIntegrityWorker(QObject):
-    done = Signal(object)  # SaveIntegrityRun
-    failed = Signal(str)
-
-    def __init__(
-        self, services: Services, project, executable_path: str, saves_folder: str
-    ) -> None:
-        super().__init__()
-        self._services = services
-        self._project = project
-        self._executable_path = executable_path
-        self._saves_folder = saves_folder
-
-    def run(self) -> None:
-        try:
-            run = self._services.save_load_tester.run(
-                self._project, self._executable_path, self._saves_folder
-            )
-            self.done.emit(run)
-        except (NoExecutableError, NoSavesFolderError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while testing saves: {exc}")
-
-
 class _EconomySimulationAIWorker(QObject):
     done = Signal(object)  # EconomySimulationReview
     failed = Signal(str)
@@ -545,7 +623,6 @@ class TestingScreen(QWidget):
         self._perf_pending_filename: str | None = None
         self._access_pending_filename: str | None = None
         self._last_checklist: ReleaseChecklist | None = None
-        self._current_test_draft: TestGenerationResult | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -568,8 +645,7 @@ class TestingScreen(QWidget):
         badge_row.addWidget(self._readiness_badge, 1)
         # Store Page / Build Checklist (Phase D): reachable right from the
         # Build Health Score area, per spec, rather than only buried in a tab.
-        self._ready_to_ship_btn = QPushButton("Ready to Ship checklist")
-        self._ready_to_ship_btn.setObjectName("Ghost")
+        self._ready_to_ship_btn = PillButton("Ready to Ship checklist", ghost=True)
         self._ready_to_ship_btn.clicked.connect(self._on_open_ready_to_ship)
         badge_row.addWidget(self._ready_to_ship_btn)
         header.addLayout(badge_row)
@@ -587,13 +663,12 @@ class TestingScreen(QWidget):
         # _apply_prototype_mode. Irrelevant while the mode is off, since the
         # suite is always shown then regardless of this flag.
         self._qa_suite_expanded = False
-        self._qa_toggle_btn = QPushButton("▸ Full QA suite (click to expand)")
-        self._qa_toggle_btn.setObjectName("Ghost")
+        self._qa_toggle_btn = PillButton("▸ Full QA suite (click to expand)", ghost=True)
         self._qa_toggle_btn.clicked.connect(self._on_toggle_qa_suite)
         self._qa_toggle_btn.setVisible(False)
         outer.addWidget(self._qa_toggle_btn)
 
-        self._tabs = QTabWidget()
+        self._tabs = PillTabWidget()
         outer.addWidget(self._tabs, 1)
         self._tabs.addTab(self._build_functional_tab(), "Functional")
         self._tabs.addTab(self._build_performance_tab(), "Performance")
@@ -633,11 +708,10 @@ class TestingScreen(QWidget):
         self._smoke_input = QLineEdit()
         self._smoke_input.setPlaceholderText("What did you just try?")
         row.addWidget(self._smoke_input, 1)
-        self._smoke_works_btn = QPushButton("Works")
+        self._smoke_works_btn = PillButton("Works")
         self._smoke_works_btn.clicked.connect(lambda: self._on_smoke_result(True))
         row.addWidget(self._smoke_works_btn)
-        self._smoke_fails_btn = QPushButton("Doesn't work yet")
-        self._smoke_fails_btn.setObjectName("Ghost")
+        self._smoke_fails_btn = PillButton("Doesn't work yet", ghost=True)
         self._smoke_fails_btn.clicked.connect(lambda: self._on_smoke_result(False))
         row.addWidget(self._smoke_fails_btn)
         layout.addLayout(row)
@@ -713,19 +787,18 @@ class TestingScreen(QWidget):
     # --- Functional tab ------------------------------------------------
 
     def _build_functional_tab(self) -> QWidget:
+        # Save Compatibility and Test Generation aren't shown in this pass
+        # (per the design handoff).
         container, layout = self._scrollable()
-        self._build_case_form(layout)
-        self._build_case_list(layout)
-        self._build_unity_run(layout)
-        self._build_analyze(layout)
-        self._build_known_issues(layout)
-        self._build_save_compatibility(layout)
-        self._build_test_generation(layout)
+        self._build_case_form(_card_section(layout))
+        self._build_unity_run(_hero_section(layout))
+        self._build_case_and_issue_list(_card_section(layout))
+        self._build_analyze(_card_section(layout))
         return container
 
     def _build_case_form(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Add a test case")
-        heading.setObjectName("SectionTitle")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
 
         form = QFormLayout()
@@ -756,47 +829,20 @@ class TestingScreen(QWidget):
         self._selection_hint.setObjectName("Muted")
         row.addWidget(self._selection_hint)
         row.addStretch(1)
-        self._clear_btn = QPushButton("New / clear")
+        self._clear_btn = PillButton("New / clear")
         self._clear_btn.clicked.connect(self._on_clear_selection)
         row.addWidget(self._clear_btn)
-        self._delete_btn = QPushButton("Delete")
+        self._delete_btn = PillButton("Delete")
         self._delete_btn.clicked.connect(self._on_delete_case)
         row.addWidget(self._delete_btn)
-        self._add_btn = QPushButton("Add test case")
+        self._add_btn = PillButton("Add test case")
         self._add_btn.clicked.connect(self._on_add_case)
         row.addWidget(self._add_btn)
-        self._save_btn = QPushButton("Save changes")
+        self._save_btn = PillButton("Save changes")
         self._save_btn.clicked.connect(self._on_save_case)
         row.addWidget(self._save_btn)
         layout.addLayout(row)
 
-    def _build_case_list(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Test cases")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        self._case_list = QListWidget()
-        self._case_list.setFixedHeight(160)
-        self._case_list.currentItemChanged.connect(self._on_case_selected)
-        layout.addWidget(self._case_list)
-
-        self._cases_empty = QLabel("No test cases yet. Add one above.")
-        self._cases_empty.setObjectName("Muted")
-        layout.addWidget(self._cases_empty)
-
-        status_row = QHBoxLayout()
-        status_row.addWidget(QLabel("Set status:"))
-        self._status_input = ScrollSafeComboBox()
-        self._status_input.addItems(STATUSES)
-        self._status_input.currentTextChanged.connect(self._on_status_choice_changed)
-        status_row.addWidget(self._status_input)
-        self._failure_note_input = QLineEdit()
-        self._failure_note_input.setPlaceholderText("Failure note (used when status is Fail)")
-        status_row.addWidget(self._failure_note_input, 1)
-        self._update_status_btn = QPushButton("Update")
-        self._update_status_btn.clicked.connect(self._on_update_status)
-        status_row.addWidget(self._update_status_btn)
-        layout.addLayout(status_row)
 
     def _build_unity_run(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Run Unity tests")
@@ -819,12 +865,19 @@ class TestingScreen(QWidget):
         layout.addWidget(self._unity_run_status)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Platform:"))
-        self._unity_platform_input = ScrollSafeComboBox()
-        self._unity_platform_input.addItems([EDIT_MODE, PLAY_MODE, _BOTH_PLATFORMS])
-        row.addWidget(self._unity_platform_input)
+        self._unity_platform_group = QButtonGroup(self)
+        self._unity_platform_group.setExclusive(True)
+        self._unity_platform_buttons: dict[str, QPushButton] = {}
+        for platform in (EDIT_MODE, PLAY_MODE, _BOTH_PLATFORMS):
+            btn = PillButton(platform)
+            btn.setObjectName("PlatformPill")
+            btn.setCheckable(True)
+            self._unity_platform_group.addButton(btn)
+            self._unity_platform_buttons[platform] = btn
+            row.addWidget(btn)
+        self._unity_platform_buttons[EDIT_MODE].setChecked(True)
         row.addStretch(1)
-        self._unity_run_btn = QPushButton("Run Tests Now")
+        self._unity_run_btn = PillButton("Run Tests Now")
         self._unity_run_btn.clicked.connect(self._on_run_unity_tests)
         row.addWidget(self._unity_run_btn)
         layout.addLayout(row)
@@ -845,17 +898,13 @@ class TestingScreen(QWidget):
         layout.addWidget(self._unity_run_result)
 
     def _build_analyze(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Analyze test results")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
+        heading = QLabel("Analyze Test Results")
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "Paste test output or import a .txt/.log/.json/.xml file. Spiced reads it locally, "
             "then summarizes pass/fail and suggests a retest checklist — it never ran the tests."
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.addWidget(heading)
 
         self._results_input = QPlainTextEdit()
         self._results_input.setPlaceholderText("Paste your test-run output here…")
@@ -863,11 +912,11 @@ class TestingScreen(QWidget):
         layout.addWidget(self._results_input)
 
         row = QHBoxLayout()
-        self._import_btn = QPushButton("Import result file…")
+        self._import_btn = PillButton("Import result file…", ghost=True)
         self._import_btn.clicked.connect(self._on_import)
         row.addWidget(self._import_btn)
         row.addStretch(1)
-        self._analyze_btn = QPushButton("Analyze")
+        self._analyze_btn = PillButton("Analyze")
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -891,43 +940,63 @@ class TestingScreen(QWidget):
         self._history.setFixedHeight(110)
         layout.addWidget(self._history)
 
-    def _build_known_issues(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Known Issues")
-        heading.setObjectName("SectionTitle")
+    def _build_case_and_issue_list(self, layout: QVBoxLayout) -> None:
+        """Test cases and Known Issues, merged into one status-orb list
+        (design handoff) -- each row is a colored gel orb + bold title +
+        muted description, whichever kind it is (see _status_row /
+        _ITEM_KIND_ROLE). The two kinds keep their own separate selection
+        state and action controls underneath (status update for a case;
+        resolve/reopen/team-board/comments for an issue) -- only the list
+        display and the empty state are actually shared."""
+        heading = QLabel("Test Cases & Known Issues")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
 
         intro = QLabel(
-            "Bugs Spiced has flagged before, from debugging sessions and test failures. New "
-            "failures are checked against this list so repeats surface as \"this resembles a "
-            "bug from before\" instead of starting from scratch."
+            "Your manual test cases, plus bugs Spiced has flagged before from debugging "
+            "sessions and test failures -- new failures are checked against known issues so "
+            "repeats surface as \"this resembles a bug from before\" instead of starting over."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        self._issues_list = QListWidget()
-        self._issues_list.setFixedHeight(140)
-        self._issues_list.currentItemChanged.connect(self._on_issue_selected)
-        layout.addWidget(self._issues_list)
+        self._combined_list = QListWidget()
+        self._combined_list.setMinimumHeight(220)
+        self._combined_list.currentItemChanged.connect(self._on_combined_selected)
+        layout.addWidget(self._combined_list)
 
-        self._issues_empty = QLabel("No known issues tracked for this project yet.")
-        self._issues_empty.setObjectName("Muted")
-        layout.addWidget(self._issues_empty)
+        self._combined_empty = QLabel("No test cases or known issues yet.")
+        self._combined_empty.setObjectName("Muted")
+        layout.addWidget(self._combined_empty)
+
+        case_row = QHBoxLayout()
+        case_row.addWidget(QLabel("Set test case status:"))
+        self._status_input = ScrollSafeComboBox()
+        self._status_input.addItems(STATUSES)
+        self._status_input.currentTextChanged.connect(self._on_status_choice_changed)
+        case_row.addWidget(self._status_input)
+        self._failure_note_input = QLineEdit()
+        self._failure_note_input.setPlaceholderText("Failure note (used when status is Fail)")
+        case_row.addWidget(self._failure_note_input, 1)
+        self._update_status_btn = PillButton("Update")
+        self._update_status_btn.clicked.connect(self._on_update_status)
+        case_row.addWidget(self._update_status_btn)
+        layout.addLayout(case_row)
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._resolve_btn = QPushButton("Mark resolved")
+        self._resolve_btn = PillButton("Mark resolved")
         self._resolve_btn.clicked.connect(self._on_mark_resolved)
         row.addWidget(self._resolve_btn)
-        self._reopen_btn = QPushButton("Reopen")
+        self._reopen_btn = PillButton("Reopen")
         self._reopen_btn.clicked.connect(self._on_mark_open)
         row.addWidget(self._reopen_btn)
         # "Send to Team Board" routing entry point (Phase J, #3): only
         # enabled with a selected issue AND a team-linked active project --
         # creates a TeamTask with a best-effort discipline inferred from the
         # issue's category and a source_ref back to the known_issue id.
-        self._issue_send_btn = QPushButton("Send to Team Board")
-        self._issue_send_btn.setObjectName("Ghost")
+        self._issue_send_btn = PillButton("Send to Team Board", ghost=True)
         self._issue_send_btn.setEnabled(False)
         self._issue_send_btn.clicked.connect(self._on_send_issue_to_team_board)
         row.addWidget(self._issue_send_btn)
@@ -954,188 +1023,66 @@ class TestingScreen(QWidget):
 
         sync_row = QHBoxLayout()
         sync_row.addStretch(1)
-        self._player_crash_sync_btn = QPushButton("Sync player crash reports")
+        self._player_crash_sync_btn = PillButton("Sync player crash reports")
         self._player_crash_sync_btn.clicked.connect(self._on_sync_player_crashes)
         sync_row.addWidget(self._player_crash_sync_btn)
         layout.addLayout(sync_row)
-
-    # --- Save Compatibility (Save/Load Integrity Testing) ------------------
-
-    def _build_save_compatibility(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Save Compatibility")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
-            "Launches your project's built game executable (not the Unity Editor) once per "
-            "save file in a folder you pick, passing "
-            f"{SAVE_PATH_ENV_VAR} and a result-file path as environment variables. "
-            "This only works for games that implement Spiced's small reporting hook — see "
-            "docs/save_load_integrity_hook.md for the exact contract. Without that hook, every "
-            "save will show as \"couldn't tell\", not a real pass or fail."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        exe_row = QHBoxLayout()
-        exe_row.addWidget(QLabel("Game executable:"))
-        self._save_exe_input = QLineEdit()
-        self._save_exe_input.setPlaceholderText("Path to your built game's .exe")
-        exe_row.addWidget(self._save_exe_input, 1)
-        self._save_exe_browse_btn = QPushButton("Browse…")
-        self._save_exe_browse_btn.clicked.connect(self._on_browse_save_exe)
-        exe_row.addWidget(self._save_exe_browse_btn)
-        layout.addLayout(exe_row)
-
-        folder_row = QHBoxLayout()
-        folder_row.addWidget(QLabel("Saves folder:"))
-        self._save_folder_input = QLineEdit()
-        self._save_folder_input.setPlaceholderText("Folder containing old save files")
-        folder_row.addWidget(self._save_folder_input, 1)
-        self._save_folder_browse_btn = QPushButton("Browse…")
-        self._save_folder_browse_btn.clicked.connect(self._on_browse_save_folder)
-        folder_row.addWidget(self._save_folder_browse_btn)
-        layout.addLayout(folder_row)
-
-        run_row = QHBoxLayout()
-        run_row.addStretch(1)
-        self._save_run_btn = QPushButton("Run save compatibility check")
-        self._save_run_btn.clicked.connect(self._on_run_save_check)
-        run_row.addWidget(self._save_run_btn)
-        layout.addLayout(run_row)
-
-        self._save_result = QTextEdit()
-        self._save_result.setReadOnly(True)
-        self._save_result.setPlaceholderText("Per-save results will appear here.")
-        self._save_result.setFixedHeight(160)
-        layout.addWidget(self._save_result)
-
-        history_title = QLabel("Recent save-compatibility runs")
-        history_title.setObjectName("SectionTitle")
-        layout.addWidget(history_title)
-        self._save_history = QTextEdit()
-        self._save_history.setReadOnly(True)
-        self._save_history.setFixedHeight(90)
-        layout.addWidget(self._save_history)
-
-    # --- Auto-Generated Unit Tests ------------------------------------------
-
-    def _build_test_generation(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Generate tests for this system")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
-            "Paste a C# script (or import a file) and Spiced drafts NUnit test code for it. "
-            "The draft is shown below for you to review and edit — nothing is written to your "
-            "project until you click \"Approve & write file\" on this specific draft."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        label_row = QHBoxLayout()
-        label_row.addWidget(QLabel("System name (optional):"))
-        self._testgen_label_input = QLineEdit()
-        self._testgen_label_input.setPlaceholderText("e.g. InventorySystem")
-        label_row.addWidget(self._testgen_label_input, 1)
-        layout.addLayout(label_row)
-
-        self._testgen_input = QPlainTextEdit()
-        self._testgen_input.setPlaceholderText("Paste the C# script to generate tests for…")
-        self._testgen_input.setFixedHeight(120)
-        layout.addWidget(self._testgen_input)
-
-        row = QHBoxLayout()
-        self._testgen_import_btn = QPushButton("Import script…")
-        self._testgen_import_btn.clicked.connect(self._on_testgen_import)
-        row.addWidget(self._testgen_import_btn)
-        row.addStretch(1)
-        self._testgen_generate_btn = QPushButton("Generate draft")
-        self._testgen_generate_btn.clicked.connect(self._on_testgen_generate)
-        row.addWidget(self._testgen_generate_btn)
-        layout.addLayout(row)
-
-        draft_label = QLabel("Draft (editable before approving):")
-        draft_label.setObjectName("Muted")
-        layout.addWidget(draft_label)
-        self._testgen_draft = QPlainTextEdit()
-        self._testgen_draft.setPlaceholderText("The AI-drafted NUnit test code will appear here.")
-        self._testgen_draft.setFixedHeight(200)
-        layout.addWidget(self._testgen_draft)
-
-        self._testgen_notes = QTextEdit()
-        self._testgen_notes.setReadOnly(True)
-        self._testgen_notes.setPlaceholderText("Assumptions the AI made will appear here.")
-        self._testgen_notes.setFixedHeight(70)
-        layout.addWidget(self._testgen_notes)
-
-        approve_row = QHBoxLayout()
-        approve_row.addStretch(1)
-        self._testgen_approve_btn = QPushButton("Approve & write file")
-        self._testgen_approve_btn.setEnabled(False)
-        self._testgen_approve_btn.clicked.connect(self._on_testgen_approve)
-        approve_row.addWidget(self._testgen_approve_btn)
-        layout.addLayout(approve_row)
-
-        self._testgen_status = QLabel()
-        self._testgen_status.setObjectName("Muted")
-        self._testgen_status.setWordWrap(True)
-        layout.addWidget(self._testgen_status)
-
-        history_title = QLabel("Recent drafts")
-        history_title.setObjectName("SectionTitle")
-        layout.addWidget(history_title)
-        self._testgen_history = QTextEdit()
-        self._testgen_history.setReadOnly(True)
-        self._testgen_history.setFixedHeight(90)
-        layout.addWidget(self._testgen_history)
 
     # --- Economy Simulation tab ---------------------------------------------
 
     def _build_economy_tab(self) -> QWidget:
         container, layout = self._scrollable()
+        self._build_economy_dominant_strategies(_card_section(layout))
+        self._build_economy_simulate(_card_section(layout))
+        return container
 
-        heading = QLabel("Economy / Balance Simulation")
-        heading.setObjectName("SectionTitle")
+    def _build_economy_dominant_strategies(self, layout: QVBoxLayout) -> None:
+        # The headline visual -- reuses the Feedback screen's "item name, N%
+        # of playthroughs, gradient bar" pattern (see _progress_row) instead
+        # of a plain text dump, straight from the already-computed
+        # EconomySimulationFindings once a simulation has run below.
+        self._economy_dominant_layout = layout
+        heading = QLabel("Dominant Strategies")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
+        dominant_empty = QLabel("Simulate below to see dominant strategies here.")
+        dominant_empty.setObjectName("Muted")
+        dominant_empty.setWordWrap(True)
+        layout.addWidget(dominant_empty)
 
-        intro = QLabel(
+    def _build_economy_simulate(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Simulate Economy")
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "Only useful for projects with a buy-with-currency progression system (items, "
-            "costs, unlock levels). Paste economy data in the format below and Spiced runs a "
-            "local, deterministic simulation across many simulated playthroughs, flagging any "
-            "item that turns out to be the mathematically dominant choice."
+            "costs, unlock levels). Paste economy data below and Spiced runs a local, "
+            "deterministic simulation across many simulated playthroughs, flagging any item "
+            f"that turns out to be the mathematically dominant choice.\n\n{ECONOMY_SCHEMA_DOC}"
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        schema_label = QLabel(ECONOMY_SCHEMA_DOC)
-        schema_label.setObjectName("Muted")
-        schema_label.setWordWrap(True)
-        layout.addWidget(schema_label)
+        layout.addWidget(heading)
 
         self._economy_input = QPlainTextEdit()
         self._economy_input.setPlaceholderText("Paste economy JSON here…")
-        self._economy_input.setFixedHeight(140)
+        self._economy_input.setFixedHeight(100)
         layout.addWidget(self._economy_input)
 
         row = QHBoxLayout()
-        self._economy_simulate_btn = QPushButton("Simulate (local, free)")
+        self._economy_simulate_btn = PillButton("Simulate (local, free)")
         self._economy_simulate_btn.clicked.connect(self._on_economy_simulate)
         row.addWidget(self._economy_simulate_btn)
         row.addStretch(1)
-        self._economy_ai_btn = QPushButton("Get AI summary")
-        self._economy_ai_btn.setObjectName("Ghost")
+        self._economy_ai_btn = PillButton("Get AI summary", ghost=True)
         self._economy_ai_btn.clicked.connect(self._on_economy_ai)
         row.addWidget(self._economy_ai_btn)
         layout.addLayout(row)
 
+        result_label = QLabel("Result")
+        result_label.setObjectName("SectionTitle")
+        layout.addWidget(result_label)
         self._economy_result = QTextEdit()
         self._economy_result.setReadOnly(True)
         self._economy_result.setPlaceholderText("Simulation results will appear here.")
-        self._economy_result.setFixedHeight(220)
+        self._economy_result.setFixedHeight(160)
         layout.addWidget(self._economy_result)
 
         history_title = QLabel("Recent simulations")
@@ -1146,36 +1093,45 @@ class TestingScreen(QWidget):
         self._economy_history.setFixedHeight(90)
         layout.addWidget(self._economy_history)
 
-        return container
-
     # --- Performance tab -------------------------------------------------
 
     def _build_performance_tab(self) -> QWidget:
         container, layout = self._scrollable()
+        self._build_performance_chart(_card_section(layout))
+        self._build_performance_analyze(_card_section(layout))
+        return container
 
-        heading = QLabel("Performance & Profiling")
-        heading.setObjectName("SectionTitle")
+    def _build_performance_chart(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Frame Rate")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
-
-        intro = QLabel(
-            "Paste or import numbers you already gathered (fps, memory, load time per "
-            "location) as text, CSV, or JSON — Spiced never profiles your build itself. "
-            "Optionally estimate a target hardware tier from those numbers (a simulation, "
-            "not a real device test)."
+        self._perf_chart_caption = QLabel(
+            "Analyze performance numbers below to see a per-location chart here."
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._perf_chart_caption.setObjectName("Muted")
+        self._perf_chart_caption.setWordWrap(True)
+        layout.addWidget(self._perf_chart_caption)
+        self._perf_chart = FrameRateBarChart()
+        layout.addWidget(self._perf_chart)
+
+    def _build_performance_analyze(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Analyze Performance Numbers")
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
+            "Paste or import numbers you already gathered (fps, memory, load time per "
+            "location) as text, CSV, or JSON — Spiced never profiles your build itself."
+        )
+        layout.addWidget(heading)
 
         self._perf_input = QPlainTextEdit()
         self._perf_input.setPlaceholderText(
             "e.g. Waterfall Area: fps=42, memory=850MB, load=3.2s"
         )
-        self._perf_input.setFixedHeight(120)
+        self._perf_input.setFixedHeight(90)
         layout.addWidget(self._perf_input)
 
         hw_row = QHBoxLayout()
-        hw_row.addWidget(QLabel("Target hardware:"))
+        hw_row.addWidget(QLabel("Target hardware (optional simulation, not a real device test):"))
         self._hardware_input = ScrollSafeComboBox()
         self._hardware_input.addItem(_NO_HARDWARE)
         self._hardware_input.addItems(available_tiers())
@@ -1183,19 +1139,22 @@ class TestingScreen(QWidget):
         layout.addLayout(hw_row)
 
         row = QHBoxLayout()
-        self._perf_import_btn = QPushButton("Import performance file…")
+        self._perf_import_btn = PillButton("Import performance file…", ghost=True)
         self._perf_import_btn.clicked.connect(self._on_perf_import)
         row.addWidget(self._perf_import_btn)
         row.addStretch(1)
-        self._perf_analyze_btn = QPushButton("Analyze")
+        self._perf_analyze_btn = PillButton("Analyze")
         self._perf_analyze_btn.clicked.connect(self._on_perf_analyze)
         row.addWidget(self._perf_analyze_btn)
         layout.addLayout(row)
 
+        result_label = QLabel("Result")
+        result_label.setObjectName("SectionTitle")
+        layout.addWidget(result_label)
         self._perf_result = QTextEdit()
         self._perf_result.setReadOnly(True)
         self._perf_result.setPlaceholderText("Your performance review will appear here.")
-        self._perf_result.setFixedHeight(220)
+        self._perf_result.setFixedHeight(160)
         layout.addWidget(self._perf_result)
 
         self._perf_source_link = SourceLinkExpander()
@@ -1206,57 +1165,65 @@ class TestingScreen(QWidget):
         layout.addWidget(history_title)
         self._perf_history = QTextEdit()
         self._perf_history.setReadOnly(True)
-        self._perf_history.setFixedHeight(110)
+        self._perf_history.setFixedHeight(90)
         layout.addWidget(self._perf_history)
-
-        return container
 
     # --- Accessibility tab -------------------------------------------------
 
     def _build_accessibility_tab(self) -> QWidget:
         container, layout = self._scrollable()
+        self._build_accessibility_checklist(_card_section(layout))
+        self._build_accessibility_analyze(_card_section(layout))
+        return container
 
-        heading = QLabel("Accessibility Pass")
-        heading.setObjectName("SectionTitle")
+    def _build_accessibility_checklist(self, layout: QVBoxLayout) -> None:
+        # The headline visual, per the design handoff -- populated from the
+        # already-computed ParsedAccessibility once an analysis has run (see
+        # _on_access_done/_render_access_checklist), not a separate AI call.
+        self._access_checklist_layout = layout
+        heading = QLabel("Accessibility Checklist")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
+        checklist_empty = QLabel("Paste and analyze a checklist below to see results here.")
+        checklist_empty.setObjectName("Muted")
+        checklist_empty.setWordWrap(True)
+        layout.addWidget(checklist_empty)
 
-        intro = QLabel(
+    def _build_accessibility_analyze(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Analyze for Accessibility")
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "Paste a small JSON description of your HUD colors, audio captions, and control/"
             "text-scaling support. Spiced runs real WCAG contrast math and a colorblind-"
-            "simulation check locally, then scores the checklist — never a shaming grade."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        example = QLabel(
-            '{"hud_elements": [{"name": "HealthBar", "foreground": "#FF4040", '
+            "simulation check locally, then scores the checklist — never a shaming grade. "
+            'Example: {"hud_elements": [{"name": "HealthBar", "foreground": "#FF4040", '
             '"background": "#550000"}], "audio_files": [{"name": "vo_01.wav", '
             '"captioned": true}], "controls_remappable": true, "text_scaling_supported": false}'
         )
-        example.setObjectName("Muted")
-        example.setWordWrap(True)
-        layout.addWidget(example)
+        layout.addWidget(heading)
 
         self._access_input = QPlainTextEdit()
-        self._access_input.setPlaceholderText("Paste accessibility checklist JSON here…")
-        self._access_input.setFixedHeight(120)
+        self._access_input.setPlaceholderText("Paste a script, UI text dump, or notes to check…")
+        self._access_input.setFixedHeight(90)
         layout.addWidget(self._access_input)
 
         row = QHBoxLayout()
-        self._access_import_btn = QPushButton("Import checklist file…")
+        self._access_import_btn = PillButton("Import checklist file…", ghost=True)
         self._access_import_btn.clicked.connect(self._on_access_import)
         row.addWidget(self._access_import_btn)
         row.addStretch(1)
-        self._access_analyze_btn = QPushButton("Analyze")
+        self._access_analyze_btn = PillButton("Analyze")
         self._access_analyze_btn.clicked.connect(self._on_access_analyze)
         row.addWidget(self._access_analyze_btn)
         layout.addLayout(row)
 
+        result_label = QLabel("Result")
+        result_label.setObjectName("SectionTitle")
+        layout.addWidget(result_label)
         self._access_result = QTextEdit()
         self._access_result.setReadOnly(True)
         self._access_result.setPlaceholderText("Your accessibility review will appear here.")
-        self._access_result.setFixedHeight(220)
+        self._access_result.setFixedHeight(160)
         layout.addWidget(self._access_result)
 
         self._access_source_link = SourceLinkExpander()
@@ -1267,25 +1234,21 @@ class TestingScreen(QWidget):
         layout.addWidget(history_title)
         self._access_history = QTextEdit()
         self._access_history.setReadOnly(True)
-        self._access_history.setFixedHeight(110)
+        self._access_history.setFixedHeight(90)
         layout.addWidget(self._access_history)
-
-        return container
 
     # --- Build & Release tab (Automated Build Pipeline + Store Checklist) --
 
     def _build_release_tab(self) -> QWidget:
         container, layout = self._scrollable()
-        self._build_build_pipeline_section(layout)
-        self._build_checklist_section(layout)
+        self._build_checklist_section(_card_section(layout))
+        self._build_build_pipeline_section(_hero_section(layout))
         return container
 
     def _build_build_pipeline_section(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Build Pipeline")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "Opt-in per project (Projects screen). When enabled, Spiced writes a standard "
             "Editor build script into this project if one doesn't already exist, then triggers "
             "a headless build here or nightly while Spiced is open (in-app scheduler only — "
@@ -1296,9 +1259,7 @@ class TestingScreen(QWidget):
             "Spiced's small result file — otherwise a real success may show here as \"no "
             "result file\" until the script adopts that convention (see the build log)."
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.addWidget(heading)
 
         self._build_status = QLabel()
         self._build_status.setObjectName("Muted")
@@ -1311,7 +1272,7 @@ class TestingScreen(QWidget):
         self._build_platform_input.addItems(list(unity_build.BUILD_TARGETS))
         row.addWidget(self._build_platform_input)
         row.addStretch(1)
-        self._build_run_btn = QPushButton("Run build now")
+        self._build_run_btn = PillButton("Run build now")
         self._build_run_btn.clicked.connect(self._on_run_build)
         row.addWidget(self._build_run_btn)
         layout.addLayout(row)
@@ -1339,25 +1300,20 @@ class TestingScreen(QWidget):
         self._stable_status.setObjectName("Muted")
         self._stable_status.setWordWrap(True)
         stable_row.addWidget(self._stable_status, 1)
-        self._mark_stable_btn = QPushButton("Mark latest successful build stable")
-        self._mark_stable_btn.setObjectName("Ghost")
+        self._mark_stable_btn = PillButton("Mark latest successful build stable", ghost=True)
         self._mark_stable_btn.clicked.connect(self._on_mark_stable)
         stable_row.addWidget(self._mark_stable_btn)
         layout.addLayout(stable_row)
 
     def _build_checklist_section(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Store Page / Build Checklist")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(
             "A small, deterministic \"ready to ship\" checklist per store — works fully "
             "offline, no AI needed. Platform specifics change over time, so every checklist "
             "ends with a reminder to verify against the platform's current docs."
         )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        layout.addWidget(heading)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Platform:"))
@@ -1366,19 +1322,21 @@ class TestingScreen(QWidget):
             self._checklist_platform_input.addItem(PLATFORM_LABELS[platform], platform)
         row.addWidget(self._checklist_platform_input)
         row.addStretch(1)
-        self._checklist_btn = QPushButton("Show checklist")
+        self._checklist_btn = PillButton("Show checklist")
         self._checklist_btn.clicked.connect(self._on_show_checklist)
         row.addWidget(self._checklist_btn)
-        self._checklist_ai_btn = QPushButton("Get AI take")
-        self._checklist_ai_btn.setObjectName("Ghost")
+        self._checklist_ai_btn = PillButton("Get AI take", ghost=True)
         self._checklist_ai_btn.clicked.connect(self._on_checklist_ai)
         row.addWidget(self._checklist_ai_btn)
         layout.addLayout(row)
 
+        result_label = QLabel("Result")
+        result_label.setObjectName("SectionTitle")
+        layout.addWidget(result_label)
         self._checklist_result = QTextEdit()
         self._checklist_result.setReadOnly(True)
         self._checklist_result.setPlaceholderText("Click \"Show checklist\" to see it.")
-        self._checklist_result.setFixedHeight(220)
+        self._checklist_result.setFixedHeight(160)
         layout.addWidget(self._checklist_result)
 
     # --- Refresh & state ---------------------------------------------------
@@ -1413,8 +1371,6 @@ class TestingScreen(QWidget):
         self._refresh_unity_run_status()
         self._refresh_build_pipeline_status()
         self._refresh_build_history()
-        self._refresh_save_history()
-        self._refresh_testgen_history()
         self._refresh_economy_history()
         self._update_edit_buttons()
 
@@ -1434,20 +1390,40 @@ class TestingScreen(QWidget):
         team_linked = bool(project and project.project_uuid)
         self._issue_send_btn.setEnabled(has_issue and team_linked)
 
+    def _remove_combined_items(self, kind: str) -> None:
+        """Removes only rows of the given kind from the merged list --
+        _refresh_cases and _refresh_known_issues each own one kind and run
+        independently (from many call sites), so a full clear() would lose
+        the other kind's rows and its current selection every time."""
+        for index in reversed(range(self._combined_list.count())):
+            item = self._combined_list.item(index)
+            if item.data(_ITEM_KIND_ROLE) == kind:
+                self._combined_list.takeItem(index)
+
+    def _update_combined_empty_state(self) -> None:
+        has_rows = self._combined_list.count() > 0
+        self._combined_empty.setVisible(not has_rows)
+        self._combined_list.setVisible(has_rows)
+
     def _refresh_cases(self) -> None:
-        self._case_list.blockSignals(True)
-        self._case_list.clear()
+        self._combined_list.blockSignals(True)
+        self._remove_combined_items("case")
         project = self._services.active_project()
         cases = self._services.testing.list_cases(project.id) if project else []
-        for case in cases:
-            note = f"  — {case.failure_note}" if case.status == "Fail" and case.failure_note else ""
-            label = f"[{case.status}] {case.title}  ·  {case.category}  ·  {case.priority}{note}"
-            item = QListWidgetItem(label)
+        for index, case in enumerate(cases):
+            note = f" — {case.failure_note}" if case.status == "Fail" and case.failure_note else ""
+            subtitle = f"{case.category} · {case.priority}{note}"
+            item = QListWidgetItem()
             item.setData(_USER_ROLE, case.id)
-            self._case_list.addItem(item)
-        self._case_list.blockSignals(False)
-        self._cases_empty.setVisible(not cases)
-        self._case_list.setVisible(bool(cases))
+            item.setData(_ITEM_KIND_ROLE, "case")
+            # Cases sort before issues -- insert at the front rather than
+            # appending, since issue rows may already be sitting at the end.
+            self._combined_list.insertItem(index, item)
+            row = _status_row(_CASE_STATUS_STATE.get(case.status, "neutral"), case.title, subtitle)
+            item.setSizeHint(row.sizeHint())
+            self._combined_list.setItemWidget(item, row)
+        self._combined_list.blockSignals(False)
+        self._update_combined_empty_state()
 
     def _refresh_history(self) -> None:
         project = self._services.active_project()
@@ -1468,25 +1444,28 @@ class TestingScreen(QWidget):
         self._history.setPlainText("\n".join(lines))
 
     def _refresh_known_issues(self) -> None:
-        self._issues_list.blockSignals(True)
-        self._issues_list.clear()
+        self._combined_list.blockSignals(True)
+        self._remove_combined_items("issue")
         project = self._services.active_project()
         issues = self._services.testing.known_issues(project.id) if project else []
         self._known_issues_cache = list(issues)
         for issue in issues:
             when = issue.resolved_at or issue.last_seen_at
-            label = (
-                f"[{issue.status}] {issue.title}  ·  seen {issue.occurrences}x  ·  "
-                f"{'resolved ' if issue.status == STATUS_RESOLVED else 'last seen '}{when}"
-            )
+            when_label = "resolved" if issue.status == STATUS_RESOLVED else "last seen"
+            subtitle = f"seen {issue.occurrences}x · {when_label} {when}"
             if issue.source == SOURCE_PLAYER:
-                label += "  ·  from players"
-            item = QListWidgetItem(label)
+                subtitle += " · from players"
+            state = "pass" if issue.status == STATUS_RESOLVED else "fail"
+            item = QListWidgetItem()
             item.setData(_USER_ROLE, issue.id)
-            self._issues_list.addItem(item)
-        self._issues_list.blockSignals(False)
-        self._issues_empty.setVisible(not issues)
-        self._issues_list.setVisible(bool(issues))
+            item.setData(_ITEM_KIND_ROLE, "issue")
+            # Issues sort after cases -- always appended at the end.
+            self._combined_list.addItem(item)
+            row = _status_row(state, issue.title, subtitle)
+            item.setSizeHint(row.sizeHint())
+            self._combined_list.setItemWidget(item, row)
+        self._combined_list.blockSignals(False)
+        self._update_combined_empty_state()
         self._selected_issue_id = None
         self._issue_comments.set_subject(None, "known_issue", "")
         self._update_edit_buttons()
@@ -1580,12 +1559,20 @@ class TestingScreen(QWidget):
             expected_result=self._expected_input.toPlainText().strip() or None,
         )
         self._selected_case_id = None
-        self._case_list.setCurrentItem(None)
+        self._combined_list.setCurrentItem(None)
         self._title_input.clear()
         self._steps_input.clear()
         self._expected_input.clear()
         self._refresh_cases()
         self._update_edit_buttons()
+
+    def _on_combined_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
+        """Routes a selection in the merged Test Cases & Known Issues list
+        to whichever kind of row it actually is -- clearing the other
+        kind's selection, same as when each had its own separate list."""
+        kind = current.data(_ITEM_KIND_ROLE) if current is not None else None
+        self._on_case_selected(current if kind == "case" else None)
+        self._on_issue_selected(current if kind == "issue" else None)
 
     def _on_case_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
         if current is None:
@@ -1609,7 +1596,7 @@ class TestingScreen(QWidget):
 
     def _on_clear_selection(self) -> None:
         self._selected_case_id = None
-        self._case_list.setCurrentItem(None)
+        self._combined_list.setCurrentItem(None)
         self._title_input.clear()
         self._category_input.setCurrentText("General")
         self._priority_input.setCurrentText("Medium")
@@ -1661,8 +1648,8 @@ class TestingScreen(QWidget):
         self._failure_note_input.setEnabled(status == "Fail")
 
     def _on_update_status(self) -> None:
-        item = self._case_list.currentItem()
-        if item is None:
+        item = self._combined_list.currentItem()
+        if item is None or item.data(_ITEM_KIND_ROLE) != "case":
             QMessageBox.information(self, "Select a test case", "Pick a test case from the list.")
             return
         case_id = int(item.data(_USER_ROLE))
@@ -1755,14 +1742,17 @@ class TestingScreen(QWidget):
             )
             return
 
-        platform_choice = self._unity_platform_input.currentText()
+        platform_choice = next(
+            (p for p, btn in self._unity_platform_buttons.items() if btn.isChecked()), EDIT_MODE
+        )
         if platform_choice == _BOTH_PLATFORMS:
             platforms = [EDIT_MODE, PLAY_MODE]
         else:
             platforms = [platform_choice]
 
         self._unity_run_btn.setEnabled(False)
-        self._unity_platform_input.setEnabled(False)
+        for btn in self._unity_platform_buttons.values():
+            btn.setEnabled(False)
         self._unity_run_result.setPlainText(
             "Launching Unity — this can take a while, especially on a first run…"
         )
@@ -1806,7 +1796,8 @@ class TestingScreen(QWidget):
 
     def _on_unity_run_finished(self) -> None:
         self._unity_run_btn.setEnabled(True)
-        self._unity_platform_input.setEnabled(True)
+        for btn in self._unity_platform_buttons.values():
+            btn.setEnabled(True)
 
     # --- Known Issues handlers ----------------------------------------------
 
@@ -1972,11 +1963,30 @@ class TestingScreen(QWidget):
         if review.simulation is not None:
             description += f" Includes a {review.simulation.tier} hardware simulation estimate."
         self._perf_source_link.set_source(description, review.parsed.excerpt)
+        self._render_perf_chart(review.parsed)
         self._perf_pending_filename = None
         self._perf_analyze_btn.setEnabled(True)
         self._perf_analyze_btn.setText("Analyze")
         self.usage_changed.emit()
         self._refresh_perf_history()
+
+    def _render_perf_chart(self, parsed) -> None:
+        fps_spike_locations = {s.location for s in parsed.spikes if s.metric == "fps"}
+        bars = [
+            (sample.location, sample.fps, sample.location in fps_spike_locations)
+            for sample in parsed.samples
+            if sample.fps is not None
+        ]
+        self._perf_chart.set_data(bars)
+        if not bars:
+            self._perf_chart_caption.setText("No fps values found in the pasted/imported data.")
+        elif fps_spike_locations:
+            worst = min(
+                (s for s in parsed.spikes if s.metric == "fps"), key=lambda s: s.value
+            )
+            self._perf_chart_caption.setText(worst.message)
+        else:
+            self._perf_chart_caption.setText("No frame-rate dips flagged across these locations.")
 
     def _on_perf_failed(self, message: str) -> None:
         self._perf_result.setPlainText(message)
@@ -2026,6 +2036,7 @@ class TestingScreen(QWidget):
 
     def _on_access_done(self, review: AccessibilityReview) -> None:
         self._access_result.setPlainText(review.response_text)
+        self._render_access_checklist(review.parsed)
         self._access_source_link.set_source(
             "From the pasted/imported accessibility checklist below (real WCAG contrast "
             "math and a colorblind-simulation check ran locally on this data).",
@@ -2036,6 +2047,52 @@ class TestingScreen(QWidget):
         self._access_analyze_btn.setText("Analyze")
         self.usage_changed.emit()
         self._refresh_access_history()
+
+    def _render_access_checklist(self, parsed) -> None:
+        """The Accessibility checklist card: label left, bold colored status
+        right, straight from the already-computed ParsedAccessibility --
+        deterministic and local, no extra AI call."""
+        _clear_layout(self._access_checklist_layout)
+        heading = QLabel("Accessibility Checklist")
+        heading.setObjectName("CardTitle")
+        self._access_checklist_layout.addWidget(heading)
+
+        rows_added = False
+        if parsed.contrast_checks:
+            passing = sum(1 for c in parsed.contrast_checks if c.passes)
+            total = len(parsed.contrast_checks)
+            state = "pass" if passing == total else ("fail" if passing == 0 else "warn")
+            self._access_checklist_layout.addWidget(
+                _checklist_row("Contrast (WCAG)", f"{passing}/{total} pass", state)
+            )
+            rows_added = True
+        if parsed.caption_total:
+            pct = parsed.caption_coverage_pct or 0.0
+            state = "pass" if pct >= 100 else ("fail" if pct < 50 else "warn")
+            status = f"{parsed.caption_covered}/{parsed.caption_total} ({pct:.0f}%)"
+            self._access_checklist_layout.addWidget(
+                _checklist_row("Caption coverage", status, state)
+            )
+            rows_added = True
+        if parsed.controls_remappable is not None:
+            state = "pass" if parsed.controls_remappable else "warn"
+            status = "Yes" if parsed.controls_remappable else "No"
+            self._access_checklist_layout.addWidget(
+                _checklist_row("Remappable controls", status, state)
+            )
+            rows_added = True
+        if parsed.text_scaling_supported is not None:
+            state = "pass" if parsed.text_scaling_supported else "warn"
+            status = "Yes" if parsed.text_scaling_supported else "No"
+            self._access_checklist_layout.addWidget(
+                _checklist_row("Text scaling", status, state)
+            )
+            rows_added = True
+        if not rows_added:
+            empty = QLabel("No checklist data recognized in the pasted/imported JSON.")
+            empty.setObjectName("Muted")
+            empty.setWordWrap(True)
+            self._access_checklist_layout.addWidget(empty)
 
     def _on_access_failed(self, message: str) -> None:
         self._access_result.setPlainText(message)
@@ -2205,173 +2262,6 @@ class TestingScreen(QWidget):
         current = self._checklist_result.toPlainText()
         self._checklist_result.setPlainText(f"{current}\n\n{message}")
 
-    # --- Save Compatibility handlers ----------------------------------------
-
-    def _on_browse_save_exe(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Choose your built game executable", "", "Executable (*.exe);;All files (*)"
-        )
-        if path:
-            self._save_exe_input.setText(path)
-
-    def _on_browse_save_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Choose a folder of save files")
-        if folder:
-            self._save_folder_input.setText(folder)
-
-    def _on_run_save_check(self) -> None:
-        project = self._services.active_project()
-        if project is None:
-            QMessageBox.information(
-                self, "Pick a project first", "Select a project on the Projects screen."
-            )
-            return
-        exe_path = self._save_exe_input.text().strip()
-        folder = self._save_folder_input.text().strip()
-        if not exe_path or not folder:
-            QMessageBox.information(
-                self, "Missing info", "Set both the game executable and the saves folder above."
-            )
-            return
-        self._save_run_btn.setEnabled(False)
-        self._save_result.setPlainText(
-            "Running the game once per save file — this can take a while…"
-        )
-        worker = _SaveIntegrityWorker(self._services, project, exe_path, folder)
-        thread = launch_worker(self, worker)
-        thread.started.connect(worker.run)
-        worker.done.connect(self._on_save_check_done)
-        worker.failed.connect(self._on_save_check_failed)
-        worker.done.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.start()
-
-    def _on_save_check_done(self, run: SaveIntegrityRun) -> None:
-        self._save_run_btn.setEnabled(True)
-        lines = [f"{run.passed_count} passed / {run.failed_count} not passed:"]
-        for r in run.results:
-            marker = "OK" if r.status == STATUS_PASSED else r.status.upper()
-            detail = f" — {r.error}" if r.error else ""
-            lines.append(f"  [{marker}] {r.save_file}{detail}")
-        self._save_result.setPlainText("\n".join(lines))
-        self._refresh_save_history()
-
-    def _on_save_check_failed(self, message: str) -> None:
-        self._save_run_btn.setEnabled(True)
-        self._save_result.setPlainText(message)
-
-    def _refresh_save_history(self) -> None:
-        project = self._services.active_project()
-        if project is None:
-            self._save_history.setPlainText("Runs are saved once you select an active project.")
-            return
-        reports = self._services.save_load_tester.history(project.id, limit=5)
-        if not reports:
-            self._save_history.setPlainText(
-                "No save-compatibility runs saved for this project yet."
-            )
-            return
-        lines = [
-            f"[{r.created_at}] {r.passed_count} passed / {r.failed_count} not passed "
-            f"· {r.saves_folder}"
-            for r in reports
-        ]
-        self._save_history.setPlainText("\n".join(lines))
-
-    # --- Auto-Generated Unit Tests handlers ---------------------------------
-
-    def _on_testgen_import(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import a script", "", "C# scripts (*.cs);;All files (*)"
-        )
-        if not path:
-            return
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            QMessageBox.warning(self, "Couldn't read file", str(exc))
-            return
-        self._testgen_input.setPlainText(text)
-        if not self._testgen_label_input.text().strip():
-            self._testgen_label_input.setText(Path(path).stem)
-
-    def _on_testgen_generate(self) -> None:
-        project = self._services.active_project()
-        if project is None:
-            QMessageBox.information(
-                self, "Pick a project first", "Select a project on the Projects screen."
-            )
-            return
-        source = self._testgen_input.toPlainText().strip()
-        if not source:
-            QMessageBox.information(self, "Nothing to draft from", "Paste a script above first.")
-            return
-        label = self._testgen_label_input.text().strip() or None
-        self._testgen_generate_btn.setEnabled(False)
-        self._testgen_generate_btn.setText("Thinking…")
-        self._testgen_approve_btn.setEnabled(False)
-        self._testgen_status.setText("")
-
-        worker = _TestGenerationWorker(self._services, project, source, label)
-        thread = launch_worker(self, worker)
-        thread.started.connect(worker.run)
-        worker.done.connect(self._on_testgen_done)
-        worker.failed.connect(self._on_testgen_failed)
-        worker.done.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.start()
-
-    def _on_testgen_done(self, result: TestGenerationResult) -> None:
-        self._testgen_generate_btn.setEnabled(True)
-        self._testgen_generate_btn.setText("Generate draft")
-        self._current_test_draft = result
-        self._testgen_draft.setPlainText(result.draft.draft_text or "")
-        self._testgen_notes.setPlainText(result.response_text)
-        self._testgen_approve_btn.setEnabled(True)
-        self._testgen_status.setText(
-            "Draft saved for review. Edit the code above if you like, then Approve to write it."
-        )
-        self.usage_changed.emit()
-        self._refresh_testgen_history()
-
-    def _on_testgen_failed(self, message: str) -> None:
-        self._testgen_generate_btn.setEnabled(True)
-        self._testgen_generate_btn.setText("Generate draft")
-        self._testgen_status.setText(message)
-
-    def _on_testgen_approve(self) -> None:
-        project = self._services.active_project()
-        if project is None or self._current_test_draft is None:
-            return
-        edited = self._testgen_draft.toPlainText()
-        try:
-            draft = self._services.test_generator.approve_and_write(
-                project, self._current_test_draft.draft.id, edited_text=edited
-            )
-        except Exception as exc:
-            QMessageBox.warning(self, "Couldn't write file", str(exc))
-            return
-        self._testgen_status.setText(f"Written to {draft.written_path}.")
-        self._testgen_approve_btn.setEnabled(False)
-        self._refresh_testgen_history()
-
-    def _refresh_testgen_history(self) -> None:
-        project = self._services.active_project()
-        if project is None:
-            self._testgen_history.setPlainText(
-                "Drafts are saved once you select an active project."
-            )
-            return
-        drafts = self._services.test_generator.history(project.id, limit=5)
-        if not drafts:
-            self._testgen_history.setPlainText("No test drafts generated for this project yet.")
-            return
-        lines = []
-        for d in drafts:
-            status = f"written to {d.written_path}" if d.approved else "not yet approved"
-            lines.append(f"[{d.created_at}] {d.system_label or '(unnamed system)'} · {status}")
-        self._testgen_history.setPlainText("\n".join(lines))
-
     # --- Economy Simulation handlers ----------------------------------------
 
     def _current_economy_data(self) -> dict | None:
@@ -2398,6 +2288,26 @@ class TestingScreen(QWidget):
             self._economy_result.setPlainText(f"That doesn't match the expected format: {exc}")
             return
         self._economy_result.setPlainText(_format_economy_findings(findings))
+        self._render_dominant_strategies(findings)
+
+    def _render_dominant_strategies(self, findings: EconomySimulationFindings) -> None:
+        _clear_layout(self._economy_dominant_layout)
+        heading = QLabel("Dominant Strategies")
+        heading.setObjectName("CardTitle")
+        self._economy_dominant_layout.addWidget(heading)
+        if not findings.dominant_strategies:
+            empty = QLabel("None found — no item dominated the simulated playthroughs.")
+            empty.setObjectName("Muted")
+            empty.setWordWrap(True)
+            self._economy_dominant_layout.addWidget(empty)
+            return
+        for d in findings.dominant_strategies:
+            pct = d.pick_rate * 100
+            self._economy_dominant_layout.addWidget(
+                _progress_row(
+                    d.item_name, pct, f"{pct:.0f}% of playthroughs · unlocks lvl {d.from_level}"
+                )
+            )
 
     def _on_economy_ai(self) -> None:
         project = self._services.active_project()
