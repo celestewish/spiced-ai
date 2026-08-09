@@ -1274,6 +1274,89 @@ def build_test_generation_prompt(
     )
 
 
+# Rules for turning one of the developer's own plain-language QA test cases
+# (title/steps/expected result — from the Functional tab's test case list,
+# not pasted code) into a Unity/NUnit test script. Deliberately separate
+# from TEST_GENERATION_RULES above: that prompt hands the AI real source
+# code and tells it not to invent behavior beyond what that code shows: here
+# there is no source code at all, so the AI has to invent a plausible
+# implementation (guessing at class/method names) and is asked to flag those
+# guesses instead of being told to avoid them.
+TEST_CASE_SCRIPT_RULES: tuple[str, ...] = (
+    "Respond in English unless the developer asks for another language.",
+    "Speak like a calm, professional companion — a helpful teammate, not a hype machine.",
+    "Write real, compilable NUnit 3 C# test code (using UnityEngine.TestTools / "
+    "NUnit.Framework as appropriate) that carries out the described steps and asserts the "
+    "described expected result — not placeholder stubs.",
+    "The developer described this test case in plain language, not code, and you were not "
+    "given the actual game source — make reasonable, clearly-named assumptions about the "
+    "class/method/component names involved rather than leaving them unimplemented.",
+    "Put the test code in a single ```csharp fenced code block so it can be extracted cleanly.",
+    "Name the test class clearly after the test case, ending in \"Tests\".",
+    "List, outside the code block, the assumptions you made about class/method/component names "
+    "or APIs — this is the main thing the developer needs to check before running it.",
+    "Never claim you wrote this to disk, ran it, or that it's part of the test suite yet — the "
+    "developer reviews and explicitly approves before anything is written anywhere.",
+    "Never claim you changed any other file.",
+)
+
+
+def _format_test_case_script_rules() -> str:
+    return "\n".join(f"- {rule}" for rule in TEST_CASE_SCRIPT_RULES)
+
+
+TEST_CASE_SCRIPT_RESPONSE_FORMAT = """Structure your reply exactly like this:
+
+Here's a draft Unity test script for "{system_label}".
+
+```csharp
+[full NUnit test class]
+```
+
+Assumptions I made about your project:
+- [class/method/component names or APIs you had to guess at]
+
+Before you approve this:
+[A short, honest reminder to review the draft and adjust names/assumptions before saving — \
+this hasn't been written anywhere or run yet]"""
+
+
+def build_test_case_script_prompt(
+    title: str,
+    steps: str | None,
+    expected_result: str | None,
+    *,
+    project_name: str | None = None,
+) -> str:
+    """Assemble a prompt asking the AI to draft a Unity test script that
+    implements one of the developer's own existing QA test cases — distinct
+    from build_test_generation_prompt, which drafts tests *for* a pasted
+    script the developer already has in hand. Only the test case's own
+    title/steps/expected fields are included — never any other project data
+    — and Spiced never writes anything from this call; writing only happens
+    later, from an explicit per-draft Approve click.
+    """
+    project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
+    description_lines = [f"Title: {title}"]
+    if steps:
+        description_lines.append(f"Steps:\n{steps}")
+    if expected_result:
+        description_lines.append(f"Expected result:\n{expected_result}")
+    description = "\n\n".join(description_lines)
+    return (
+        "You are Spiced, a calm companion drafting a Unity test script for an indie developer's "
+        "own QA test case. You never write files yourself — the developer reviews, edits, and "
+        "explicitly approves before anything is saved anywhere.\n\n"
+        "Follow these rules:\n"
+        f"{_format_test_case_script_rules()}\n\n"
+        f"{project_line}\n\n"
+        "Test case the developer already wrote (from their own QA test-case list, not pasted "
+        "code):\n"
+        f"{description}\n\n"
+        f"{TEST_CASE_SCRIPT_RESPONSE_FORMAT.format(system_label=title)}\n"
+    )
+
+
 # Rules specific to Pre-Commit Review's optional AI pass (Phase E, section 6).
 # The local findings are already deterministic; the AI only adds a brief,
 # calm gloss. This is a heads-up shown alongside `git commit` output, never a

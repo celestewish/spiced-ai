@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from spiced.ai.base import AIProvider
-from spiced.ai.prompt_templates import build_test_generation_prompt
+from spiced.ai.prompt_templates import build_test_case_script_prompt, build_test_generation_prompt
 from spiced.storage.generated_test_drafts import GeneratedTestDraft, GeneratedTestDraftRepository
 from spiced.storage.projects import Project
+from spiced.storage.test_cases import TestCase
 
 MAX_SOURCE_EXCERPT_CHARS = 6000
 
@@ -141,6 +142,51 @@ class TestGeneratorService:
             project_id=project.id,
             system_label=system_label,
             source_excerpt=excerpt,
+            draft_text=extract_code_block(response.text),
+            provider=response.provider,
+        )
+        return TestGenerationResult(
+            draft=draft, response_text=response.text, provider=response.provider
+        )
+
+    def generate_draft_from_test_case(
+        self,
+        provider: AIProvider,
+        project: Project,
+        test_case: TestCase,
+        *,
+        record_usage=None,
+    ) -> TestGenerationResult:
+        """Draft a Unity test script implementing one of the developer's own,
+        already-created QA test cases — never writes any file. Same review/
+        approve flow as generate_draft, just a different prompt (and a
+        different source_excerpt saved for the draft's history/audit trail:
+        the test case's own title/steps/expected, not pasted code) since
+        there's no source code to hand the AI here.
+        """
+        if not provider.is_available():
+            raise ProviderNotReadyError(
+                f"The {provider.display_name()} provider isn't ready. Add its API key to a "
+                "local .env file (see .env.example), or switch to the Mock provider in Settings."
+            )
+        prompt = build_test_case_script_prompt(
+            test_case.title,
+            test_case.steps,
+            test_case.expected_result,
+            project_name=project.name,
+        )
+        response = provider.generate(prompt)
+        if record_usage is not None:
+            record_usage(response.provider)
+        excerpt_parts = [f"Title: {test_case.title}"]
+        if test_case.steps:
+            excerpt_parts.append(f"Steps:\n{test_case.steps}")
+        if test_case.expected_result:
+            excerpt_parts.append(f"Expected result:\n{test_case.expected_result}")
+        draft = self._drafts.create(
+            project_id=project.id,
+            system_label=test_case.title,
+            source_excerpt="\n\n".join(excerpt_parts),
             draft_text=extract_code_block(response.text),
             provider=response.provider,
         )
