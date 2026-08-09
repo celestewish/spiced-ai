@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -39,6 +38,8 @@ from spiced.core.localization_audio_sync import (
 )
 from spiced.core.mix_level_qa import WAV_ONLY_CAVEAT, MixQaBatchResult
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.tool_switcher import build_tool_switcher
 
 
 class _AudioChecklistWorker(QObject):
@@ -251,9 +252,15 @@ class AudioScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_audio_checklist(layout)
-        self._build_mix_qa(layout)
-        self._build_localization_audio_sync(layout)
+        columns, self._stack, self._tool_group = build_tool_switcher(
+            self,
+            [
+                ("Audio Implementation Checklist", self._build_audio_checklist),
+                ("Mix/Level QA", self._build_mix_qa),
+                ("Localization Audio Sync", self._build_localization_audio_sync),
+            ],
+        )
+        layout.addLayout(columns, 1)
 
         self.refresh()
 
@@ -276,7 +283,7 @@ class AudioScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._audio_checklist_run_btn = QPushButton("Run checklist")
+        self._audio_checklist_run_btn = PillButton("Run checklist")
         self._audio_checklist_run_btn.clicked.connect(self._on_audio_checklist_run)
         row.addWidget(self._audio_checklist_run_btn)
         layout.addLayout(row)
@@ -293,8 +300,7 @@ class AudioScreen(QWidget):
         # "audio" and a source_ref back to the first flagged gap.
         team_board_row = QHBoxLayout()
         team_board_row.addStretch(1)
-        self._audio_send_btn = QPushButton("Send to Team Board")
-        self._audio_send_btn.setObjectName("Ghost")
+        self._audio_send_btn = PillButton("Send to Team Board", ghost=True)
         self._audio_send_btn.setEnabled(False)
         self._audio_send_btn.clicked.connect(self._on_send_audio_gaps_to_team_board)
         team_board_row.addWidget(self._audio_send_btn)
@@ -420,10 +426,10 @@ class AudioScreen(QWidget):
         self._mix_folder_input = QLineEdit()
         self._mix_folder_input.setPlaceholderText("Folder to scan for .wav files")
         row.addWidget(self._mix_folder_input, 1)
-        self._mix_browse_btn = QPushButton("Browse…")
+        self._mix_browse_btn = PillButton("Browse…")
         self._mix_browse_btn.clicked.connect(self._on_mix_browse)
         row.addWidget(self._mix_browse_btn)
-        self._mix_run_btn = QPushButton("Run Mix QA")
+        self._mix_run_btn = PillButton("Run Mix QA")
         self._mix_run_btn.clicked.connect(self._on_mix_run)
         row.addWidget(self._mix_run_btn)
         layout.addLayout(row)
@@ -497,10 +503,10 @@ class AudioScreen(QWidget):
         self._loc_folder_input = QLineEdit()
         self._loc_folder_input.setPlaceholderText("Folder of voice-line audio files")
         row.addWidget(self._loc_folder_input, 1)
-        self._loc_browse_btn = QPushButton("Browse…")
+        self._loc_browse_btn = PillButton("Browse…")
         self._loc_browse_btn.clicked.connect(self._on_loc_browse)
         row.addWidget(self._loc_browse_btn)
-        self._loc_run_btn = QPushButton("Check sync")
+        self._loc_run_btn = PillButton("Check sync")
         self._loc_run_btn.clicked.connect(self._on_loc_run)
         row.addWidget(self._loc_run_btn)
         layout.addLayout(row)

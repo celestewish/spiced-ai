@@ -25,6 +25,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from spiced.ui.widgets.pill_button import PillButton
+
 
 class _ExpanderMixin:
     """Shared "label + Why? ▸/▾ toggle + hidden body" click behavior.
@@ -72,8 +74,7 @@ class SourceLinkExpander(_ExpanderMixin, QFrame):
         self._description.setObjectName("Muted")
         self._description.setWordWrap(True)
         top.addWidget(self._description, 1)
-        toggle = QPushButton("Why am I seeing this? ▸")
-        toggle.setObjectName("Ghost")
+        toggle = PillButton("Why am I seeing this? ▸", ghost=True)
         top.addWidget(toggle)
         layout.addLayout(top)
 

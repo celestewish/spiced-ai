@@ -15,7 +15,7 @@ source link's "hidden entirely until there's something to show" shape.
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 from spiced.core.dashboard import (
     DEMO_CANDIDATE,
@@ -24,17 +24,29 @@ from spiced.core.dashboard import (
     STABILIZING,
     ReadinessAssessment,
 )
+from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.pill_label import PillLabel
 from spiced.ui.widgets.source_link import _ExpanderMixin
 
-# Frutiger Aqua theme (ui.theme): a color-coded gel pill instead of plain
-# text -- keyed off the same label strings core.dashboard already returns,
-# so neither call site (dashboard.py, testing.py) needs to change. Any label
-# not in this map (there shouldn't be one) falls back to "neutral".
+# Frutiger Aqua theme (ui.theme): a solid color-coded gel pill instead of
+# plain text -- keyed off the same label strings core.dashboard already
+# returns, so neither call site (dashboard.py, testing.py) needs to change.
+# Any label not in this map (there shouldn't be one) falls back to "neutral".
 _STATE_BY_LABEL = {
     NOT_ENOUGH_DATA: "neutral",
     NEEDS_REVIEW: "bad",
     STABILIZING: "warn",
     DEMO_CANDIDATE: "good",
+}
+
+# Playtester-facing pill copy (design handoff shows "Ready for Playtesters"
+# as the header pill) -- same underlying real assessment as the label
+# above, just phrased for a compact badge instead of "Build health: X".
+_PILL_TEXT_BY_LABEL = {
+    NOT_ENOUGH_DATA: "Not Enough Data",
+    NEEDS_REVIEW: "Needs Review",
+    STABILIZING: "Stabilizing",
+    DEMO_CANDIDATE: "Ready for Playtesters",
 }
 
 
@@ -48,12 +60,11 @@ class ReadinessBadge(_ExpanderMixin, QFrame):
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        self._label = QLabel("Build health: —")
-        self._label.setObjectName("ReadinessLabel")
+        self._label = PillLabel("—")
+        self._label.setObjectName("ReadinessPill")
         top.addWidget(self._label)
         top.addStretch(1)
-        toggle = QPushButton("Why? ▸")
-        toggle.setObjectName("Ghost")
+        toggle = PillButton("Why? ▸", ghost=True)
         top.addWidget(toggle)
         layout.addLayout(top)
 
@@ -68,12 +79,12 @@ class ReadinessBadge(_ExpanderMixin, QFrame):
         self, readiness: ReadinessAssessment | None, *, team_linked: bool = False
     ) -> None:
         if readiness is None:
-            self._label.setText("Build health: no active project")
+            self._label.setText("No Active Project")
             self._set_state("neutral")
             self._body.setText("Select an active project on the Projects screen.")
             return
 
-        self._label.setText(f"Build health: {readiness.label}")
+        self._label.setText(_PILL_TEXT_BY_LABEL.get(readiness.label, readiness.label))
         self._set_state(_STATE_BY_LABEL.get(readiness.label, "neutral"))
         lines = ["Why:"]
         lines += [f"• {item}" for item in readiness.evidence] or ["• (no evidence yet)"]
@@ -87,7 +98,7 @@ class ReadinessBadge(_ExpanderMixin, QFrame):
         self._body.setText("\n".join(lines))
 
     def _set_state(self, state: str) -> None:
-        """Re-applies the ``QLabel#ReadinessLabel[state="..."]`` QSS rule
+        """Re-applies the ``QLabel#ReadinessPill[state="..."]`` QSS rule
         (ui.theme) -- Qt only re-evaluates dynamic-property selectors after
         an explicit unpolish/polish, not just on setProperty."""
         self._label.setProperty("state", state)

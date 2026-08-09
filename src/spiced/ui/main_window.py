@@ -9,8 +9,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
-    QLabel,
-    QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.core.keyboard_shortcuts import ACTIONS, binding_for, load_bindings
+from spiced.ui import theme
 from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
@@ -38,6 +38,7 @@ from spiced.ui.screens.testing import TestingScreen
 from spiced.ui.shortcuts_cheatsheet import ShortcutsCheatSheet
 from spiced.ui.top_bar import TopBar
 from spiced.ui.widgets.mascot_logo import MascotLogo
+from spiced.ui.widgets.nav_icons import NavOrbButton
 
 # Frutiger Aqua ambient background (MainWindow.paintEvent): two soft radial
 # "glow" blobs -- one warm (echoing the sunset horizon/mascot), one cool
@@ -90,6 +91,26 @@ NAV_ITEMS = [
     "Roadmap",
     "Settings",
 ]
+
+# Icon-only sidebar (ui.widgets.nav_icons): one glyph kind per real NAV_ITEMS
+# screen -- 14 items, not the design handoff's 6, since Spiced actually has
+# 14 screens and every one needs to stay reachable.
+_NAV_ICON_KINDS = {
+    "Dashboard": "dashboard",
+    "Projects": "projects",
+    "Debugging Buddy": "debugging",
+    "Automated Testing": "testing",
+    "Feedback Review": "feedback",
+    "Marketing": "marketing",
+    "Business": "business",
+    "Art": "art",
+    "Audio": "audio",
+    "Animation": "animation",
+    "Shaders/VFX": "shaders_vfx",
+    "Team": "team",
+    "Roadmap": "roadmap",
+    "Settings": "settings",
+}
 
 _DASHBOARD_INDEX = 0
 
@@ -381,44 +402,75 @@ class MainWindow(QWidget):
         self._switch_active_project(target.id)
 
     def _build_sidebar(self) -> QFrame:
+        """84px icon-only rail (design handoff) -- the wordmark/tagline move
+        to the top bar (see ui.top_bar.TopBar, which already shows "Spiced"),
+        since there's no room for them here. The icon list itself sits in a
+        QScrollArea so all 14 real screens (vs. the handoff's 6) stay
+        reachable at the app's minimum window height without clipping."""
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(84)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(14, 18, 14, 18)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 18, 0, 14)
+        layout.setSpacing(14)
 
-        brand_row = QHBoxLayout()
-        brand_row.setSpacing(8)
-        brand_row.addWidget(MascotLogo(34))
-        brand = QLabel("Spiced")
-        brand.setObjectName("Brand")
-        brand_row.addWidget(brand)
-        brand_row.addStretch(1)
-        layout.addLayout(brand_row)
-        tagline = QLabel("Your calm dev companion")
-        tagline.setObjectName("Tagline")
-        tagline.setWordWrap(True)
-        layout.addWidget(tagline)
-        layout.addSpacing(10)
+        layout.addWidget(MascotLogo(38), 0, Qt.AlignmentFlag.AlignHCenter)
 
+        icon_column = QWidget()
+        icon_layout = QVBoxLayout(icon_column)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(10)
+
+        settings_index = NAV_ITEMS.index("Settings")
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
-        self._nav_buttons: list[QPushButton] = []
+        self._nav_buttons: list[NavOrbButton] = []
         for index, name in enumerate(NAV_ITEMS):
-            btn = QPushButton(name)
-            btn.setObjectName("NavButton")
-            btn.setCheckable(True)
+            if index == settings_index:
+                continue
+            kind = _NAV_ICON_KINDS.get(name, "dashboard")
+            btn = NavOrbButton(kind, name)
             btn.clicked.connect(lambda _checked, i=index: self._stack.setCurrentIndex(i))
             self._nav_group.addButton(btn, index)
             self._nav_buttons.append(btn)
-            layout.addWidget(btn)
+            icon_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        icon_layout.addStretch(1)
 
-        layout.addStretch(1)
-        version = QLabel("MVP preview · Phase 4")
-        version.setObjectName("Muted")
-        layout.addWidget(version)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(icon_column)
+        layout.addWidget(scroll, 1)
+
+        settings_btn = NavOrbButton("settings", "Settings", settings=True)
+        settings_btn.clicked.connect(
+            lambda _checked, i=settings_index: self._stack.setCurrentIndex(i)
+        )
+        self._nav_group.addButton(settings_btn, settings_index)
+        self._nav_buttons.append(settings_btn)
+        layout.addWidget(settings_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._apply_nav_glyph_colors()
         return sidebar
+
+    def _apply_nav_glyph_colors(self) -> None:
+        """Keeps the custom-painted nav glyphs (ui.widgets.nav_icons, which
+        QSS alone can't reach) in sync with whichever accessibility palette
+        is currently active -- called once at startup and again whenever
+        Settings saves an accessibility change (see __init__)."""
+        palette = theme.resolve_palette(
+            high_contrast=self._services.accessibility_high_contrast_enabled(),
+            colorblind_safe=self._services.accessibility_colorblind_safe_enabled(),
+        )
+        idle = palette["TEXT_ON_DARK"]
+        active = palette["NAV_ACTIVE_TEXT"]
+        settings_idle = palette["NEUTRAL_TEXT"]
+        for btn in self._nav_buttons:
+            if btn.objectName() == "NavButtonSettings":
+                btn.set_glyph_colors(settings_idle, active)
+            else:
+                btn.set_glyph_colors(idle, active)
 
     def _build_workspace(self) -> QFrame:
         panel = QFrame()
@@ -489,6 +541,11 @@ class MainWindow(QWidget):
 
         self._settings_screen = SettingsScreen(self._services)
         self._settings_screen.settings_changed.connect(self._context.refresh)
+        # Accessibility text-size/high-contrast/colorblind-safe toggles swap
+        # the whole QSS palette live (see ui.theme) -- the sidebar's
+        # custom-painted nav glyphs can't pick that up from QSS alone, so
+        # they're re-tinted explicitly here too.
+        self._settings_screen.settings_changed.connect(self._apply_nav_glyph_colors)
         # Team Mode toggling changes whether the Testing screen's Build
         # Health badge shows its team-linked note. Rapid Prototyping Mode
         # toggling changes which panel the Testing screen foregrounds.

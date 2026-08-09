@@ -192,6 +192,15 @@ DEFAULT_PALETTE = {
     # List selection.
     "LIST_SELECTED_BG": "rgba(127, 231, 255, 0.35)",
     "SCROLL_CONTENT_BG": "transparent",
+    # Settings nav orb: metallic, not aqua, when idle (ui.widgets.nav_icons).
+    "SETTINGS_IDLE_BG": (
+        "qradialgradient(cx:0.32, cy:0.28, radius:1.1, "
+        "stop:0 #e9edf5, stop:0.55 #c3ccdb, stop:1 #8f9ab0)"
+    ),
+    "SETTINGS_HOVER_BG": (
+        "qradialgradient(cx:0.32, cy:0.28, radius:1.1, "
+        "stop:0 #f4f6fa, stop:0.55 #d3dae5, stop:1 #a3aec4)"
+    ),
 }
 
 # Near-black on pure white -- 21:1 contrast, the maximum possible, vs. the
@@ -262,6 +271,8 @@ HIGH_CONTRAST_PALETTE = {
     "PILL_TEXT": "#000000",
     "LIST_SELECTED_BG": "#FFD9A0",
     "SCROLL_CONTENT_BG": "#FFFFFF",
+    "SETTINGS_IDLE_BG": "#EDEDED",
+    "SETTINGS_HOVER_BG": "#DDDDDD",
 }
 
 # Same glass/gradient shell as the default look (the aqua accent is already
@@ -337,6 +348,8 @@ COLORBLIND_SAFE_PALETTE = {
     "PILL_TEXT": "#004C77",
     "LIST_SELECTED_BG": "rgba(0, 114, 178, 0.3)",
     "SCROLL_CONTENT_BG": "transparent",
+    "SETTINGS_IDLE_BG": DEFAULT_PALETTE["SETTINGS_IDLE_BG"],
+    "SETTINGS_HOVER_BG": DEFAULT_PALETTE["SETTINGS_HOVER_BG"],
 }
 
 TEXT_SIZES = {
@@ -370,7 +383,12 @@ class AccessibilityOptions:
     reduce_motion: bool = False
 
 
-def _resolve_palette(*, high_contrast: bool, colorblind_safe: bool) -> dict[str, str]:
+def resolve_palette(*, high_contrast: bool, colorblind_safe: bool) -> dict[str, str]:
+    """Public so custom-painted widgets (e.g. ui.widgets.nav_icons, which
+    can't get its glyph tint from QSS alone) can tint themselves consistently
+    with whichever palette ``build_stylesheet`` resolved to for the same
+    settings -- same selection logic as build_stylesheet uses internally,
+    exposed as its own function rather than duplicated."""
     if high_contrast:
         return HIGH_CONTRAST_PALETTE
     if colorblind_safe:
@@ -391,7 +409,7 @@ def build_stylesheet(
     ``build_stylesheet()``, evaluated once at import time for callers that
     don't need to vary it).
     """
-    palette = _resolve_palette(high_contrast=high_contrast, colorblind_safe=colorblind_safe)
+    palette = resolve_palette(high_contrast=high_contrast, colorblind_safe=colorblind_safe)
     font_size = TEXT_SIZES.get(text_size, TEXT_SIZES[DEFAULT_TEXT_SIZE])
     p = palette
 
@@ -471,6 +489,232 @@ QLabel#ReadinessLabel[state="warn"] {{ color: {p["WARNING_TEXT"]}; }}
 QLabel#ReadinessLabel[state="bad"] {{ color: {p["DANGER_TEXT"]}; }}
 QLabel#ReadinessLabel[state="neutral"] {{ color: {p["NEUTRAL_TEXT"]}; }}
 
+/* ui.widgets.readiness_badge.ReadinessBadge's own compact header pill (the
+   Automated Testing screen) -- a solid-filled pill, unlike ReadinessLabel
+   above which is a plain colored heading (Dashboard's Build Health card). */
+QLabel#ReadinessPill {{
+    border-radius: 999px;
+    padding: 6px 16px;
+    font-weight: 700;
+    color: #FFFFFF;
+}}
+QLabel#ReadinessPill[state="good"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["SUCCESS"]}, stop:1 {p["SUCCESS_DEEP"]});
+}}
+QLabel#ReadinessPill[state="warn"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["WARNING"]}, stop:1 {p["WARNING_DEEP"]});
+    color: {p["WARNING_TEXT"]};
+}}
+QLabel#ReadinessPill[state="bad"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["DANGER"]}, stop:1 {p["DANGER_DEEP"]});
+}}
+QLabel#ReadinessPill[state="neutral"] {{
+    background: {p["NEUTRAL"]};
+    color: {p["NEUTRAL_TEXT"]};
+}}
+
+/* Dashboard stat row (Tests Passing / Open Bugs / Feedback Themes). */
+QLabel#StatLabel {{
+    font-size: {max(font_size - 2, 10)}px;
+    font-weight: 700;
+    color: {p["WARNING_TEXT"]};
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}}
+QLabel#StatValue {{
+    font-family: {FONT_DISPLAY}, {FONT_BODY};
+    font-size: {font_size + 18}px;
+    font-weight: 700;
+    color: {p["BROWN"]};
+}}
+
+/* Next-action priority gel pills (Dashboard). */
+QLabel#PriorityPill {{
+    border-radius: 10px;
+    padding: 4px 12px;
+    font-size: {max(font_size - 3, 9)}px;
+    font-weight: 700;
+    color: {p["BTN_TEXT"]};
+    background: {p["NEUTRAL"]};
+}}
+QLabel#PriorityPill[priority="High"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["DANGER"]}, stop:1 {p["DANGER_DEEP"]});
+    color: #FFFFFF;
+}}
+QLabel#PriorityPill[priority="Medium"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["WARNING"]}, stop:1 {p["WARNING_DEEP"]});
+    color: {p["WARNING_TEXT"]};
+}}
+QLabel#PriorityPill[priority="Low"] {{
+    background: {p["NEUTRAL"]};
+    color: {p["NEUTRAL_TEXT"]};
+}}
+
+/* Hairline row separators (Dashboard's next-actions/recent-activity lists). */
+QFrame#Hairline {{
+    background: rgba(58, 66, 88, 0.14);
+    max-height: 1px;
+    min-height: 1px;
+    border: none;
+}}
+
+/* Accordion header hover (ui.widgets.accordion.AccordionSection -- Projects
+   and Feedback Review redesigns). */
+QWidget#AccordionHeader:hover {{
+    background: {p["GHOST_HOVER_BG"]};
+    border-radius: 10px;
+}}
+
+/* On/Off status pill, shown in an accordion's collapsed header. */
+QLabel#StatusPill {{
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: {max(font_size - 3, 9)}px;
+    font-weight: 700;
+}}
+QLabel#StatusPill[state="on"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["SUCCESS"]}, stop:1 {p["SUCCESS_DEEP"]});
+    color: #FFFFFF;
+}}
+QLabel#StatusPill[state="off"] {{
+    background: {p["PILL_BG"]};
+    color: {p["PILL_TEXT"]};
+}}
+
+/* Project picker list rows (Projects screen redesign) -- idle glass card vs.
+   an aqua-highlighted active card, same idle/active language as the nav
+   orbs (NAV_IDLE_BG/NAV_ACTIVE_BG) applied to a full-width row instead. */
+QFrame#ProjectCard {{
+    background: {p["CARD_BG"]};
+    border: 1px solid {p["CARD_BORDER"]};
+    border-radius: 14px;
+}}
+QFrame#ProjectCard:hover {{
+    border: 1px solid {p["AQUA_MID"]};
+}}
+QFrame#ProjectCard[active="true"] {{
+    background: {p["READINESS_CARD_BG"]};
+    border: 2px solid {p["AQUA_MID"]};
+}}
+
+/* Debugging Buddy tool switcher (ui.screens.debugging redesign): a dark
+   chrome panel holding the tool-pill list, next to a dark-glass hero card
+   for whichever tool is selected -- same DARK_PANEL_BG language as the
+   sidebar/top bar/context panel, so the two dark panels read as one
+   coherent unit rather than a light list bolted onto a dark card. */
+QFrame#ToolListPanel {{
+    background: {p["DARK_PANEL_BG"]};
+    border: 1px solid {p["DARK_PANEL_BORDER"]};
+    border-radius: 20px;
+}}
+QPushButton#ToolListItem {{
+    text-align: left;
+    padding: 11px 14px;
+    border: none;
+    background: {p["NAV_IDLE_BG"]};
+    font-weight: 700;
+    color: {p["TEXT_ON_DARK"]};
+}}
+QPushButton#ToolListItem:hover {{ background: {p["NAV_HOVER_BG"]}; }}
+QPushButton#ToolListItem:checked {{
+    background: {p["NAV_ACTIVE_BG"]};
+    color: {p["NAV_ACTIVE_TEXT"]};
+}}
+
+QFrame#ToolHeroCard {{
+    background: {p["DARK_PANEL_BG"]};
+    border: 1px solid {p["DARK_PANEL_BORDER"]};
+    border-radius: 22px;
+}}
+QFrame#ToolHeroCard QLabel {{ color: {p["TEXT_ON_DARK"]}; }}
+QFrame#ToolHeroCard QLabel#Muted {{ color: {p["TEXT_ON_DARK_MUTED"]}; }}
+QFrame#ToolHeroCard QLabel#SectionTitle {{ color: {p["TEXT_ON_DARK_FAINT"]}; }}
+QFrame#ToolHeroCard QCheckBox {{ color: {p["TEXT_ON_DARK"]}; }}
+QFrame#ToolHeroCard QPushButton#Ghost {{ color: {p["GHOST_TEXT_ON_DARK"]}; }}
+QFrame#ToolHeroCard QLineEdit, QFrame#ToolHeroCard QPlainTextEdit,
+QFrame#ToolHeroCard QTextEdit {{
+    background: rgba(10, 8, 30, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: {p["TEXT_ON_DARK"]};
+}}
+QFrame#ToolHeroCard QListWidget {{ color: {p["TEXT_ON_DARK"]}; }}
+
+/* Automated Testing: status-orb list rows (Known Issues, Test cases --
+   ui.screens.testing._status_row) and checklist rows (Accessibility,
+   Economy Dominant Strategies -- ui.screens.testing._checklist_row). */
+QLabel#StatusDot {{ border-radius: 7px; }}
+QLabel#StatusDot[state="pass"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["SUCCESS"]}, stop:1 {p["SUCCESS_DEEP"]});
+}}
+QLabel#StatusDot[state="fail"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["DANGER"]}, stop:1 {p["DANGER_DEEP"]});
+}}
+QLabel#StatusDot[state="warn"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {p["WARNING"]}, stop:1 {p["WARNING_DEEP"]});
+}}
+QLabel#StatusDot[state="neutral"] {{ background: {p["NEUTRAL"]}; }}
+
+QLabel#ChecklistStatus {{ font-weight: 700; }}
+QLabel#ChecklistStatus[state="pass"] {{ color: {p["SUCCESS_TEXT"]}; }}
+QLabel#ChecklistStatus[state="warn"] {{ color: {p["WARNING_TEXT"]}; }}
+QLabel#ChecklistStatus[state="fail"] {{ color: {p["DANGER_TEXT"]}; }}
+
+/* Roadmap suggestion upvote pill -- aqua-filled when voted, transparent
+   outline otherwise. */
+QPushButton#VoteButton {{
+    padding: 6px 14px;
+    font-weight: 700;
+    background: transparent;
+    border: 2px solid {p["GHOST_BORDER"]};
+    color: {p["GHOST_TEXT_ON_LIGHT"]};
+}}
+QPushButton#VoteButton:hover {{ background: {p["GHOST_HOVER_BG"]}; }}
+QPushButton#VoteButton[voted="true"] {{
+    background: {p["BTN_BG"]};
+    color: {p["BTN_TEXT"]};
+    border: none;
+}}
+
+/* Segmented platform-pill selector (Automated Testing's Run Unity Tests
+   hero card) -- EditMode/PlayMode/Both, same idle/active language as the
+   segmented tabs since it's the same "pick one of a few options" shape. */
+QPushButton#PlatformPill {{
+    padding: 6px 16px;
+    font-weight: 700;
+    background: {p["TAB_IDLE_BG"]};
+    color: {p["TAB_IDLE_TEXT"]};
+    border: none;
+}}
+QPushButton#PlatformPill:checked {{
+    background: {p["TAB_ACTIVE_BG"]};
+    color: {p["TAB_ACTIVE_TEXT"]};
+}}
+
+/* Progress bars (Economy Dominant Strategies here; also available for any
+   future percentage-fill row). */
+QProgressBar {{
+    background: rgba(58, 66, 88, 0.12);
+    border: none;
+    border-radius: 5px;
+    max-height: 10px;
+    min-height: 10px;
+    text-align: center;
+}}
+QProgressBar::chunk {{
+    border-radius: 5px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {p["AQUA_BRIGHT"]}, stop:1 {p["AQUA_DEEP"]});
+}}
+
 QLabel#Brand {{
     font-family: {FONT_DISPLAY}, {FONT_BODY};
     font-size: {font_size + 10}px;
@@ -503,34 +747,47 @@ QLabel#Muted {{
     color: {p["BROWN_SOFT"]};
 }}
 
-/* Sidebar navigation: bubbly gel pills (an "orb" recipe stretched to a
-   pill footprint, since these carry text labels rather than being bare
-   circular glyphs). */
+/* Sidebar navigation: 44x44 glossy gel orbs (ui.widgets.nav_icons.NavOrbButton
+   paints its own glyph on top of this QSS-styled circular background, so
+   accessibility palette swaps still reach the orb itself automatically). */
 QPushButton#NavButton {{
-    text-align: left;
-    padding: 11px 14px;
     border: none;
-    border-radius: 14px;
+    border-radius: 22px;
     background: {p["NAV_IDLE_BG"]};
-    font-size: {font_size}px;
-    font-weight: 600;
-    color: {p["TEXT_ON_DARK"]};
 }}
 QPushButton#NavButton:hover {{
     background: {p["NAV_HOVER_BG"]};
 }}
 QPushButton#NavButton:checked {{
     background: {p["NAV_ACTIVE_BG"]};
-    color: {p["NAV_ACTIVE_TEXT"]};
-    font-weight: 700;
 }}
 
-/* Primary gel buttons */
+/* Settings orb: pinned separately at the sidebar's bottom, always a
+   metallic tone when idle (per the design handoff) rather than the aqua
+   idle-orb gradient every other nav icon uses -- still switches to the
+   shared active-aqua gradient when Settings is the current screen, so the
+   "which screen am I on" feedback stays consistent across every icon. */
+QPushButton#NavButtonSettings {{
+    border: none;
+    border-radius: 22px;
+    background: {p["SETTINGS_IDLE_BG"]};
+}}
+QPushButton#NavButtonSettings:hover {{
+    background: {p["SETTINGS_HOVER_BG"]};
+}}
+QPushButton#NavButtonSettings:checked {{
+    background: {p["NAV_ACTIVE_BG"]};
+}}
+
+/* Primary gel buttons -- fully rounded pill shape (999px always clamps to
+   half the button's actual height, same trick used by VoteButton/
+   PlatformPill/ReadinessPill/StatusPill below), matching the design
+   handoff's "aqua gel pill button" language throughout. */
 QPushButton {{
     background: {p["BTN_BG"]};
     color: {p["BTN_TEXT"]};
     border: none;
-    border-radius: 14px;
+    border-radius: 999px;
     padding: 9px 18px;
     font-weight: 700;
 }}
@@ -553,7 +810,6 @@ QPushButton#BellButton {{
     background: {p["NAV_IDLE_BG"]};
     color: {p["TEXT_ON_DARK"]};
     border: none;
-    border-radius: 18px;
     padding: 6px 10px;
     font-weight: 600;
 }}

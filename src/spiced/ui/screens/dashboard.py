@@ -7,6 +7,7 @@ never a claim the game is ready to ship; the developer stays in control.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,7 +16,6 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -38,6 +38,8 @@ from spiced.core.widget_preferences import (
     ordered_visible_ids,
 )
 from spiced.ui.widget_customize_dialog import WidgetCustomizeDialog
+from spiced.ui.widgets.health_gauge import HealthGauge
+from spiced.ui.widgets.pill_button import PillButton
 
 # Frutiger Aqua theme (ui.theme): same label -> state mapping as
 # ui.widgets.readiness_badge.ReadinessBadge, kept in sync so the Dashboard's
@@ -71,15 +73,14 @@ class DashboardScreen(QWidget):
         self._layout.setSpacing(14)
 
         title_row = QHBoxLayout()
-        title = QLabel("Project Dashboard")
-        title.setObjectName("ScreenTitle")
-        title_row.addWidget(title)
+        self._title = QLabel("Welcome back \U0001f44b")
+        self._title.setObjectName("ScreenTitle")
+        title_row.addWidget(self._title)
         title_row.addStretch(1)
         # Customizable Dashboard Widgets (Phase L, Phase 2 tier -- scoped
         # down to show/hide + reorder, see core.widget_preferences): applies
         # to the Debugging/Testing/Feedback module-card row below.
-        self._customize_btn = QPushButton("Customize modules")
-        self._customize_btn.setObjectName("Ghost")
+        self._customize_btn = PillButton("Customize modules", ghost=True)
         self._customize_btn.clicked.connect(self._on_customize_modules)
         title_row.addWidget(self._customize_btn)
         self._layout.addLayout(title_row)
@@ -95,6 +96,8 @@ class DashboardScreen(QWidget):
 
     def refresh(self) -> None:
         _clear_layout(self._body)
+        self._title.setText(f"Welcome back, {self._services.display_name()} \U0001f44b")
+
         summary = self._services.dashboard.summarize(self._services.active_project())
         if summary is None:
             self._body.addWidget(
@@ -106,7 +109,15 @@ class DashboardScreen(QWidget):
             return
 
         self._body.addWidget(self._overview_card(summary))
-        self._body.addWidget(self._readiness_card(summary))
+        stat_row = _row(
+            self._stat_card("Tests Passing", _pct_text(summary.tests_passing_pct)),
+            self._stat_card("Open Bugs", str(summary.open_bugs)),
+            self._stat_card("Feedback Themes", str(summary.feedback_theme_count)),
+        )
+        self._body.addWidget(stat_row)
+        self._body.addWidget(self._actions_card(summary))
+        self._body.addWidget(_row(self._health_card(summary), self._session_card(summary)))
+        self._body.addWidget(self._activity_card(summary))
 
         cards_by_id = {
             "module_debugging": summary.debugging,
@@ -126,7 +137,6 @@ class DashboardScreen(QWidget):
             wrapper.setLayout(cards_row)
             self._body.addWidget(wrapper)
 
-        self._body.addWidget(self._actions_card(summary))
         if summary.missing_data:
             self._body.addWidget(self._reminders_card(summary))
         self._body.addWidget(self._summary_tools(summary))
@@ -145,24 +155,100 @@ class DashboardScreen(QWidget):
             layout.addWidget(path)
         return card
 
-    def _readiness_card(self, summary: DashboardSummary) -> QFrame:
+    def _stat_card(self, label: str, value: str) -> QFrame:
+        card = _card()
+        layout = card.layout()
+        stat_label = QLabel(label)
+        stat_label.setObjectName("StatLabel")
+        layout.addWidget(stat_label)
+        stat_value = QLabel(value)
+        stat_value.setObjectName("StatValue")
+        layout.addWidget(stat_value)
+        return card
+
+    def _health_card(self, summary: DashboardSummary) -> QFrame:
+        """Build Health: a gauge (see ui.widgets.health_gauge -- its fill is
+        a coarse, non-gamified visual, not a precision score) next to the
+        readiness label, with the full evidence/caveats kept underneath --
+        Spiced's "every assessment lists why" principle stays intact, the
+        gauge is additive, not a replacement for the explanation."""
         card = _card(object_name="ReadinessCard")
         layout = card.layout()
-        heading = QLabel("Build readiness")
+
+        top = QHBoxLayout()
+        top.setSpacing(16)
+        gauge = HealthGauge(96)
+        gauge.set_value(summary.health_fill_pct, summary.readiness.label)
+        top.addWidget(gauge, 0)
+
+        text_col = QVBoxLayout()
+        heading = QLabel("Build Health")
         heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
+        text_col.addWidget(heading)
         label = QLabel(summary.readiness.label)
         label.setObjectName("ReadinessLabel")
         state = _READINESS_STATE_BY_LABEL.get(summary.readiness.label, "neutral")
         label.setProperty("state", state)
-        layout.addWidget(label)
-        layout.addWidget(_muted("Why:"))
-        for item in summary.readiness.evidence:
-            layout.addWidget(_bullet(item))
+        text_col.addWidget(label)
+        if summary.readiness.evidence:
+            first = _muted(summary.readiness.evidence[0])
+            first.setWordWrap(True)
+            text_col.addWidget(first)
+        text_col.addStretch(1)
+        top.addLayout(text_col, 1)
+        layout.addLayout(top)
+
+        if len(summary.readiness.evidence) > 1:
+            layout.addWidget(_muted("Why:"))
+            for item in summary.readiness.evidence[1:]:
+                layout.addWidget(_bullet(item))
         for caveat in summary.readiness.caveats:
             note = _muted(f"Note: {caveat}")
             note.setWordWrap(True)
             layout.addWidget(note)
+        return card
+
+    def _session_card(self, summary: DashboardSummary) -> QFrame:
+        card = _card()
+        layout = card.layout()
+        heading = QLabel("Session Summary")
+        heading.setObjectName("CardTitle")
+        layout.addWidget(heading)
+        if not summary.session_recap:
+            layout.addWidget(
+                _muted(
+                    "No sessions summarized yet. Use “Summarize / end session” in the "
+                    "panel on the right to capture one."
+                )
+            )
+            layout.addStretch(1)
+            return card
+        for line in summary.session_recap:
+            recap_line = QLabel(f"✓ {line}")
+            recap_line.setWordWrap(True)
+            layout.addWidget(recap_line)
+        layout.addStretch(1)
+        return card
+
+    def _activity_card(self, summary: DashboardSummary) -> QFrame:
+        card = _card()
+        layout = card.layout()
+        heading = QLabel("Recent Activity")
+        heading.setObjectName("CardTitle")
+        layout.addWidget(heading)
+        if not summary.recent_activity:
+            layout.addWidget(_muted("Nothing recorded yet."))
+            return card
+        for index, item in enumerate(summary.recent_activity):
+            if index > 0:
+                layout.addWidget(_hairline())
+            row = QHBoxLayout()
+            text = QLabel(f"{item.label}  ·  {item.source_module}")
+            text.setWordWrap(True)
+            row.addWidget(text, 1)
+            stamp = _muted(item.timestamp)
+            row.addWidget(stamp, 0)
+            layout.addLayout(row)
         return card
 
     def _module_card(self, card_data: ModuleCard) -> QFrame:
@@ -190,7 +276,9 @@ class DashboardScreen(QWidget):
                 _muted("Nothing urgent yet. Capture more data to get recommendations.")
             )
             return card
-        for action in summary.next_actions:
+        for index, action in enumerate(summary.next_actions):
+            if index > 0:
+                layout.addWidget(_hairline())
             layout.addWidget(_action_row(action))
         layout.addWidget(
             _muted("These are suggestions to help you plan — you decide what to work on.")
@@ -220,11 +308,10 @@ class DashboardScreen(QWidget):
             )
         )
         row = QHBoxLayout()
-        generate_btn = QPushButton("Generate summary")
+        generate_btn = PillButton("Generate summary")
         generate_btn.clicked.connect(lambda: self._on_generate(summary))
         row.addWidget(generate_btn)
-        self._copy_btn = QPushButton("Copy to clipboard")
-        self._copy_btn.setObjectName("Ghost")
+        self._copy_btn = PillButton("Copy to clipboard", ghost=True)
         self._copy_btn.setEnabled(False)
         self._copy_btn.clicked.connect(self._on_copy)
         row.addWidget(self._copy_btn)
@@ -298,13 +385,49 @@ def _bullet(text: str) -> QLabel:
     return label
 
 
-def _action_row(action: NextAction) -> QLabel:
-    label = QLabel(
-        f"[{action.priority}] {action.title}\n"
-        f"      {action.source_module} · {action.reason}"
-    )
-    label.setWordWrap(True)
-    return label
+def _action_row(action: NextAction) -> QWidget:
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 6, 0, 6)
+    layout.setSpacing(12)
+
+    pill = QLabel(action.priority.upper())
+    pill.setObjectName("PriorityPill")
+    pill.setProperty("priority", action.priority)
+    pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
+
+    text_col = QVBoxLayout()
+    text_col.setSpacing(2)
+    title = QLabel(action.title)
+    title.setWordWrap(True)
+    title.setStyleSheet("font-weight: 700;")
+    text_col.addWidget(title)
+    meta = _muted(f"{action.source_module} · {action.reason}")
+    text_col.addWidget(meta)
+    layout.addLayout(text_col, 1)
+    return row
+
+
+def _row(*widgets: QWidget) -> QWidget:
+    wrapper = QWidget()
+    layout = QHBoxLayout(wrapper)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(14)
+    for widget in widgets:
+        layout.addWidget(widget, 1)
+    return wrapper
+
+
+def _hairline() -> QFrame:
+    line = QFrame()
+    line.setObjectName("Hairline")
+    line.setFixedHeight(1)
+    return line
+
+
+def _pct_text(pct: int | None) -> str:
+    return "—" if pct is None else f"{pct}%"
 
 
 def _clear_layout(layout) -> None:

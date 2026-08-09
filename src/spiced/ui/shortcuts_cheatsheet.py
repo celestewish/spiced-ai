@@ -16,11 +16,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
     QVBoxLayout,
 )
 
 from spiced.core.keyboard_shortcuts import ACTIONS, binding_for
+from spiced.ui.widgets.pill_button import PillButton
 
 
 class ShortcutsCheatSheet(QDialog):
@@ -43,8 +43,7 @@ class ShortcutsCheatSheet(QDialog):
 
         close_row = QHBoxLayout()
         close_row.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.setObjectName("Ghost")
+        close_btn = PillButton("Close", ghost=True)
         close_btn.clicked.connect(self.close)
         close_row.addWidget(close_btn)
         layout.addLayout(close_row)

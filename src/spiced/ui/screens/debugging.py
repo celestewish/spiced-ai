@@ -11,14 +11,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -70,6 +72,7 @@ from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotRe
 from spiced.core.version_check import VersionCheckReview
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.diff_viewer import DiffViewerDialog
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -488,6 +491,22 @@ class _DraftTranslationWorker(QObject):
 class DebuggingScreen(QWidget):
     usage_changed = Signal()
 
+    # Tool switcher (Frutiger Aqua redesign): one entry per existing
+    # _build_* method, in the same order they used to appear as sections in
+    # one long scroll. Crash analysis stays first/default, per the design
+    # notes -- it's the most-used entry point.
+    _TOOLS = [
+        ("Explain This Crash", "_build_crash_analysis"),
+        ("Outdated-API Check", "_build_version_check"),
+        ("Code Health", "_build_code_health"),
+        ("Changelog Generation", "_build_changelog"),
+        ("Asset Health", "_build_asset_health"),
+        ("Dependencies", "_build_dependency_check"),
+        ("Dev Docs", "_build_dev_docs"),
+        ("Design Drift + Scope Creep", "_build_design_drift"),
+        ("Localization", "_build_localization"),
+    ]
+
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
@@ -498,43 +517,69 @@ class DebuggingScreen(QWidget):
         self._translation_pending_filename: str | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        outer.addWidget(scroll)
-
-        content = QWidget()
-        content.setObjectName("ScrollContent")
-        scroll.setWidget(content)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
+        outer.setContentsMargins(28, 28, 28, 28)
+        outer.setSpacing(12)
 
         title = QLabel("Debugging Buddy")
         title.setObjectName("ScreenTitle")
-        layout.addWidget(title)
+        outer.addWidget(title)
 
         self._context_label = QLabel()
         self._context_label.setObjectName("Muted")
         self._context_label.setWordWrap(True)
-        layout.addWidget(self._context_label)
+        outer.addWidget(self._context_label)
 
-        self._build_crash_analysis(layout)
-        self._build_version_check(layout)
-        self._build_code_health(layout)
-        self._build_changelog(layout)
-        self._build_asset_health(layout)
-        self._build_dependency_check(layout)
-        self._build_dev_docs(layout)
-        self._build_design_drift(layout)
-        self._build_localization(layout)
+        columns = QHBoxLayout()
+        columns.setSpacing(16)
+        outer.addLayout(columns, 1)
+
+        tool_panel = QFrame()
+        tool_panel.setObjectName("ToolListPanel")
+        tool_panel.setFixedWidth(230)
+        tool_layout = QVBoxLayout(tool_panel)
+        tool_layout.setContentsMargins(14, 16, 14, 16)
+        tool_layout.setSpacing(6)
+
+        self._stack = QStackedWidget()
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.setExclusive(True)
+        for index, (label, builder_name) in enumerate(self._TOOLS):
+            btn = PillButton(label, radius=14)
+            btn.setObjectName("ToolListItem")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _checked, i=index: self._stack.setCurrentIndex(i))
+            self._tool_group.addButton(btn, index)
+            tool_layout.addWidget(btn)
+
+            page = QFrame()
+            page.setObjectName("ToolHeroCard")
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(24, 24, 24, 24)
+            page_layout.setSpacing(10)
+            getattr(self, builder_name)(page_layout)
+
+            page_scroll = QScrollArea()
+            page_scroll.setWidgetResizable(True)
+            page_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            page_scroll.setWidget(page)
+            self._stack.addWidget(page_scroll)
+        tool_layout.addStretch(1)
+
+        columns.addWidget(tool_panel, 0)
+        columns.addWidget(self._stack, 1)
+
+        self._tool_group.buttons()[0].setChecked(True)
+        self._stack.setCurrentIndex(0)
 
         self.refresh()
 
     # --- Explain This Crash -------------------------------------------------
 
     def _build_crash_analysis(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Explain This Crash")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
         intro = QLabel(
             "Paste a Unity error log or import a .log/.txt file. I'll read it locally, point "
             "at the likely cause, and suggest safe next steps — you stay in control."
@@ -551,11 +596,11 @@ class DebuggingScreen(QWidget):
         layout.addWidget(self._log_input)
 
         row = QHBoxLayout()
-        self._import_btn = QPushButton("Import log file…")
+        self._import_btn = PillButton("Import log file…")
         self._import_btn.clicked.connect(self._import_file)
         row.addWidget(self._import_btn)
         row.addStretch(1)
-        self._analyze_btn = QPushButton("Analyze")
+        self._analyze_btn = PillButton("Analyze")
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -607,14 +652,14 @@ class DebuggingScreen(QWidget):
         layout.addWidget(self._version_input)
 
         row = QHBoxLayout()
-        self._version_import_btn = QPushButton("Import script…")
+        self._version_import_btn = PillButton("Import script…")
         self._version_import_btn.clicked.connect(self._on_version_import)
         row.addWidget(self._version_import_btn)
-        self._version_scan_btn = QPushButton("Scan (local, free)")
+        self._version_scan_btn = PillButton("Scan (local, free)")
         self._version_scan_btn.clicked.connect(self._on_version_scan)
         row.addWidget(self._version_scan_btn)
         row.addStretch(1)
-        self._version_analyze_btn = QPushButton("Analyze with AI")
+        self._version_analyze_btn = PillButton("Analyze with AI")
         self._version_analyze_btn.clicked.connect(self._on_version_analyze)
         row.addWidget(self._version_analyze_btn)
         layout.addLayout(row)
@@ -639,8 +684,13 @@ class DebuggingScreen(QWidget):
     # --- Code Health Dashboard (collapsible) --------------------------------
 
     def _build_code_health(self, layout: QVBoxLayout) -> None:
-        self._health_toggle = QPushButton("▸ Code Health summary (click to expand)")
-        self._health_toggle.setObjectName("Ghost")
+        heading = QLabel("Code Health")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        self._health_toggle = PillButton(
+            "▸ Code Health summary (click to expand)", ghost=True
+        )
         self._health_toggle.clicked.connect(self._on_toggle_health)
         layout.addWidget(self._health_toggle)
 
@@ -664,11 +714,11 @@ class DebuggingScreen(QWidget):
         body.addWidget(self._health_input)
 
         row = QHBoxLayout()
-        self._health_import_btn = QPushButton("Import script…")
+        self._health_import_btn = PillButton("Import script…")
         self._health_import_btn.clicked.connect(self._on_health_import)
         row.addWidget(self._health_import_btn)
         row.addStretch(1)
-        self._health_analyze_btn = QPushButton("Check code health")
+        self._health_analyze_btn = PillButton("Check code health")
         self._health_analyze_btn.clicked.connect(self._on_health_analyze)
         row.addWidget(self._health_analyze_btn)
         body.addLayout(row)
@@ -710,7 +760,7 @@ class DebuggingScreen(QWidget):
         body.addWidget(project_scan_intro)
 
         project_scan_row = QHBoxLayout()
-        self._project_scan_btn = QPushButton("Scan project (naming + dead references)")
+        self._project_scan_btn = PillButton("Scan project (naming + dead references)")
         self._project_scan_btn.clicked.connect(self._on_project_scan)
         project_scan_row.addWidget(self._project_scan_btn)
         project_scan_row.addStretch(1)
@@ -817,19 +867,17 @@ class DebuggingScreen(QWidget):
         layout.addWidget(self._changelog_status)
 
         row = QHBoxLayout()
-        self._changelog_draft_btn = QPushButton("Draft changelog")
+        self._changelog_draft_btn = PillButton("Draft changelog")
         self._changelog_draft_btn.clicked.connect(self._on_draft_changelog)
         row.addWidget(self._changelog_draft_btn)
         row.addStretch(1)
-        self._changelog_save_btn = QPushButton("Save edits")
-        self._changelog_save_btn.setObjectName("Ghost")
+        self._changelog_save_btn = PillButton("Save edits", ghost=True)
         self._changelog_save_btn.clicked.connect(self._on_save_changelog_edit)
         row.addWidget(self._changelog_save_btn)
         # Discord/Community Bot Integration (Phase G, section 7): posts the
         # text currently in the box below, always with an explicit confirm-
         # before-send step by default (see _on_post_changelog_to_discord).
-        self._discord_post_btn = QPushButton("Post to Discord")
-        self._discord_post_btn.setObjectName("Ghost")
+        self._discord_post_btn = PillButton("Post to Discord", ghost=True)
         self._discord_post_btn.clicked.connect(self._on_post_changelog_to_discord)
         row.addWidget(self._discord_post_btn)
         layout.addLayout(row)
@@ -866,12 +914,11 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._asset_scan_btn = QPushButton("Scan assets (local, free)")
+        self._asset_scan_btn = PillButton("Scan assets (local, free)")
         self._asset_scan_btn.clicked.connect(self._on_asset_scan)
         row.addWidget(self._asset_scan_btn)
         row.addStretch(1)
-        self._asset_scan_ai_btn = QPushButton("Get AI summary")
-        self._asset_scan_ai_btn.setObjectName("Ghost")
+        self._asset_scan_ai_btn = PillButton("Get AI summary", ghost=True)
         self._asset_scan_ai_btn.clicked.connect(self._on_asset_scan_ai)
         row.addWidget(self._asset_scan_ai_btn)
         layout.addLayout(row)
@@ -908,12 +955,11 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._dependency_check_btn = QPushButton("Check dependencies (local + registry)")
+        self._dependency_check_btn = PillButton("Check dependencies (local + registry)")
         self._dependency_check_btn.clicked.connect(self._on_dependency_check)
         row.addWidget(self._dependency_check_btn)
         row.addStretch(1)
-        self._dependency_check_ai_btn = QPushButton("Get AI summary")
-        self._dependency_check_ai_btn.setObjectName("Ghost")
+        self._dependency_check_ai_btn = PillButton("Get AI summary", ghost=True)
         self._dependency_check_ai_btn.clicked.connect(self._on_dependency_check_ai)
         row.addWidget(self._dependency_check_ai_btn)
         layout.addLayout(row)
@@ -952,7 +998,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._dev_docs_btn = QPushButton("Regenerate docs")
+        self._dev_docs_btn = PillButton("Regenerate docs")
         self._dev_docs_btn.clicked.connect(self._on_dev_docs_generate)
         row.addWidget(self._dev_docs_btn)
         row.addStretch(1)
@@ -978,8 +1024,7 @@ class DebuggingScreen(QWidget):
         # summaries is a natural "what changed since last time" moment.
         compare_row = QHBoxLayout()
         compare_row.addStretch(1)
-        self._dev_docs_compare_btn = QPushButton("Compare last two snapshots")
-        self._dev_docs_compare_btn.setObjectName("Ghost")
+        self._dev_docs_compare_btn = PillButton("Compare last two snapshots", ghost=True)
         self._dev_docs_compare_btn.clicked.connect(self._on_compare_dev_docs_snapshots)
         compare_row.addWidget(self._dev_docs_compare_btn)
         layout.addLayout(compare_row)
@@ -1100,15 +1145,14 @@ class DebuggingScreen(QWidget):
         layout.addWidget(self._design_doc_input)
 
         row = QHBoxLayout()
-        self._design_doc_import_btn = QPushButton("Import file…")
+        self._design_doc_import_btn = PillButton("Import file…")
         self._design_doc_import_btn.clicked.connect(self._on_design_doc_import)
         row.addWidget(self._design_doc_import_btn)
-        self._design_doc_save_btn = QPushButton("Save design doc")
-        self._design_doc_save_btn.setObjectName("Ghost")
+        self._design_doc_save_btn = PillButton("Save design doc", ghost=True)
         self._design_doc_save_btn.clicked.connect(self._on_design_doc_save)
         row.addWidget(self._design_doc_save_btn)
         row.addStretch(1)
-        self._design_drift_btn = QPushButton("Check design drift")
+        self._design_drift_btn = PillButton("Check design drift")
         self._design_drift_btn.clicked.connect(self._on_design_drift_check)
         row.addWidget(self._design_drift_btn)
         layout.addLayout(row)
@@ -1288,7 +1332,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._localization_scan_btn = QPushButton("Scan localization readiness (local, free)")
+        self._localization_scan_btn = PillButton("Scan localization readiness (local, free)")
         self._localization_scan_btn.clicked.connect(self._on_localization_scan)
         row.addWidget(self._localization_scan_btn)
         row.addStretch(1)
@@ -1342,11 +1386,11 @@ class DebuggingScreen(QWidget):
         layout.addLayout(lang_row)
 
         row2 = QHBoxLayout()
-        self._translation_import_btn = QPushButton("Import file…")
+        self._translation_import_btn = PillButton("Import file…")
         self._translation_import_btn.clicked.connect(self._on_translation_import)
         row2.addWidget(self._translation_import_btn)
         row2.addStretch(1)
-        self._translation_run_btn = QPushButton("Draft translation")
+        self._translation_run_btn = PillButton("Draft translation")
         self._translation_run_btn.clicked.connect(self._on_translation_run)
         row2.addWidget(self._translation_run_btn)
         layout.addLayout(row2)

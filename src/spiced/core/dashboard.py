@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 
 from spiced.storage.debug_sessions import DebugSession
 from spiced.storage.feedback_batches import FeedbackBatch
+from spiced.storage.known_issues import STATUS_OPEN, KnownIssue
 from spiced.storage.projects import Project
+from spiced.storage.session_summaries import SessionSummary
 from spiced.storage.test_cases import TestCase
 from spiced.storage.test_runs import TestRun
 
@@ -74,6 +76,32 @@ class ReadinessAssessment:
 
 
 @dataclass(frozen=True)
+class ActivityItem:
+    """One row for the Dashboard's Recent Activity feed -- a debug session,
+    test run, or feedback batch, whichever module it came from."""
+
+    label: str
+    source_module: str
+    timestamp: str
+
+
+# Coarse, 4-bucket visual fill for the Build Health gauge -- deliberately NOT
+# a precise computed percentage. "Build Health Score" is documented (see
+# ui.widgets.readiness_badge and the project README) as a "persistent,
+# non-gamified readiness header" -- inventing a granular 0-100 score from
+# opaque penalty weights would be exactly the kind of gamification that
+# principle exists to avoid. This mapping only drives how full the ring
+# looks; the readiness *label* (not a number) is what's shown in its center
+# and remains the actual source of truth -- see ui.screens.dashboard.
+HEALTH_FILL_BY_LABEL = {
+    NOT_ENOUGH_DATA: 20,
+    NEEDS_REVIEW: 35,
+    STABILIZING: 70,
+    DEMO_CANDIDATE: 95,
+}
+
+
+@dataclass(frozen=True)
 class DashboardSummary:
     project_name: str
     engine: str
@@ -85,6 +113,17 @@ class DashboardSummary:
     readiness: ReadinessAssessment
     next_actions: list[NextAction] = field(default_factory=list)
     missing_data: list[str] = field(default_factory=list)
+    # Dashboard stat row + Build Health gauge (see HEALTH_FILL_BY_LABEL above
+    # for why this is a coarse fill, not a precision score) -- all computed
+    # from data Spiced already stored, same as everything else here.
+    tests_passing_pct: int | None = None
+    open_bugs: int = 0
+    feedback_theme_count: int = 0
+    health_fill_pct: int = 0
+    # Most recent "Summarize / end session" recap (ui.context_panel), shown
+    # as a short checklist. Empty when no session has been summarized yet.
+    session_recap: list[str] = field(default_factory=list)
+    recent_activity: list[ActivityItem] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         return _render_markdown(self)
@@ -102,10 +141,12 @@ class _TestCounts:
 class DashboardService:
     """Builds a live, deterministic dashboard summary from stored data."""
 
-    def __init__(self, debugging, testing, feedback) -> None:
+    def __init__(self, debugging, testing, feedback, regression, session_summaries) -> None:
         self._debugging = debugging
         self._testing = testing
         self._feedback = feedback
+        self._regression = regression
+        self._session_summaries = session_summaries
 
     def summarize(self, project: Project | None) -> DashboardSummary | None:
         """Return a summary for ``project``, or None when none is active."""
@@ -115,7 +156,12 @@ class DashboardService:
         cases = self._testing.list_cases(project.id)
         runs = self._testing.history(project.id, limit=10)
         batches = self._feedback.history(project.id, limit=10)
-        return build_summary(project, sessions, cases, runs, batches)
+        known_issues = self._regression.list_for_project(project.id)
+        session_history = self._session_summaries.history(project.id, limit=1)
+        latest_session = session_history[0] if session_history else None
+        return build_summary(
+            project, sessions, cases, runs, batches, known_issues, latest_session
+        )
 
     def summary_markdown(self, project: Project | None) -> str:
         summary = self.summarize(project)
@@ -133,7 +179,10 @@ def build_summary(
     cases: list[TestCase],
     runs: list[TestRun],
     batches: list[FeedbackBatch],
+    known_issues: list[KnownIssue] | None = None,
+    latest_session: SessionSummary | None = None,
 ) -> DashboardSummary:
+    known_issues = known_issues or []
     counts = _count_cases(cases)
     latest_run = runs[0] if runs else None
     feedback_counts = _aggregate_feedback(batches)
@@ -159,6 +208,12 @@ def build_summary(
         readiness=readiness,
         next_actions=actions,
         missing_data=missing,
+        tests_passing_pct=_tests_passing_pct(counts, latest_run),
+        open_bugs=sum(1 for issue in known_issues if issue.status == STATUS_OPEN),
+        feedback_theme_count=sum(1 for count in feedback_counts.values() if count > 0),
+        health_fill_pct=HEALTH_FILL_BY_LABEL.get(readiness.label, 0),
+        session_recap=_session_recap_lines(latest_session),
+        recent_activity=_recent_activity(sessions, runs, batches),
     )
 
 
@@ -459,6 +514,65 @@ def _feedback_card(batches: list[FeedbackBatch], counts: dict[str, int]) -> Modu
     total_entries = sum(b.entry_count for b in batches)
     headline = f"{len(batches)} feedback batch(es) · {total_entries} entries."
     return ModuleCard("Feedback Review", headline, lines)
+
+
+def _tests_passing_pct(counts: _TestCounts, latest_run: TestRun | None) -> int | None:
+    """The stat row's "Tests Passing" percentage. Prefers the latest parsed
+    test run (closer to "did the build actually pass"); falls back to
+    manual test-case status among cases that have actually been evaluated
+    (excludes Not Run, since those haven't been judged either way). None
+    when there's nothing to compute from yet -- the UI shows that as "--",
+    never a fabricated 0%."""
+    if latest_run is not None:
+        total = _run_total(latest_run)
+        if total > 0:
+            try:
+                passed = int(latest_run.parsed_summary.get("passed", 0))
+            except (TypeError, ValueError):
+                passed = 0
+            return round(100 * passed / total)
+    evaluated = counts.passed + counts.failed + counts.blocked
+    if evaluated > 0:
+        return round(100 * counts.passed / evaluated)
+    return None
+
+
+def _session_recap_lines(latest_session: SessionSummary | None) -> list[str]:
+    """The Dashboard's Session Summary card: the most recent real
+    "Summarize / end session" recap (ui.context_panel), not a fixed
+    checklist template -- empty when nothing's been summarized yet."""
+    if latest_session is None:
+        return []
+    lines = []
+    if latest_session.tested_summary:
+        lines.append(f"Tested: {latest_session.tested_summary}")
+    if latest_session.fixed_summary:
+        lines.append(f"Fixed: {latest_session.fixed_summary}")
+    if latest_session.open_summary:
+        lines.append(f"Still open: {latest_session.open_summary}")
+    return lines
+
+
+def _recent_activity(
+    sessions: list[DebugSession],
+    runs: list[TestRun],
+    batches: list[FeedbackBatch],
+) -> list[ActivityItem]:
+    """Merges the three modules' own recent-history lists (already fetched
+    for the module cards above) into one recency-sorted feed, newest first."""
+    items: list[ActivityItem] = []
+    for session in sessions:
+        label = session.detected_error_type or "Debug session"
+        items.append(ActivityItem(label, MODULE_DEBUGGING, session.created_at))
+    for run in runs:
+        s = run.parsed_summary
+        label = f"Test run: {s.get('passed', 0)} passed, {s.get('failed', 0)} failed"
+        items.append(ActivityItem(label, MODULE_TESTING, run.created_at))
+    for batch in batches:
+        label = f"Feedback batch: {batch.entry_count} entries"
+        items.append(ActivityItem(label, MODULE_FEEDBACK, batch.created_at))
+    items.sort(key=lambda item: item.timestamp, reverse=True)
+    return items[:6]
 
 
 def _missing_data(

@@ -1,12 +1,16 @@
-"""Marketing: Store Page Advisor, Wishlist/Analytics Summary, Screenshot Checklist.
+"""Marketing: Store Page Advisor and Wishlist/Analytics Summary.
 
-Three sections, each following the established pattern: local/deterministic
-work (CSV diffing, Pillow image checks) happens instantly with no AI
-provider; AI review calls run the selected provider on a worker thread. The
-Wishlist/Analytics Summary never sends anything to an AI provider at all —
-its digest is a purely local diff. The Screenshot Checklist never sends raw
-image bytes to any AI provider — only filenames, deterministic findings, and
-developer-supplied captions.
+Both sections follow the established pattern: local/deterministic work (CSV
+diffing) happens instantly with no AI provider; the Store Page Advisor's
+review call runs the selected provider on a worker thread. The Wishlist/
+Analytics Summary never sends anything to an AI provider at all — its digest
+is a purely local diff.
+
+The Trailer & Screenshot Checklist previously lived here too; it's been
+removed (product decision — a checklist that can only compare pixel
+dimensions and flag near-blank frames doesn't carry its weight as a
+dedicated tool). The underlying scan/review service (core.trailer_
+screenshot_checklist) is untouched in case it resurfaces elsewhere.
 """
 
 from __future__ import annotations
@@ -14,16 +18,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -33,28 +37,27 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.core.store_page_advisor import ProviderNotReadyError as StorePageNotReadyError
 from spiced.core.store_page_advisor import StorePageReviewResult
-from spiced.core.trailer_screenshot_checklist import (
-    ProviderNotReadyError as ScreenshotNotReadyError,
-)
-from spiced.core.trailer_screenshot_checklist import (
-    ScreenshotChecklistFindings,
-    ScreenshotChecklistResult,
-    UnreadableImageError,
-    scan_screenshots,
-)
 from spiced.core.wishlist_analytics import InvalidAnalyticsFormatError, WishlistAnalyticsDigest
 from spiced.ui.thread_utils import launch_worker
+from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
 ANALYTICS_FORMAT_NOTE = (
-    "Wishlist/Analytics Summary works from an export you paste or import — Spiced does not "
-    "connect live to Steam or itch (neither offers a public, OAuth-free wishlist/analytics API "
-    "that this app could integrate against). Export your own numbers into this documented "
-    "format, one metric per line:\n\n"
+    "Works from an export you paste or import — Spiced doesn't connect live to Steam or itch "
+    "(neither offers a public API for this). One metric per line:\n\n"
     "metric,value\nwishlists,1240\nconversion_pct,3.8\nvisits,15300\ntop_referrer,twitter\n\n"
-    "Any subset of these (or extra metrics) works. Each import is diffed against your previous "
-    "import for this project, entirely locally — no AI call, no network."
+    "Any subset (or extra metrics) works. Diffed against your previous import, locally — no AI, "
+    "no network."
 )
+
+# Stat tiles pulled out of the digest, in display order — see
+# _render_wa_tiles. Any metric not in this list (or missing from the
+# import) just doesn't get a tile; the full digest text below still shows it.
+_TILE_METRICS = [
+    ("wishlists", "Wishlists"),
+    ("conversion_pct", "Conversion %"),
+    ("top_referrer", "Top Referrer"),
+]
 
 
 class _StorePageWorker(QObject):
@@ -87,37 +90,18 @@ class _StorePageWorker(QObject):
             self.failed.emit(f"Something went wrong during the review: {exc}")
 
 
-class _ScreenshotChecklistWorker(QObject):
-    done = Signal(object)  # ScreenshotChecklistResult
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        services: Services,
-        findings: ScreenshotChecklistFindings,
-        captions: dict[str, str],
-    ) -> None:
-        super().__init__()
-        self._services = services
-        self._findings = findings
-        self._captions = captions
-
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.screenshot_checklist.analyze(
-                provider,
-                self._findings,
-                captions=self._captions,
-                project=self._services.active_project(),
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("marketing.screenshot_checklist_run")
-            self.done.emit(result)
-        except ScreenshotNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during the review: {exc}")
+def _card() -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 16, 18, 16)
+    layout.setSpacing(8)
+    shadow = QGraphicsDropShadowEffect(frame)
+    shadow.setBlurRadius(20)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(20, 10, 40, 80))
+    frame.setGraphicsEffect(shadow)
+    return frame
 
 
 class MarketingScreen(QWidget):
@@ -126,7 +110,6 @@ class MarketingScreen(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
-        self._screenshot_paths: list[str] = []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -140,7 +123,7 @@ class MarketingScreen(QWidget):
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
         title = QLabel("Marketing")
         title.setObjectName("ScreenTitle")
@@ -151,9 +134,17 @@ class MarketingScreen(QWidget):
         self._context_label.setWordWrap(True)
         layout.addWidget(self._context_label)
 
-        self._build_store_page_advisor(layout)
-        self._build_wishlist_analytics(layout)
-        self._build_screenshot_checklist(layout)
+        hero = QFrame()
+        hero.setObjectName("ToolHeroCard")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(24, 22, 24, 22)
+        hero_layout.setSpacing(10)
+        self._build_store_page_advisor(hero_layout)
+        layout.addWidget(hero)
+
+        analytics_card = _card()
+        self._build_wishlist_analytics(analytics_card.layout())
+        layout.addWidget(analytics_card)
 
         self.refresh()
 
@@ -161,15 +152,13 @@ class MarketingScreen(QWidget):
 
     def _build_store_page_advisor(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Store Page Optimization Advisor")
-        heading.setObjectName("SectionTitle")
+        heading.setObjectName("CardTitle")
         layout.addWidget(heading)
 
         intro = QLabel(
-            "Paste or import your Steam/itch store page draft — title, description, tags. "
-            "Spiced reviews it against a few commonly recommended practices (a clear first-line "
-            "hook, readable tags, common mistakes) and gives specific suggestions. These are "
-            "suggestions only, never a guarantee of sales — nothing here can know how a page "
-            "will actually convert."
+            "Paste your Steam/itch store page draft. Spiced checks it against a few common best "
+            "practices — a clear opening hook, readable tags — and suggests specific tweaks. "
+            "It's a second pair of eyes, not a guarantee of sales."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
@@ -195,15 +184,18 @@ class MarketingScreen(QWidget):
         layout.addLayout(tags_row)
 
         row = QHBoxLayout()
-        self._sp_import_btn = QPushButton("Import draft file…")
+        self._sp_import_btn = PillButton("Import draft file…", ghost=True)
         self._sp_import_btn.clicked.connect(self._on_sp_import)
         row.addWidget(self._sp_import_btn)
         row.addStretch(1)
-        self._sp_review_btn = QPushButton("Review store page")
+        self._sp_review_btn = PillButton("Review store page")
         self._sp_review_btn.clicked.connect(self._on_sp_review)
         row.addWidget(self._sp_review_btn)
         layout.addLayout(row)
 
+        result_label = QLabel("Result")
+        result_label.setObjectName("SectionTitle")
+        layout.addWidget(result_label)
         self._sp_result = QTextEdit()
         self._sp_result.setReadOnly(True)
         self._sp_result.setPlaceholderText("Your suggestions-only review will appear here.")
@@ -292,27 +284,48 @@ class MarketingScreen(QWidget):
 
     def _build_wishlist_analytics(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Wishlist/Analytics Summary")
-        heading.setObjectName("SectionTitle")
+        heading.setObjectName("CardTitle")
+        heading.setToolTip(ANALYTICS_FORMAT_NOTE)
         layout.addWidget(heading)
 
-        note = QLabel(ANALYTICS_FORMAT_NOTE)
+        note = QLabel("Paste or import a wishlist/analytics export to see what's changed.")
         note.setObjectName("Muted")
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        # Stat tiles: the metrics a dev opens this card to see, pulled out
+        # of the digest into the Dashboard's stat-card look instead of
+        # buried in a text dump. Hidden until a digest exists.
+        self._wa_tiles_row = QHBoxLayout()
+        self._wa_tiles_row.setSpacing(14)
+        self._wa_tile_widgets: dict[str, tuple[QFrame, QLabel]] = {}
+        for key, label in _TILE_METRICS:
+            tile = _card()
+            tile_layout = tile.layout()
+            tile_label = QLabel(label)
+            tile_label.setObjectName("StatLabel")
+            tile_layout.addWidget(tile_label)
+            tile_value = QLabel("—")
+            tile_value.setObjectName("StatValue")
+            tile_layout.addWidget(tile_value)
+            tile.setVisible(False)
+            self._wa_tile_widgets[key] = (tile, tile_value)
+            self._wa_tiles_row.addWidget(tile, 1)
+        layout.addLayout(self._wa_tiles_row)
 
         self._wa_input = QPlainTextEdit()
         self._wa_input.setPlaceholderText(
             "metric,value\nwishlists,1240\nconversion_pct,3.8\nvisits,15300\ntop_referrer,twitter"
         )
-        self._wa_input.setFixedHeight(120)
+        self._wa_input.setFixedHeight(100)
         layout.addWidget(self._wa_input)
 
         row = QHBoxLayout()
-        self._wa_import_btn = QPushButton("Import CSV file…")
+        self._wa_import_btn = PillButton("Import CSV file…", ghost=True)
         self._wa_import_btn.clicked.connect(self._on_wa_import)
         row.addWidget(self._wa_import_btn)
         row.addStretch(1)
-        self._wa_digest_btn = QPushButton("Import & diff (local, free)")
+        self._wa_digest_btn = PillButton("Import & diff")
         self._wa_digest_btn.clicked.connect(self._on_wa_digest)
         row.addWidget(self._wa_digest_btn)
         layout.addLayout(row)
@@ -323,7 +336,7 @@ class MarketingScreen(QWidget):
             "Your weekly analytics digest (what's working, what's flat, what changed) will "
             "appear here."
         )
-        self._wa_result.setFixedHeight(180)
+        self._wa_result.setFixedHeight(160)
         layout.addWidget(self._wa_result)
 
         history_title = QLabel("Recent imports")
@@ -375,6 +388,12 @@ class MarketingScreen(QWidget):
         self._refresh_wa_history()
 
     def _render_wa_digest(self, digest: WishlistAnalyticsDigest) -> None:
+        for key, (tile, value_label) in self._wa_tile_widgets.items():
+            metric_value = digest.metrics.get(key)
+            tile.setVisible(metric_value is not None)
+            if metric_value is not None:
+                value_label.setText(str(metric_value))
+
         lines = ["Weekly analytics digest (local diff, no AI used):", ""]
         lines.extend(f"- {line}" for line in digest.summary_lines)
         lines.append("")
@@ -398,165 +417,6 @@ class MarketingScreen(QWidget):
             lines.append(f"[{imp.created_at}] {top}")
         self._wa_history.setPlainText("\n".join(lines))
 
-    # --- Trailer & Screenshot Checklist ---------------------------------------
-
-    def _build_screenshot_checklist(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Trailer & Screenshot Checklist")
-        heading.setObjectName("SectionTitle")
-        layout.addWidget(heading)
-
-        intro = QLabel(
-            "Screenshots only — a video trailer needs frame-by-frame content understanding "
-            "Spiced has no tooling for here, so deep trailer analysis is out of scope. Upload "
-            "screenshot files below: Spiced runs local, deterministic checks (resolution/aspect "
-            "ratio against common store sizes, and a heuristic that flags likely-blank/loading-"
-            "screen shots for your own review), then an AI pass reviews the set — but only "
-            "filenames, those deterministic findings, and any caption text you add per shot. "
-            "Raw image bytes are never sent to the AI provider."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        row = QHBoxLayout()
-        self._sc_upload_btn = QPushButton("Upload screenshots…")
-        self._sc_upload_btn.clicked.connect(self._on_sc_upload)
-        row.addWidget(self._sc_upload_btn)
-        row.addStretch(1)
-        self._sc_clear_btn = QPushButton("Clear")
-        self._sc_clear_btn.setObjectName("Ghost")
-        self._sc_clear_btn.clicked.connect(self._on_sc_clear)
-        row.addWidget(self._sc_clear_btn)
-        layout.addLayout(row)
-
-        self._sc_list = QListWidget()
-        self._sc_list.setFixedHeight(100)
-        layout.addWidget(self._sc_list)
-
-        caption_row = QHBoxLayout()
-        caption_row.addWidget(QLabel("Caption for selected shot (optional):"))
-        self._sc_caption_input = QLineEdit()
-        self._sc_caption_input.setPlaceholderText(
-            "e.g. \"Mid-game boss fight in the ice caverns\""
-        )
-        self._sc_caption_input.editingFinished.connect(self._on_sc_caption_edited)
-        caption_row.addWidget(self._sc_caption_input, 1)
-        layout.addLayout(caption_row)
-        self._sc_list.currentItemChanged.connect(self._on_sc_item_selected)
-        self._sc_captions: dict[str, str] = {}
-
-        review_row = QHBoxLayout()
-        review_row.addStretch(1)
-        self._sc_review_btn = QPushButton("Run checklist")
-        self._sc_review_btn.clicked.connect(self._on_sc_review)
-        review_row.addWidget(self._sc_review_btn)
-        layout.addLayout(review_row)
-
-        self._sc_result = QTextEdit()
-        self._sc_result.setReadOnly(True)
-        self._sc_result.setPlaceholderText(
-            "Deterministic per-image findings and the AI's set review will appear here."
-        )
-        self._sc_result.setFixedHeight(220)
-        layout.addWidget(self._sc_result)
-
-        history_title = QLabel("Recent checklist runs")
-        history_title.setObjectName("SectionTitle")
-        layout.addWidget(history_title)
-        self._sc_history = QTextEdit()
-        self._sc_history.setReadOnly(True)
-        self._sc_history.setFixedHeight(90)
-        layout.addWidget(self._sc_history)
-
-    def _on_sc_upload(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Upload screenshots",
-            "",
-            "Image files (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*)",
-        )
-        if not paths:
-            return
-        self._screenshot_paths.extend(paths)
-        self._refresh_sc_list()
-
-    def _on_sc_clear(self) -> None:
-        self._screenshot_paths = []
-        self._sc_captions = {}
-        self._refresh_sc_list()
-
-    def _refresh_sc_list(self) -> None:
-        self._sc_list.clear()
-        for path in self._screenshot_paths:
-            self._sc_list.addItem(QListWidgetItem(Path(path).name))
-
-    def _on_sc_item_selected(self, current: QListWidgetItem | None, _prev=None) -> None:
-        if current is None:
-            self._sc_caption_input.clear()
-            return
-        self._sc_caption_input.setText(self._sc_captions.get(current.text(), ""))
-
-    def _on_sc_caption_edited(self) -> None:
-        current = self._sc_list.currentItem()
-        if current is None:
-            return
-        text = self._sc_caption_input.text().strip()
-        if text:
-            self._sc_captions[current.text()] = text
-        else:
-            self._sc_captions.pop(current.text(), None)
-
-    def _on_sc_review(self) -> None:
-        if not self._screenshot_paths:
-            QMessageBox.information(
-                self, "Nothing to check", "Upload one or more screenshots first."
-            )
-            return
-        try:
-            findings = scan_screenshots(self._screenshot_paths)
-        except UnreadableImageError as exc:
-            QMessageBox.warning(self, "Couldn't read an image", str(exc))
-            return
-
-        self._sc_review_btn.setEnabled(False)
-        self._sc_review_btn.setText("Checking…")
-        self._sc_result.setPlainText(_format_screenshot_findings_local(findings))
-
-        worker = _ScreenshotChecklistWorker(self._services, findings, dict(self._sc_captions))
-        thread = launch_worker(self, worker)
-        thread.started.connect(worker.run)
-        worker.done.connect(self._on_sc_done)
-        worker.failed.connect(self._on_sc_failed)
-        worker.done.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.start()
-
-    def _on_sc_done(self, result: ScreenshotChecklistResult) -> None:
-        self._sc_review_btn.setEnabled(True)
-        self._sc_review_btn.setText("Run checklist")
-        text = _format_screenshot_findings_local(result.findings)
-        text += f"\n\n--- AI review of the set ---\n{result.response_text}"
-        self._sc_result.setPlainText(text)
-        self.usage_changed.emit()
-        self._refresh_sc_history()
-
-    def _on_sc_failed(self, message: str) -> None:
-        self._sc_review_btn.setEnabled(True)
-        self._sc_review_btn.setText("Run checklist")
-        self._sc_result.setPlainText(message)
-
-    def _refresh_sc_history(self) -> None:
-        project = self._services.active_project()
-        if project is None:
-            self._sc_history.setPlainText("Runs are saved once you select an active project.")
-            return
-        reports = self._services.screenshot_checklist.history(project.id, limit=5)
-        if not reports:
-            self._sc_history.setPlainText("No screenshot checklist runs saved yet.")
-            return
-        lines = [f"[{r.created_at}] {len(r.findings)} screenshot(s) reviewed" for r in reports]
-        self._sc_history.setPlainText("\n".join(lines))
-
     # --- Refresh ---------------------------------------------------------------
 
     def refresh(self) -> None:
@@ -564,31 +424,9 @@ class MarketingScreen(QWidget):
         if project is None:
             self._context_label.setText(
                 "No active project selected. Choose or create one on the Projects screen to "
-                "save reviews, analytics imports, and checklist runs."
+                "save reviews and analytics imports."
             )
         else:
             self._context_label.setText(f"Active project: {project.name}")
         self._refresh_sp_history()
         self._refresh_wa_history()
-        self._refresh_sc_history()
-
-
-def _format_screenshot_findings_local(findings: ScreenshotChecklistFindings) -> str:
-    lines = ["Local scan (no AI used):"]
-    if not findings.findings:
-        lines.append("No screenshots scanned.")
-        return "\n".join(lines)
-    for f in findings.findings:
-        flags = []
-        if not f.meets_min_resolution:
-            flags.append("below minimum resolution")
-        elif not f.meets_recommended_resolution:
-            flags.append("below recommended resolution")
-        if not f.aspect_ratio_ok:
-            flags.append("unusual aspect ratio")
-        if f.likely_blank:
-            flags.append("likely blank/low-variance")
-        flag_text = ", ".join(flags) if flags else "no technical flags"
-        lines.append(f"- {f.filename}: {f.width}x{f.height} ({flag_text})")
-    lines.append(f"\n{findings.flagged_count} of {len(findings.findings)} flagged for a look.")
-    return "\n".join(lines)
