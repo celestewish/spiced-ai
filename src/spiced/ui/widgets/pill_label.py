@@ -54,7 +54,12 @@ class PillLabel(QLabel):
         self.style().drawPrimitive(QStyle.PE_Widget, option, buffer_painter, self)
         buffer_painter.setPen(self.palette().color(self.foregroundRole()))
         buffer_painter.setFont(self.font())
-        buffer_painter.drawText(self.rect(), int(self.alignment()), self.text())
+        # contentsRect(), not rect() -- QSS padding is applied to this
+        # widget's contents margins (Qt does this automatically for a
+        # stylesheet-styled widget), so drawing into the raw, un-inset rect
+        # left text sitting flush against the left edge with all the
+        # padding's width pushed to the right instead of split evenly.
+        buffer_painter.drawText(self.contentsRect(), int(self.alignment()), self.text())
         buffer_painter.end()
 
         buffer_painter = QPainter(buffer)
