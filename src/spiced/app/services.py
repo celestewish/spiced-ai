@@ -10,6 +10,15 @@ import uuid
 from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.automation.asset_technical_qa import AssetTechnicalQaService
+from spiced.automation.gpu_shader_profiling import GpuShaderProfilingService
+from spiced.automation.loudness_normalize import LoudnessNormalizeService
+from spiced.automation.mix_technical_qa import MixTechnicalQaService
+from spiced.automation.palette_drift import PaletteDriftService
+from spiced.automation.shader_variant_analysis import ShaderVariantAnalysisService
+from spiced.automation.state_machine_validation import StateMachineValidationService
+from spiced.automation.uv_lod_generation import UvLodGenerationService
+from spiced.automation.visual_regression_capture import VisualRegressionCaptureService
 from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
@@ -63,6 +72,7 @@ from spiced.storage.animation_state_machine_reports import AnimationStateMachine
 from spiced.storage.asset_review_reports import AssetReviewReportRepository
 from spiced.storage.asset_scan_reports import AssetScanReportRepository
 from spiced.storage.audio_checklist_reports import AudioChecklistReportRepository
+from spiced.storage.automation_findings import AutomationFindingRepository
 from spiced.storage.budget_entries import BudgetRepository
 from spiced.storage.build_reports import BuildReport, BuildReportRepository
 from spiced.storage.changelog_drafts import ChangelogDraftRepository
@@ -84,6 +94,7 @@ from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.localization_readiness_reports import LocalizationReadinessReportRepository
 from spiced.storage.mix_qa_reports import MixQaReportRepository
+from spiced.storage.palette_reference_colors import PaletteReferenceColorRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
 from spiced.storage.player_crash_sync import PlayerCrashSyncRepository
 from spiced.storage.playtester_signups import PlaytesterSignupRepository
@@ -99,6 +110,8 @@ from spiced.storage.test_cases import TestCaseRepository
 from spiced.storage.test_runs import TestRunRepository
 from spiced.storage.usage import UsageRepository
 from spiced.storage.version_check_reports import VersionCheckReportRepository
+from spiced.storage.visual_regression_captures import VisualRegressionCaptureRepository
+from spiced.storage.visual_regression_key_scenes import VisualRegressionKeySceneRepository
 from spiced.storage.visual_regression_reports import VisualRegressionReportRepository
 from spiced.storage.wishlist_analytics_imports import WishlistAnalyticsImportRepository
 
@@ -282,6 +295,70 @@ class Services:
             AudioChecklistReportRepository(self.db)
         )
         self.mix_level_qa = MixLevelQaService(MixQaReportRepository(self.db))
+
+        # Art/Audio/Animation/VFX Automation (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 1: Batch Processing & Loudness Normalization). First
+        # feature on the Bible's separate track: unlike every local/
+        # deterministic scan above, this drives a real external tool
+        # (ffmpeg) and persists into the shared automation_findings table
+        # (AutomationFindingRepository) rather than a one-off per-feature
+        # report table, since every future Bible feature reuses that same
+        # table.
+        self.loudness_normalize = LoudnessNormalizeService(AutomationFindingRepository(self.db))
+
+        # Asset Technical QA Scan (SPICED_IMPLEMENTATION_BIBLE.md, Feature 3).
+        # Third feature on the Bible's track: reuses self.asset_review_queue
+        # (below) for its already-built/verified resolution/file-size/format/
+        # mipmap checks rather than duplicating them, and adds naming-
+        # convention + live-engine pivot checking on top.
+        self.asset_technical_qa = AssetTechnicalQaService(AutomationFindingRepository(self.db))
+
+        # Texture & Palette Drift Detection (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 4). Fourth feature on the Bible's track -- needs no
+        # external tool or engine connection, unlike Features 1-3.
+        self.palette_drift = PaletteDriftService(
+            PaletteReferenceColorRepository(self.db), AutomationFindingRepository(self.db)
+        )
+
+        # Mix Technical QA (SPICED_IMPLEMENTATION_BIBLE.md, Feature 5). Fifth
+        # feature on the Bible's track -- reuses
+        # core.mix_level_qa._read_pcm_channel0 for WAV decoding (see that
+        # service, self.mix_level_qa, above) rather than re-deriving it.
+        self.mix_technical_qa = MixTechnicalQaService(AutomationFindingRepository(self.db))
+
+        # Shader Variant & Compile Bloat Analysis (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 6). Sixth feature on the Bible's track -- shares the "VFX
+        # analyzer" territory with self.visual_regression_capture (Feature 2,
+        # below) and self.shader_performance_profiling (the existing static
+        # scan), but drives a real headless Unity call for variant counts.
+        self.shader_variant_analysis = ShaderVariantAnalysisService(
+            AutomationFindingRepository(self.db)
+        )
+
+        # State Machine & Retarget Validation (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 7). Seventh feature on the Bible's track -- reuses
+        # self.animation_state_machine_check (below) / core.animation_
+        # state_machine_check for its already-verified unreachable-state and
+        # missing-transition-target checks rather than duplicating them, and
+        # adds dead-end-state detection plus live-engine retarget validation.
+        self.state_machine_validation = StateMachineValidationService(
+            AutomationFindingRepository(self.db)
+        )
+
+        # UV Unwrapping + LOD Generation (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 8). Eighth feature on the Bible's track -- the first that
+        # writes real mesh file artifacts, not just a report. No dedicated
+        # per-project config table: LOD ratios are a per-run parameter, not
+        # a persisted setting.
+        self.uv_lod_generation = UvLodGenerationService(AutomationFindingRepository(self.db))
+
+        # Shader Performance Profiling (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 9). Ninth and final Ship First feature -- analyzes an
+        # existing RenderDoc capture (see
+        # connectors.renderdoc_analysis's docstring for the significant
+        # caveat: unverified against a real RenderDoc install).
+        self.gpu_shader_profiling = GpuShaderProfilingService(AutomationFindingRepository(self.db))
+
         self.animation_state_machine_check = AnimationStateMachineCheckService(
             AnimationStateMachineReportRepository(self.db)
         )
@@ -299,6 +376,18 @@ class Services:
             ShaderProfilingReportRepository(self.db)
         )
         self.visual_regression = VisualRegressionService(VisualRegressionReportRepository(self.db))
+
+        # Visual Regression Testing -- Live Capture (SPICED_IMPLEMENTATION_BIBLE.md,
+        # Feature 2). Second feature on the Bible's live-engine-integration
+        # track: unlike the paste/import Visual Regression Testing above,
+        # this drives a real headless Unity capture
+        # (connectors.unity_visual_capture) and persists into the shared
+        # automation_findings table, same as loudness_normalize.
+        self.visual_regression_capture = VisualRegressionCaptureService(
+            VisualRegressionKeySceneRepository(self.db),
+            VisualRegressionCaptureRepository(self.db),
+            AutomationFindingRepository(self.db),
+        )
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
         """Seed the bundled demo project and make it active.

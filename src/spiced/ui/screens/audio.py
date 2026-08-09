@@ -1,10 +1,19 @@
-"""Audio: Audio Implementation Checklist, Mix/Level QA, Localization Audio Sync.
+"""Audio: Audio Implementation Checklist, Mix/Level QA, Localization Audio
+Sync, Batch Loudness Normalization.
 
-Three sections, all local/deterministic -- no AI provider is used anywhere
-on this screen. Recursive scans run on a worker thread (via
+The first three sections are local/deterministic -- no AI provider is used
+anywhere on this screen. Recursive scans run on a worker thread (via
 ``ui.thread_utils.launch_worker``) for UI responsiveness even though none of
 them involve an AI call, the same pattern the Asset Optimization Sweep and
 Localization Readiness scans already use.
+
+Batch Loudness Normalization (SPICED_IMPLEMENTATION_BIBLE.md, Feature 1) is
+the first section on the Bible's separate automation track: it drives a
+real external tool (ffmpeg, via ``automation.loudness_normalize``) rather
+than only reading project files, and its results are the shared ``Finding``
+schema instead of a feature-specific report shape -- everything else about
+how it's wired into this screen (worker thread, run button, result panel,
+saved-run history) still matches the sections above.
 """
 
 from __future__ import annotations
@@ -27,6 +36,9 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.automation.finding import Finding
+from spiced.automation.loudness_normalize import DEFAULT_TARGET_LUFS, FfmpegNotAvailableError
+from spiced.automation.mix_technical_qa import DEFAULT_SILENCE_MS
 from spiced.core.audio_implementation_checklist import AudioImplementationScan
 from spiced.core.audio_implementation_checklist import NoUnityFolderError as AudioNoUnityFolderError
 from spiced.core.localization_audio_sync import (
@@ -144,6 +156,68 @@ class _LocalizationAudioSyncWorker(QObject):
             self.failed.emit(f"Something went wrong while checking sync: {exc}")
 
 
+class _LoudnessNormalizeWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, folder: str, project, target_lufs: float
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._folder = folder
+        self._project = project
+        self._target_lufs = target_lufs
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.loudness_normalize.normalize(
+                self._project, self._folder, target_lufs=self._target_lufs
+            )
+            self._services.record_telemetry_event("audio.loudness_normalize_run")
+            self.done.emit(finding)
+        except FfmpegNotAvailableError as exc:
+            self.failed.emit(
+                f"ffmpeg isn't available on this machine: {exc}\n"
+                "See docs/loudness_normalize_ffmpeg.md for install instructions."
+            )
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while normalizing audio: {exc}")
+
+
+class _MixTechnicalQaWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(self, services: Services, folder: str, project) -> None:
+        super().__init__()
+        self._services = services
+        self._folder = folder
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.mix_technical_qa.scan(self._project, self._folder)
+            self._services.record_telemetry_event("audio.mix_technical_qa_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while checking audio files: {exc}")
+
+
+def _format_mix_technical_qa(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("No WAV files were checked.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+        for region in item.detail.get("clipping_regions", []):
+            lines.append(f"    · clipping: {region['start_ms']}ms - {region['end_ms']}ms")
+        for region in item.detail.get("silence_regions", []):
+            lines.append(f"    · silence: {region['start_ms']}ms - {region['end_ms']}ms")
+    return "\n".join(lines)
+
+
 def _format_audio_checklist(scan: AudioImplementationScan) -> str:
     lines = [scan.caveat, ""]
     lines.append(
@@ -222,6 +296,16 @@ def _format_localization_audio_sync(result: LocalizationAudioSyncResult) -> str:
     return "\n".join(lines)
 
 
+def _format_loudness_normalize(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("No audio files were processed.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 class AudioScreen(QWidget):
     usage_changed = Signal()
 
@@ -258,6 +342,8 @@ class AudioScreen(QWidget):
                 ("Audio Implementation Checklist", self._build_audio_checklist),
                 ("Mix/Level QA", self._build_mix_qa),
                 ("Localization Audio Sync", self._build_localization_audio_sync),
+                ("Batch Loudness Normalization", self._build_loudness_normalize),
+                ("Mix Technical QA", self._build_mix_technical_qa),
             ],
         )
         layout.addLayout(columns, 1)
@@ -553,6 +639,282 @@ class AudioScreen(QWidget):
         self._loc_run_btn.setText("Check sync")
         self._loc_result.setPlainText(message)
 
+    # --- Batch Loudness Normalization (Implementation Bible, Feature 1) ------
+
+    def _build_loudness_normalize(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Batch Loudness Normalization")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Batch normalize and trim all new SFX files to spec: every .wav/.mp3/.ogg file in "
+            "the folder is brought to a consistent EBU R128 loudness target via ffmpeg, so devs "
+            "stop shipping inconsistent volume levels. Output goes to a sibling "
+            "'<folder>_normalized' folder -- source files are never modified. Requires ffmpeg "
+            "installed on this machine (see docs/loudness_normalize_ffmpeg.md)."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._loudness_folder_input = QLineEdit()
+        self._loudness_folder_input.setPlaceholderText("Folder of audio files to normalize")
+        row.addWidget(self._loudness_folder_input, 1)
+        self._loudness_browse_btn = PillButton("Browse…")
+        self._loudness_browse_btn.clicked.connect(self._on_loudness_browse)
+        row.addWidget(self._loudness_browse_btn)
+        layout.addLayout(row)
+
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target LUFS:"))
+        self._loudness_target_input = QLineEdit()
+        self._loudness_target_input.setFixedWidth(80)
+        self._loudness_target_input.setPlaceholderText(str(DEFAULT_TARGET_LUFS))
+        target_row.addWidget(self._loudness_target_input)
+        self._loudness_save_target_btn = PillButton("Save as project default", ghost=True)
+        self._loudness_save_target_btn.clicked.connect(self._on_loudness_save_target)
+        target_row.addWidget(self._loudness_save_target_btn)
+        target_row.addStretch(1)
+        self._loudness_run_btn = PillButton("Normalize folder")
+        self._loudness_run_btn.clicked.connect(self._on_loudness_run)
+        target_row.addWidget(self._loudness_run_btn)
+        layout.addLayout(target_row)
+
+        self._loudness_result = QTextEdit()
+        self._loudness_result.setReadOnly(True)
+        self._loudness_result.setPlaceholderText(
+            "Per-file before/after loudness will appear here."
+        )
+        self._loudness_result.setFixedHeight(220)
+        layout.addWidget(self._loudness_result)
+
+        history_title = QLabel("Recent normalization runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._loudness_history = QTextEdit()
+        self._loudness_history.setReadOnly(True)
+        self._loudness_history.setFixedHeight(80)
+        layout.addWidget(self._loudness_history)
+
+    def _on_loudness_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder of audio files")
+        if folder:
+            self._loudness_folder_input.setText(folder)
+
+    def _loudness_target_from_field(self) -> float | None:
+        """Parse the target-LUFS field; None (fall back to the project's saved
+        setting/default) for blank input, raises ValueError for bad input."""
+        text = self._loudness_target_input.text().strip()
+        return float(text) if text else None
+
+    def _on_loudness_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        folder = self._loudness_folder_input.text().strip()
+        if not folder or not Path(folder).is_dir():
+            QMessageBox.information(
+                self, "Pick a folder", "Enter or browse to a folder containing audio files first."
+            )
+            return
+        try:
+            target_lufs = self._loudness_target_from_field()
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid target", "Target LUFS must be a number, e.g. -23."
+            )
+            return
+
+        self._loudness_run_btn.setEnabled(False)
+        self._loudness_run_btn.setText("Normalizing…")
+        self._loudness_result.setPlainText("Normalizing audio files…")
+
+        worker = _LoudnessNormalizeWorker(self._services, folder, project, target_lufs)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_loudness_done)
+        worker.failed.connect(self._on_loudness_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_loudness_done(self, finding: Finding) -> None:
+        self._loudness_run_btn.setEnabled(True)
+        self._loudness_run_btn.setText("Normalize folder")
+        self._loudness_result.setPlainText(_format_loudness_normalize(finding))
+        self.usage_changed.emit()
+        self._refresh_loudness_history()
+
+    def _on_loudness_failed(self, message: str) -> None:
+        self._loudness_run_btn.setEnabled(True)
+        self._loudness_run_btn.setText("Normalize folder")
+        self._loudness_result.setPlainText(message)
+
+    def _on_loudness_save_target(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        try:
+            target_lufs = self._loudness_target_from_field()
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid target", "Target LUFS must be a number, e.g. -23."
+            )
+            return
+        self._services.projects.set_loudness_normalize_target(project.id, target_lufs)
+        self.refresh()
+
+    def _refresh_loudness_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._loudness_history.setPlainText(
+                "Runs are saved once you select an active project."
+            )
+            return
+        records = self._services.loudness_normalize.history(project.id, limit=5)
+        if not records:
+            self._loudness_history.setPlainText("No normalization runs saved yet.")
+            return
+        self._loudness_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
+    # --- Mix Technical QA (Implementation Bible, Feature 5) -------------------
+
+    def _build_mix_technical_qa(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Mix Technical QA")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Scan the audio library for clipping or volume inconsistencies: every .wav file is "
+            "checked for clipping (samples pinned near full scale for more than a few samples) "
+            "and unexpected silence gaps mid-file, with timestamps. WAV only -- see the Mix/Level "
+            "QA section above for why compressed formats aren't analyzed."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._mtq_folder_input = QLineEdit()
+        self._mtq_folder_input.setPlaceholderText("Folder to scan for .wav files")
+        row.addWidget(self._mtq_folder_input, 1)
+        self._mtq_browse_btn = PillButton("Browse…")
+        self._mtq_browse_btn.clicked.connect(self._on_mtq_browse)
+        row.addWidget(self._mtq_browse_btn)
+        layout.addLayout(row)
+
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(QLabel("Min. silence (ms):"))
+        self._mtq_silence_input = QLineEdit()
+        self._mtq_silence_input.setFixedWidth(70)
+        self._mtq_silence_input.setPlaceholderText(str(DEFAULT_SILENCE_MS))
+        settings_row.addWidget(self._mtq_silence_input)
+        self._mtq_save_settings_btn = PillButton("Save as project default", ghost=True)
+        self._mtq_save_settings_btn.clicked.connect(self._on_mtq_save_settings)
+        settings_row.addWidget(self._mtq_save_settings_btn)
+        settings_row.addStretch(1)
+        self._mtq_run_btn = PillButton("Check audio")
+        self._mtq_run_btn.clicked.connect(self._on_mtq_run)
+        settings_row.addWidget(self._mtq_run_btn)
+        layout.addLayout(settings_row)
+
+        self._mtq_result = QTextEdit()
+        self._mtq_result.setReadOnly(True)
+        self._mtq_result.setPlaceholderText("Clipping/silence findings will appear here.")
+        self._mtq_result.setFixedHeight(220)
+        layout.addWidget(self._mtq_result)
+
+        history_title = QLabel("Recent checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._mtq_history = QTextEdit()
+        self._mtq_history.setReadOnly(True)
+        self._mtq_history.setFixedHeight(80)
+        layout.addWidget(self._mtq_history)
+
+    def _on_mtq_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder of WAV files")
+        if folder:
+            self._mtq_folder_input.setText(folder)
+
+    def _on_mtq_save_settings(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        text = self._mtq_silence_input.text().strip()
+        try:
+            silence_ms = float(text) if text else None
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid value", "Minimum silence must be a number of milliseconds, e.g. 300."
+            )
+            return
+        self._services.projects.set_mix_qa_silence_ms(project.id, silence_ms)
+        self.refresh()
+
+    def _on_mtq_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        folder = self._mtq_folder_input.text().strip()
+        if not folder or not Path(folder).is_dir():
+            QMessageBox.information(
+                self, "Pick a folder", "Enter or browse to a folder containing .wav files first."
+            )
+            return
+        self._mtq_run_btn.setEnabled(False)
+        self._mtq_run_btn.setText("Checking…")
+        self._mtq_result.setPlainText("Checking audio files…")
+
+        worker = _MixTechnicalQaWorker(self._services, folder, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_mtq_done)
+        worker.failed.connect(self._on_mtq_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_mtq_done(self, finding: Finding) -> None:
+        self._mtq_run_btn.setEnabled(True)
+        self._mtq_run_btn.setText("Check audio")
+        self._mtq_result.setPlainText(_format_mix_technical_qa(finding))
+        self.usage_changed.emit()
+        self._refresh_mtq_history()
+
+    def _on_mtq_failed(self, message: str) -> None:
+        self._mtq_run_btn.setEnabled(True)
+        self._mtq_run_btn.setText("Check audio")
+        self._mtq_result.setPlainText(message)
+
+    def _refresh_mtq_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._mtq_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.mix_technical_qa.history(project.id, limit=5)
+        if not records:
+            self._mtq_history.setPlainText("No checks saved yet.")
+            return
+        self._mtq_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -565,3 +927,10 @@ class AudioScreen(QWidget):
         else:
             self._context_label.setText(f"Active project: {project.name}")
         self._refresh_audio_checklist_history()
+        self._refresh_loudness_history()
+        self._refresh_mtq_history()
+        if project is not None:
+            if project.loudness_normalize_target_lufs is not None:
+                self._loudness_target_input.setText(str(project.loudness_normalize_target_lufs))
+            if project.mix_qa_silence_ms is not None:
+                self._mtq_silence_input.setText(str(project.mix_qa_silence_ms))

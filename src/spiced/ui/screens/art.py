@@ -1,10 +1,18 @@
-"""Art: Asset Review Queue, Style Consistency Checker, In-Engine Placement Preview.
+"""Art: Asset Review Queue, Style Consistency Checker, In-Engine Placement
+Preview, Asset Technical QA Scan.
 
-Three sections, all local/deterministic -- no AI provider is used anywhere
-on this screen. Recursive folder scans still run on a worker thread (via
-``ui.thread_utils.launch_worker``) purely for UI responsiveness, the same
-pattern the Asset Optimization Sweep and Localization Readiness scans use
-even though they, too, involve no AI call.
+The first three sections are local/deterministic -- no AI provider is used
+anywhere on this screen. Recursive folder scans still run on a worker
+thread (via ``ui.thread_utils.launch_worker``) purely for UI responsiveness,
+the same pattern the Asset Optimization Sweep and Localization Readiness
+scans use even though they, too, involve no AI call.
+
+Asset Technical QA Scan (SPICED_IMPLEMENTATION_BIBLE.md, Feature 3) is the
+third feature on the Bible's live-engine-integration track: it reuses the
+Asset Review Queue's already-built checks above (resolution, file size,
+format, mipmaps) rather than duplicating them, and adds naming-convention
+checking plus (only when this project has a connected Unity folder with a
+resolvable Editor) a live mesh-pivot check.
 """
 
 from __future__ import annotations
@@ -28,6 +36,17 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.automation.asset_technical_qa import DEFAULT_NAMING_PATTERN, DEFAULT_PIVOT_TOLERANCE
+from spiced.automation.finding import Finding
+from spiced.automation.palette_drift import (
+    DEFAULT_DELTA_E_THRESHOLD,
+    NoReferencePaletteError,
+)
+from spiced.automation.uv_lod_generation import (
+    DEFAULT_LOD_RATIOS,
+    SUPPORTED_EXTENSIONS,
+    UvLodRunResult,
+)
 from spiced.core.asset_review_queue import (
     REVIEW_QUEUE_CAVEAT,
     AssetReviewResult,
@@ -50,9 +69,13 @@ from spiced.core.style_consistency import (
 from spiced.core.style_consistency import (
     UnreadableImageError as StyleUnreadableImageError,
 )
+from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.pill_button import PillButton
+from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.tool_switcher import build_tool_switcher
+
+_PALETTE_COLOR_ID_ROLE = 0x0100
 
 
 class _AssetReviewWorker(QObject):
@@ -127,6 +150,126 @@ def _format_style_result(result: StyleConsistencyResult) -> str:
     return "\n".join(lines)
 
 
+class _AssetTechnicalQaWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, folder: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._folder = folder
+
+    def run(self) -> None:
+        try:
+            unity_path = None
+            if self._project.path:
+                required_version = self._project.engine_metadata.get("unity_version")
+                editor = resolve_unity_editor(
+                    required_version, self._project.unity_editor_path_override
+                )
+                unity_path = editor.path if editor is not None else None
+            finding, _record = self._services.asset_technical_qa.scan(
+                self._project, self._folder, unity_path=unity_path
+            )
+            self._services.record_telemetry_event("art.asset_technical_qa_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning assets: {exc}")
+
+
+def _format_asset_technical_qa(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("No assets were scanned.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
+class _PaletteDriftWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, folder: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._folder = folder
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.palette_drift.scan(self._project, self._folder)
+            self._services.record_telemetry_event("art.palette_drift_run")
+            self.done.emit(finding)
+        except NoReferencePaletteError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while checking palettes: {exc}")
+
+
+def _format_palette_drift(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("No images were checked.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
+class _UvLodGenerationWorker(QObject):
+    """Emits ``progress`` (Live Task Progress Transparency) with a
+    plain-language description of each LOD level as it's generated -- see
+    ``ui.widgets.progress_trail``. This is exactly the kind of multi-minute
+    action (simplify + unwrap, per LOD level, each in its own subprocess)
+    worth naming steps for, not just a bare spinner."""
+
+    done = Signal(object)  # UvLodRunResult
+    failed = Signal(str)
+    progress = Signal(str)
+
+    def __init__(
+        self,
+        services: Services,
+        project,
+        mesh_path: str,
+        output_dir: str,
+        ratios: tuple[float, ...],
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._mesh_path = mesh_path
+        self._output_dir = output_dir
+        self._ratios = ratios
+
+    def run(self) -> None:
+        try:
+            result = self._services.uv_lod_generation.generate(
+                self._project,
+                self._mesh_path,
+                output_dir=self._output_dir,
+                ratios=self._ratios,
+                on_progress=self.progress.emit,
+            )
+            self._services.record_telemetry_event("art.uv_lod_generation_run")
+            self.done.emit(result)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while generating UVs/LODs: {exc}")
+
+
+def _format_uv_lod_generation(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("No LOD levels were generated.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 class ArtScreen(QWidget):
     usage_changed = Signal()
 
@@ -166,6 +309,9 @@ class ArtScreen(QWidget):
                 ("Asset Review Queue", self._build_review_queue),
                 ("Style Consistency", self._build_style_consistency),
                 ("Placement Preview", self._build_placement_preview),
+                ("Asset Technical QA Scan", self._build_asset_technical_qa),
+                ("Texture & Palette Drift Detection", self._build_palette_drift),
+                ("UV Unwrapping + LOD Generation", self._build_uv_lod_generation),
             ],
         )
         layout.addLayout(columns, 1)
@@ -493,6 +639,524 @@ class ArtScreen(QWidget):
             f"{result.background_size[1]} background).\n\n{result.disclaimer}"
         )
 
+    # --- Asset Technical QA Scan (Implementation Bible, Feature 3) -----------
+
+    def _build_asset_technical_qa(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Asset Technical QA Scan")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Check assets for technical issues before they reach a programmer: resolution/"
+            "power-of-two, file-size sanity, source-only formats, and (for assets under this "
+            "project's Assets/ folder) mipmap settings -- reusing the same checks as the Asset "
+            "Review Queue above. Naming convention is checked against a per-project regex. Mesh "
+            "pivot offset is also checked when this project has a connected Unity folder with a "
+            "resolvable Editor -- that one check needs to load the mesh in Unity, since pivot "
+            "isn't reliably readable from the raw file."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self._atq_folder_input = QLineEdit()
+        self._atq_folder_input.setPlaceholderText("Folder of assets to scan")
+        row.addWidget(self._atq_folder_input, 1)
+        self._atq_browse_btn = PillButton("Browse…")
+        self._atq_browse_btn.clicked.connect(self._on_atq_browse)
+        row.addWidget(self._atq_browse_btn)
+        layout.addLayout(row)
+
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(QLabel("Naming pattern:"))
+        self._atq_naming_input = QLineEdit()
+        self._atq_naming_input.setPlaceholderText(DEFAULT_NAMING_PATTERN)
+        settings_row.addWidget(self._atq_naming_input, 1)
+        settings_row.addWidget(QLabel("Pivot tolerance:"))
+        self._atq_tolerance_input = QLineEdit()
+        self._atq_tolerance_input.setFixedWidth(60)
+        self._atq_tolerance_input.setPlaceholderText(str(DEFAULT_PIVOT_TOLERANCE))
+        settings_row.addWidget(self._atq_tolerance_input)
+        self._atq_save_settings_btn = PillButton("Save as project default", ghost=True)
+        self._atq_save_settings_btn.clicked.connect(self._on_atq_save_settings)
+        settings_row.addWidget(self._atq_save_settings_btn)
+        layout.addLayout(settings_row)
+
+        run_row = QHBoxLayout()
+        run_row.addStretch(1)
+        self._atq_run_btn = PillButton("Scan assets")
+        self._atq_run_btn.clicked.connect(self._on_atq_run)
+        run_row.addWidget(self._atq_run_btn)
+        layout.addLayout(run_row)
+
+        self._atq_result = QTextEdit()
+        self._atq_result.setReadOnly(True)
+        self._atq_result.setPlaceholderText("Per-asset technical QA findings will appear here.")
+        self._atq_result.setFixedHeight(220)
+        layout.addWidget(self._atq_result)
+
+        history_title = QLabel("Recent scans")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._atq_history = QTextEdit()
+        self._atq_history.setReadOnly(True)
+        self._atq_history.setFixedHeight(80)
+        layout.addWidget(self._atq_history)
+
+    def _on_atq_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder of assets to scan")
+        if folder:
+            self._atq_folder_input.setText(folder)
+
+    def _atq_naming_pattern_from_field(self) -> str | None:
+        text = self._atq_naming_input.text().strip()
+        return text or None
+
+    def _atq_tolerance_from_field(self) -> float | None:
+        """Raises ValueError for unparseable (non-blank) input."""
+        text = self._atq_tolerance_input.text().strip()
+        return float(text) if text else None
+
+    def _on_atq_save_settings(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        try:
+            tolerance = self._atq_tolerance_from_field()
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid tolerance", "Pivot tolerance must be a number, e.g. 0.1."
+            )
+            return
+        self._services.projects.set_asset_qa_settings(
+            project.id, self._atq_naming_pattern_from_field(), tolerance
+        )
+        self.refresh()
+
+    def _on_atq_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        folder = self._atq_folder_input.text().strip()
+        if not folder or not Path(folder).is_dir():
+            QMessageBox.information(
+                self, "Pick a folder", "Enter or browse to a folder containing assets first."
+            )
+            return
+        self._atq_run_btn.setEnabled(False)
+        self._atq_run_btn.setText("Scanning…")
+        self._atq_result.setPlainText("Scanning assets…")
+
+        worker = _AssetTechnicalQaWorker(self._services, project, folder)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_atq_done)
+        worker.failed.connect(self._on_atq_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_atq_done(self, finding: Finding) -> None:
+        self._atq_run_btn.setEnabled(True)
+        self._atq_run_btn.setText("Scan assets")
+        self._atq_result.setPlainText(_format_asset_technical_qa(finding))
+        self.usage_changed.emit()
+        self._refresh_atq_history()
+
+    def _on_atq_failed(self, message: str) -> None:
+        self._atq_run_btn.setEnabled(True)
+        self._atq_run_btn.setText("Scan assets")
+        self._atq_result.setPlainText(message)
+
+    def _refresh_atq_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._atq_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.asset_technical_qa.history(project.id, limit=5)
+        if not records:
+            self._atq_history.setPlainText("No scans saved yet.")
+            return
+        self._atq_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
+    # --- Texture & Palette Drift Detection (Implementation Bible, Feature 4) ---
+
+    def _build_palette_drift(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Texture & Palette Drift Detection")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Does this asset's palette match our existing style reference? Each image's "
+            "dominant colors (k-means) are compared to a reference palette by average "
+            "nearest-color distance in Lab color space (Delta-E) -- flagged when it drifts "
+            "past the threshold below. Build the reference by adding hex colors directly, or "
+            "by pointing at a folder of approved assets."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        ref_title = QLabel("Reference palette")
+        ref_title.setObjectName("SectionTitle")
+        layout.addWidget(ref_title)
+
+        ref_add_row = QHBoxLayout()
+        self._palette_hex_input = QLineEdit()
+        self._palette_hex_input.setPlaceholderText("#3366CC")
+        ref_add_row.addWidget(self._palette_hex_input, 1)
+        self._palette_add_btn = PillButton("Add color")
+        self._palette_add_btn.clicked.connect(self._on_palette_add_color)
+        ref_add_row.addWidget(self._palette_add_btn)
+        self._palette_folder_btn = PillButton("Set from folder…", ghost=True)
+        self._palette_folder_btn.clicked.connect(self._on_palette_set_from_folder)
+        ref_add_row.addWidget(self._palette_folder_btn)
+        layout.addLayout(ref_add_row)
+
+        self._palette_list = QListWidget()
+        self._palette_list.setFixedHeight(80)
+        layout.addWidget(self._palette_list)
+
+        remove_row = QHBoxLayout()
+        remove_row.addStretch(1)
+        self._palette_remove_btn = PillButton("Remove selected", ghost=True)
+        self._palette_remove_btn.clicked.connect(self._on_palette_remove_color)
+        remove_row.addWidget(self._palette_remove_btn)
+        layout.addLayout(remove_row)
+
+        threshold_row = QHBoxLayout()
+        threshold_row.addWidget(QLabel("Delta-E threshold:"))
+        self._palette_threshold_input = QLineEdit()
+        self._palette_threshold_input.setFixedWidth(60)
+        self._palette_threshold_input.setPlaceholderText(str(DEFAULT_DELTA_E_THRESHOLD))
+        threshold_row.addWidget(self._palette_threshold_input)
+        self._palette_save_threshold_btn = PillButton("Save as project default", ghost=True)
+        self._palette_save_threshold_btn.clicked.connect(self._on_palette_save_threshold)
+        threshold_row.addWidget(self._palette_save_threshold_btn)
+        threshold_row.addStretch(1)
+        layout.addLayout(threshold_row)
+
+        scan_title = QLabel("Check assets")
+        scan_title.setObjectName("SectionTitle")
+        layout.addWidget(scan_title)
+
+        scan_row = QHBoxLayout()
+        self._palette_scan_folder_input = QLineEdit()
+        self._palette_scan_folder_input.setPlaceholderText("Folder of assets to check")
+        scan_row.addWidget(self._palette_scan_folder_input, 1)
+        self._palette_scan_browse_btn = PillButton("Browse…")
+        self._palette_scan_browse_btn.clicked.connect(self._on_palette_scan_browse)
+        scan_row.addWidget(self._palette_scan_browse_btn)
+        self._palette_run_btn = PillButton("Check palettes")
+        self._palette_run_btn.clicked.connect(self._on_palette_run)
+        scan_row.addWidget(self._palette_run_btn)
+        layout.addLayout(scan_row)
+
+        self._palette_result = QTextEdit()
+        self._palette_result.setReadOnly(True)
+        self._palette_result.setPlaceholderText(
+            "Per-asset palette drift findings will appear here."
+        )
+        self._palette_result.setFixedHeight(200)
+        layout.addWidget(self._palette_result)
+
+        history_title = QLabel("Recent checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._palette_history = QTextEdit()
+        self._palette_history.setReadOnly(True)
+        self._palette_history.setFixedHeight(80)
+        layout.addWidget(self._palette_history)
+
+    def _on_palette_add_color(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        hex_color = self._palette_hex_input.text().strip()
+        if not hex_color:
+            return
+        try:
+            self._services.palette_drift.add_reference_color(project.id, hex_color)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid color", str(exc))
+            return
+        self._palette_hex_input.clear()
+        self._refresh_palette_reference_list()
+
+    def _on_palette_remove_color(self) -> None:
+        item = self._palette_list.currentItem()
+        if item is None:
+            return
+        color_id = item.data(_PALETTE_COLOR_ID_ROLE)
+        self._services.palette_drift.remove_reference_color(color_id)
+        self._refresh_palette_reference_list()
+
+    def _on_palette_set_from_folder(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        folder = QFileDialog.getExistingDirectory(
+            self, "Pick a reference folder of approved assets"
+        )
+        if not folder:
+            return
+        try:
+            self._services.palette_drift.set_reference_from_folder(project.id, folder)
+        except NoReferencePaletteError as exc:
+            QMessageBox.warning(self, "Couldn't set reference palette", str(exc))
+            return
+        self._refresh_palette_reference_list()
+
+    def _refresh_palette_reference_list(self) -> None:
+        self._palette_list.clear()
+        project = self._services.active_project()
+        if project is None:
+            return
+        for color in self._services.palette_drift.list_reference_colors(project.id):
+            item = QListWidgetItem(color.hex_color)
+            item.setData(_PALETTE_COLOR_ID_ROLE, color.id)
+            self._palette_list.addItem(item)
+
+    def _on_palette_save_threshold(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        text = self._palette_threshold_input.text().strip()
+        try:
+            threshold = float(text) if text else None
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid threshold", "Delta-E threshold must be a number, e.g. 15."
+            )
+            return
+        self._services.projects.set_palette_drift_threshold(project.id, threshold)
+        self.refresh()
+
+    def _on_palette_scan_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder of assets to check")
+        if folder:
+            self._palette_scan_folder_input.setText(folder)
+
+    def _on_palette_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        folder = self._palette_scan_folder_input.text().strip()
+        if not folder or not Path(folder).is_dir():
+            QMessageBox.information(
+                self, "Pick a folder", "Enter or browse to a folder containing assets first."
+            )
+            return
+        self._palette_run_btn.setEnabled(False)
+        self._palette_run_btn.setText("Checking…")
+        self._palette_result.setPlainText("Checking palettes…")
+
+        worker = _PaletteDriftWorker(self._services, project, folder)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_palette_done)
+        worker.failed.connect(self._on_palette_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_palette_done(self, finding: Finding) -> None:
+        self._palette_run_btn.setEnabled(True)
+        self._palette_run_btn.setText("Check palettes")
+        self._palette_result.setPlainText(_format_palette_drift(finding))
+        self.usage_changed.emit()
+        self._refresh_palette_history()
+
+    def _on_palette_failed(self, message: str) -> None:
+        self._palette_run_btn.setEnabled(True)
+        self._palette_run_btn.setText("Check palettes")
+        self._palette_result.setPlainText(message)
+
+    def _refresh_palette_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._palette_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.palette_drift.history(project.id, limit=5)
+        if not records:
+            self._palette_history.setPlainText("No palette checks saved yet.")
+            return
+        self._palette_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
+    # --- UV Unwrapping + LOD Generation (Implementation Bible, Feature 8) ------
+
+    def _build_uv_lod_generation(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("UV Unwrapping + LOD Generation")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Auto-unwrap UVs and generate LODs for this model: xatlas unwraps UVs (guaranteed "
+            "non-overlapping charts) and meshoptimizer simplifies the mesh at each ratio below "
+            "(borders locked so LOD seams don't reopen). Each LOD level is exported as its own "
+            f"file. Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))} only -- .fbx has "
+            "no reliable pure-Python loader; export an OBJ/glTF copy first."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        mesh_row = QHBoxLayout()
+        self._uld_mesh_input = QLineEdit()
+        self._uld_mesh_input.setPlaceholderText("Source mesh file (.obj/.gltf/.glb)")
+        mesh_row.addWidget(self._uld_mesh_input, 1)
+        self._uld_mesh_browse_btn = PillButton("Browse…")
+        self._uld_mesh_browse_btn.clicked.connect(self._on_uld_browse_mesh)
+        mesh_row.addWidget(self._uld_mesh_browse_btn)
+        layout.addLayout(mesh_row)
+
+        output_row = QHBoxLayout()
+        self._uld_output_input = QLineEdit()
+        self._uld_output_input.setPlaceholderText("Output folder for generated LOD files")
+        output_row.addWidget(self._uld_output_input, 1)
+        self._uld_output_browse_btn = PillButton("Browse…")
+        self._uld_output_browse_btn.clicked.connect(self._on_uld_browse_output)
+        output_row.addWidget(self._uld_output_browse_btn)
+        layout.addLayout(output_row)
+
+        ratios_row = QHBoxLayout()
+        ratios_row.addWidget(QLabel("LOD ratios:"))
+        self._uld_ratios_input = QLineEdit()
+        self._uld_ratios_input.setPlaceholderText(
+            ", ".join(str(r) for r in DEFAULT_LOD_RATIOS)
+        )
+        ratios_row.addWidget(self._uld_ratios_input, 1)
+        ratios_row.addStretch(1)
+        self._uld_run_btn = PillButton("Generate UVs && LODs")
+        self._uld_run_btn.clicked.connect(self._on_uld_run)
+        ratios_row.addWidget(self._uld_run_btn)
+        layout.addLayout(ratios_row)
+
+        self._uld_progress_trail = ProgressTrail()
+        layout.addWidget(self._uld_progress_trail)
+
+        self._uld_result = QTextEdit()
+        self._uld_result.setReadOnly(True)
+        self._uld_result.setPlaceholderText("Per-LOD UV/triangle findings will appear here.")
+        self._uld_result.setFixedHeight(200)
+        layout.addWidget(self._uld_result)
+
+        history_title = QLabel("Recent runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._uld_history = QTextEdit()
+        self._uld_history.setReadOnly(True)
+        self._uld_history.setFixedHeight(80)
+        layout.addWidget(self._uld_history)
+
+    def _on_uld_browse_mesh(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pick a source mesh", "", "Meshes (*.obj *.gltf *.glb)"
+        )
+        if path:
+            self._uld_mesh_input.setText(path)
+
+    def _on_uld_browse_output(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick an output folder")
+        if folder:
+            self._uld_output_input.setText(folder)
+
+    def _uld_ratios_from_field(self) -> tuple[float, ...]:
+        """Raises ValueError for unparseable (non-blank) input."""
+        text = self._uld_ratios_input.text().strip()
+        if not text:
+            return DEFAULT_LOD_RATIOS
+        return tuple(float(part.strip()) for part in text.split(","))
+
+    def _on_uld_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        mesh_path = self._uld_mesh_input.text().strip()
+        output_dir = self._uld_output_input.text().strip()
+        if not mesh_path or not Path(mesh_path).is_file():
+            QMessageBox.information(
+                self, "Pick a mesh", "Enter or browse to a source mesh file first."
+            )
+            return
+        if not output_dir:
+            QMessageBox.information(
+                self, "Pick an output folder", "Enter or browse to an output folder first."
+            )
+            return
+        try:
+            ratios = self._uld_ratios_from_field()
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid ratios", "LOD ratios must be numbers, e.g. 1.0, 0.5, 0.25, 0.1."
+            )
+            return
+
+        self._uld_run_btn.setEnabled(False)
+        self._uld_run_btn.setText("Generating…")
+        self._uld_result.setPlainText("Generating UVs and LODs (this can take a while)…")
+        self._uld_progress_trail.reset()
+
+        worker = _UvLodGenerationWorker(self._services, project, mesh_path, output_dir, ratios)
+        thread = launch_worker(self, worker, progress_slot=self._uld_progress_trail.add_step)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_uld_done)
+        worker.failed.connect(self._on_uld_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_uld_done(self, result: UvLodRunResult) -> None:
+        self._uld_run_btn.setEnabled(True)
+        self._uld_run_btn.setText("Generate UVs && LODs")
+        self._uld_result.setPlainText(_format_uv_lod_generation(result.finding))
+        self.usage_changed.emit()
+        self._refresh_uld_history()
+
+    def _on_uld_failed(self, message: str) -> None:
+        self._uld_run_btn.setEnabled(True)
+        self._uld_run_btn.setText("Generate UVs && LODs")
+        self._uld_result.setPlainText(message)
+
+    def _refresh_uld_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._uld_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.uv_lod_generation.history(project.id, limit=5)
+        if not records:
+            self._uld_history.setPlainText("No runs saved yet.")
+            return
+        self._uld_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -------------------------------------------------------------
 
     def refresh(self) -> None:
@@ -506,3 +1170,17 @@ class ArtScreen(QWidget):
         else:
             self._context_label.setText(f"Active project: {project.name}")
         self._refresh_review_history()
+        self._refresh_atq_history()
+        self._refresh_palette_reference_list()
+        self._refresh_palette_history()
+        self._refresh_uld_history()
+        if project is not None:
+            self._atq_naming_input.setText(project.asset_naming_pattern or "")
+            self._atq_tolerance_input.setText(
+                "" if project.asset_pivot_tolerance is None else str(project.asset_pivot_tolerance)
+            )
+            self._palette_threshold_input.setText(
+                ""
+                if project.palette_drift_threshold is None
+                else str(project.palette_drift_threshold)
+            )

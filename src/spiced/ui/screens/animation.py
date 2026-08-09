@@ -1,12 +1,19 @@
-"""Animation: Animation Bug Detection, State Machine Health.
+"""Animation: Animation Bug Detection, State Machine Health, State Machine
+& Retarget Validation.
 
-Two sections, both static analysis of ``.controller`` files via
+The first two sections are static analysis of ``.controller`` files via
 ``connectors.unity_controller_scan`` -- no AI provider is used anywhere on
 this screen. Animation Bug Detection surfaces *risk indicators*, never
 confirmed bugs; State Machine Sanity Check surfaces genuine structural
 problems (unreachable states, missing transition targets). Both scans run
 on a worker thread for UI responsiveness even though neither calls an AI
 provider.
+
+State Machine & Retarget Validation (SPICED_IMPLEMENTATION_BIBLE.md,
+Feature 7) reuses State Machine Health's checks above and adds dead-end-
+state detection, plus a live-engine retarget check (comparing two
+skeletons' bone names via a real Unity Editor call) -- the one thing this
+screen does that needs an engine connection.
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QScrollArea,
     QTextEdit,
@@ -23,8 +31,11 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.automation.finding import Finding
+from spiced.automation.state_machine_validation import DEFAULT_ALIAS_PREFIXES
 from spiced.core.animation_bug_detection import AnimationBugScanResult, detect_animation_bugs
 from spiced.core.animation_state_machine_check import NoUnityFolderError, StateMachineScanResult
+from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.tool_switcher import build_tool_switcher
@@ -108,6 +119,68 @@ class _StateMachineCheckWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
+class _SmvStateCheckWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.state_machine_validation.check_states(self._project)
+            self._services.record_telemetry_event("animation.state_machine_retarget_states_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning: {exc}")
+
+
+class _SmvRetargetWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, source_model_path: str, target_model_path: str
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._source_model_path = source_model_path
+        self._target_model_path = target_model_path
+
+    def run(self) -> None:
+        try:
+            required_version = self._project.engine_metadata.get("unity_version")
+            editor = resolve_unity_editor(
+                required_version, self._project.unity_editor_path_override
+            )
+            if editor is None:
+                self.failed.emit(
+                    f"Unity {required_version or '(unknown version)'} isn't available. Install "
+                    "it via Unity Hub, or set a manual Editor path on the Projects screen."
+                )
+                return
+            finding, _record = self._services.state_machine_validation.check_retarget(
+                self._project, editor.path, self._source_model_path, self._target_model_path
+            )
+            self._services.record_telemetry_event("animation.state_machine_retarget_bones_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong during the retarget check: {exc}")
+
+
+def _format_smv_finding(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("Nothing was checked.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 def _format_bug_scan(result: AnimationBugScanResult) -> str:
     lines = [result.caveat, ""]
     lines.append(f"{result.controllers_scanned} Animator Controller file(s) scanned.")
@@ -188,6 +261,7 @@ class AnimationScreen(QWidget):
             [
                 ("Animation Bug Detection", self._build_bug_detection),
                 ("State Machine Health", self._build_state_machine_check),
+                ("State Machine & Retarget Validation", self._build_smv),
             ],
         )
         layout.addLayout(columns, 1)
@@ -403,6 +477,197 @@ class AnimationScreen(QWidget):
         ]
         self._sm_history.setPlainText("\n".join(lines))
 
+    # --- State Machine & Retarget Validation (Implementation Bible, Feature 7) ---
+
+    def _build_smv(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("State Machine & Retarget Validation")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        state_heading = QLabel("Check the player animation state machine for unreachable states")
+        state_heading.setObjectName("SectionTitle")
+        layout.addWidget(state_heading)
+
+        state_intro = QLabel(
+            "Same unreachable-state and missing-target checks as State Machine Health above, "
+            "plus dead-end states -- a state with zero outgoing transitions, which the animator "
+            "can never leave via the state machine's own graph."
+        )
+        state_intro.setObjectName("Muted")
+        state_intro.setWordWrap(True)
+        layout.addWidget(state_intro)
+
+        state_row = QHBoxLayout()
+        state_row.addStretch(1)
+        self._smv_state_run_btn = PillButton("Run state machine check")
+        self._smv_state_run_btn.clicked.connect(self._on_smv_state_run)
+        state_row.addWidget(self._smv_state_run_btn)
+        layout.addLayout(state_row)
+
+        self._smv_state_result = QTextEdit()
+        self._smv_state_result.setReadOnly(True)
+        self._smv_state_result.setPlaceholderText("Unreachable/dead-end findings will appear here.")
+        self._smv_state_result.setFixedHeight(160)
+        layout.addWidget(self._smv_state_result)
+
+        retarget_heading = QLabel("Validate the retarget mapping before we shoot the mocap session")
+        retarget_heading.setObjectName("SectionTitle")
+        layout.addWidget(retarget_heading)
+
+        retarget_intro = QLabel(
+            "Compares a source and target skeleton's bone names (read live from Unity) and flags "
+            "any source bone with no match in the target, either exactly or after stripping a "
+            "known naming-convention prefix (default: mixamorig:)."
+        )
+        retarget_intro.setObjectName("Muted")
+        retarget_intro.setWordWrap(True)
+        layout.addWidget(retarget_intro)
+
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Source model:"))
+        self._smv_source_input = QLineEdit()
+        self._smv_source_input.setPlaceholderText("Assets/Characters/SourceRig.fbx")
+        source_row.addWidget(self._smv_source_input, 1)
+        layout.addLayout(source_row)
+
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target model:"))
+        self._smv_target_input = QLineEdit()
+        self._smv_target_input.setPlaceholderText("Assets/Characters/TargetRig.fbx")
+        target_row.addWidget(self._smv_target_input, 1)
+        layout.addLayout(target_row)
+
+        alias_row = QHBoxLayout()
+        alias_row.addWidget(QLabel("Alias prefixes:"))
+        self._smv_alias_input = QLineEdit()
+        self._smv_alias_input.setPlaceholderText(", ".join(DEFAULT_ALIAS_PREFIXES))
+        alias_row.addWidget(self._smv_alias_input, 1)
+        self._smv_save_settings_btn = PillButton("Save as project default", ghost=True)
+        self._smv_save_settings_btn.clicked.connect(self._on_smv_save_settings)
+        alias_row.addWidget(self._smv_save_settings_btn)
+        layout.addLayout(alias_row)
+
+        retarget_run_row = QHBoxLayout()
+        retarget_run_row.addStretch(1)
+        self._smv_retarget_run_btn = PillButton("Check retarget mapping")
+        self._smv_retarget_run_btn.clicked.connect(self._on_smv_retarget_run)
+        retarget_run_row.addWidget(self._smv_retarget_run_btn)
+        layout.addLayout(retarget_run_row)
+
+        self._smv_retarget_result = QTextEdit()
+        self._smv_retarget_result.setReadOnly(True)
+        self._smv_retarget_result.setPlaceholderText("Unmapped-bone findings will appear here.")
+        self._smv_retarget_result.setFixedHeight(160)
+        layout.addWidget(self._smv_retarget_result)
+
+        history_title = QLabel("Recent runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._smv_history = QTextEdit()
+        self._smv_history.setReadOnly(True)
+        self._smv_history.setFixedHeight(80)
+        layout.addWidget(self._smv_history)
+
+    def _on_smv_state_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._smv_state_run_btn.setEnabled(False)
+        self._smv_state_run_btn.setText("Scanning…")
+        self._smv_state_result.setPlainText("Scanning Animator Controller files…")
+
+        worker = _SmvStateCheckWorker(self._services, project)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_smv_state_done)
+        worker.failed.connect(self._on_smv_state_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_smv_state_done(self, finding: Finding) -> None:
+        self._smv_state_run_btn.setEnabled(True)
+        self._smv_state_run_btn.setText("Run state machine check")
+        self._smv_state_result.setPlainText(_format_smv_finding(finding))
+        self.usage_changed.emit()
+        self._refresh_smv_history()
+
+    def _on_smv_state_failed(self, message: str) -> None:
+        self._smv_state_run_btn.setEnabled(True)
+        self._smv_state_run_btn.setText("Run state machine check")
+        self._smv_state_result.setPlainText(message)
+
+    def _on_smv_save_settings(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        self._services.projects.set_retarget_alias_prefixes(
+            project.id, self._smv_alias_input.text().strip() or None
+        )
+        self.refresh()
+
+    def _on_smv_retarget_run(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.path:
+            QMessageBox.information(
+                self,
+                "Pick a project first",
+                "Select a project with a connected Unity folder on the Projects screen.",
+            )
+            return
+        source = self._smv_source_input.text().strip()
+        target = self._smv_target_input.text().strip()
+        if not source or not target:
+            QMessageBox.information(
+                self, "Missing input", "Enter both a source and target model asset path first."
+            )
+            return
+        self._smv_retarget_run_btn.setEnabled(False)
+        self._smv_retarget_run_btn.setText("Checking…")
+        self._smv_retarget_result.setPlainText(
+            "Launching Unity and comparing skeletons (this can take a while)…"
+        )
+
+        worker = _SmvRetargetWorker(self._services, project, source, target)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_smv_retarget_done)
+        worker.failed.connect(self._on_smv_retarget_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_smv_retarget_done(self, finding: Finding) -> None:
+        self._smv_retarget_run_btn.setEnabled(True)
+        self._smv_retarget_run_btn.setText("Check retarget mapping")
+        self._smv_retarget_result.setPlainText(_format_smv_finding(finding))
+        self.usage_changed.emit()
+        self._refresh_smv_history()
+
+    def _on_smv_retarget_failed(self, message: str) -> None:
+        self._smv_retarget_run_btn.setEnabled(True)
+        self._smv_retarget_run_btn.setText("Check retarget mapping")
+        self._smv_retarget_result.setPlainText(message)
+
+    def _refresh_smv_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._smv_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.state_machine_validation.history(project.id, limit=5)
+        if not records:
+            self._smv_history.setPlainText("No runs saved yet.")
+            return
+        self._smv_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -415,3 +680,6 @@ class AnimationScreen(QWidget):
         else:
             self._context_label.setText(f"Active project: {project.name}")
         self._refresh_sm_history()
+        self._refresh_smv_history()
+        if project is not None:
+            self._smv_alias_input.setText(project.retarget_alias_prefixes or "")

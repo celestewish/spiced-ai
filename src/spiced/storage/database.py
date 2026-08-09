@@ -594,6 +594,64 @@ CREATE TABLE IF NOT EXISTS visual_regression_reports (
     findings_json TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Art/Audio/Animation/VFX Automation (SPICED_IMPLEMENTATION_BIBLE.md,
+-- Feature 0 foundation). One row per automation run's Finding -- the shared
+-- JSON contract every Bible feature (#1-13) returns, regardless of
+-- discipline, instead of each feature inventing its own report table.
+-- feature_id namespaces rows (e.g. 'audio.loudness_normalize',
+-- 'vfx.visual_regression') so this one table serves every current and
+-- future automation feature. Unlike the local, deterministic report tables
+-- above, Bible features are expected to drive live engine hooks and
+-- external tools (ffmpeg, RenderDoc, xatlas, ...), which is why this is a
+-- distinct track from the offline paste/import features already listed.
+CREATE TABLE IF NOT EXISTS automation_findings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL UNIQUE,
+    feature_id    TEXT NOT NULL,
+    project_id    INTEGER NOT NULL,
+    status        TEXT NOT NULL,
+    summary       TEXT NOT NULL,
+    items_json    TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Visual Regression Testing (SPICED_IMPLEMENTATION_BIBLE.md, Feature 2). Each
+-- row names one "key scene" to capture each run: a scene file plus a marker
+-- GameObject already placed in that scene, which the capture camera snaps to
+-- (see docs/visual_regression_capture_hook.md). Findings from comparing runs
+-- go in the shared automation_findings table, not here.
+CREATE TABLE IF NOT EXISTS visual_regression_key_scenes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    scene_path    TEXT NOT NULL,
+    label         TEXT NOT NULL,
+    marker_name   TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Visual Regression Testing (SPICED_IMPLEMENTATION_BIBLE.md, Feature 2). One
+-- row per capture run -- just enough to find the immediately preceding
+-- build's screenshots directory to diff the next run against.
+CREATE TABLE IF NOT EXISTS visual_regression_captures (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER NOT NULL,
+    screenshots_dir   TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Texture & Palette Drift Detection (SPICED_IMPLEMENTATION_BIBLE.md,
+-- Feature 4). Each row is one hex color in a project's established style
+-- reference -- either added directly or materialized from a reference
+-- folder (see storage.palette_reference_colors). Findings from checking
+-- assets against this reference go in the shared automation_findings
+-- table, not here.
+CREATE TABLE IF NOT EXISTS palette_reference_colors (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL,
+    hex_color     TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and
@@ -627,6 +685,37 @@ PROJECT_MIGRATIONS = {
     # Debugging Buddy page's Design Drift section become active for this
     # project.
     "design_doc_sync_enabled": "INTEGER NOT NULL DEFAULT 0",
+    # Batch Processing & Loudness Normalization (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 1): per-project EBU R128 integrated-loudness target in LUFS.
+    # NULL means "use core.automation.loudness_normalize.DEFAULT_TARGET_LUFS
+    # (-23.0)" -- games sometimes target a different level than broadcast.
+    "loudness_normalize_target_lufs": "REAL",
+    # Asset Technical QA Scan (SPICED_IMPLEMENTATION_BIBLE.md, Feature 3).
+    # NULL falls back to automation.asset_technical_qa's documented defaults
+    # (DEFAULT_NAMING_PATTERN / DEFAULT_PIVOT_TOLERANCE).
+    "asset_naming_pattern": "TEXT",
+    "asset_pivot_tolerance": "REAL",
+    # Texture & Palette Drift Detection (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 4). NULL falls back to
+    # automation.palette_drift.DEFAULT_DELTA_E_THRESHOLD.
+    "palette_drift_threshold": "REAL",
+    # Mix Technical QA (SPICED_IMPLEMENTATION_BIBLE.md, Feature 5). NULL
+    # falls back to automation.mix_technical_qa.DEFAULT_SILENCE_MS.
+    "mix_qa_silence_ms": "REAL",
+    # Shader Variant & Compile Bloat Analysis (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 6). NULL falls back to
+    # automation.shader_variant_analysis.DEFAULT_VARIANT_THRESHOLD.
+    "shader_variant_threshold": "INTEGER",
+    # State Machine & Retarget Validation (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 7). Comma-separated bone-name alias prefixes to strip before
+    # matching (e.g. "mixamorig:"). NULL falls back to
+    # automation.state_machine_validation.DEFAULT_ALIAS_PREFIXES.
+    "retarget_alias_prefixes": "TEXT",
+    # Shader Performance Profiling (SPICED_IMPLEMENTATION_BIBLE.md, Feature
+    # 9). NULL falls back to
+    # automation.gpu_shader_profiling.tier_budget_ms(DEFAULT_HARDWARE_TIER).
+    "gpu_shader_budget_ms": "REAL",
+    "gpu_shader_tier": "TEXT",
 }
 
 

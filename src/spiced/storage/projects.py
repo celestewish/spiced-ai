@@ -27,6 +27,15 @@ class Project:
     build_schedule_time: str | None = None
     precommit_review_enabled: bool = False
     design_doc_sync_enabled: bool = False
+    loudness_normalize_target_lufs: float | None = None
+    asset_naming_pattern: str | None = None
+    asset_pivot_tolerance: float | None = None
+    palette_drift_threshold: float | None = None
+    mix_qa_silence_ms: float | None = None
+    shader_variant_threshold: int | None = None
+    retarget_alias_prefixes: str | None = None
+    gpu_shader_budget_ms: float | None = None
+    gpu_shader_tier: str | None = None
 
     @property
     def engine_metadata(self) -> dict:
@@ -148,6 +157,90 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_loudness_normalize_target(
+        self, project_id: int, target_lufs: float | None
+    ) -> Project:
+        """Set (or clear, with None) this project's EBU R128 loudness target.
+
+        Off by default (NULL) -- the feature falls back to
+        ``loudness_normalize.DEFAULT_TARGET_LUFS`` until a project explicitly
+        sets its own target.
+        """
+        self._db.execute(
+            "UPDATE projects SET loudness_normalize_target_lufs = ? WHERE id = ?",
+            (target_lufs, project_id),
+        )
+        return self.get(project_id)
+
+    def set_asset_qa_settings(
+        self, project_id: int, naming_pattern: str | None, pivot_tolerance: float | None
+    ) -> Project:
+        """Set (or clear, with None) this project's Asset Technical QA Scan
+        naming-convention regex and pivot-offset tolerance.
+        """
+        self._db.execute(
+            "UPDATE projects SET asset_naming_pattern = ?, asset_pivot_tolerance = ? WHERE id = ?",
+            (naming_pattern or None, pivot_tolerance, project_id),
+        )
+        return self.get(project_id)
+
+    def set_palette_drift_threshold(
+        self, project_id: int, threshold: float | None
+    ) -> Project:
+        """Set (or clear, with None) this project's palette-drift Delta-E
+        flag threshold.
+        """
+        self._db.execute(
+            "UPDATE projects SET palette_drift_threshold = ? WHERE id = ?",
+            (threshold, project_id),
+        )
+        return self.get(project_id)
+
+    def set_mix_qa_silence_ms(self, project_id: int, silence_ms: float | None) -> Project:
+        """Set (or clear, with None) this project's Mix Technical QA
+        minimum-silent-region threshold, in milliseconds.
+        """
+        self._db.execute(
+            "UPDATE projects SET mix_qa_silence_ms = ? WHERE id = ?", (silence_ms, project_id)
+        )
+        return self.get(project_id)
+
+    def set_shader_variant_threshold(
+        self, project_id: int, threshold: int | None
+    ) -> Project:
+        """Set (or clear, with None) this project's shader variant-count
+        flag threshold.
+        """
+        self._db.execute(
+            "UPDATE projects SET shader_variant_threshold = ? WHERE id = ?",
+            (threshold, project_id),
+        )
+        return self.get(project_id)
+
+    def set_retarget_alias_prefixes(
+        self, project_id: int, alias_prefixes: str | None
+    ) -> Project:
+        """Set (or clear, with None) this project's comma-separated
+        retarget bone-name alias prefixes (e.g. "mixamorig:").
+        """
+        self._db.execute(
+            "UPDATE projects SET retarget_alias_prefixes = ? WHERE id = ?",
+            (alias_prefixes or None, project_id),
+        )
+        return self.get(project_id)
+
+    def set_gpu_shader_profiling_settings(
+        self, project_id: int, budget_ms: float | None, tier: str | None
+    ) -> Project:
+        """Set (or clear, with None) this project's GPU shader-profiling
+        per-shader budget and default target hardware tier.
+        """
+        self._db.execute(
+            "UPDATE projects SET gpu_shader_budget_ms = ?, gpu_shader_tier = ? WHERE id = ?",
+            (budget_ms, tier or None, project_id),
+        )
+        return self.get(project_id)
+
     def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
         """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
         self._db.execute(
@@ -208,4 +301,31 @@ class ProjectRepository:
                 if "design_doc_sync_enabled" in keys
                 else False
             ),
+            loudness_normalize_target_lufs=(
+                row["loudness_normalize_target_lufs"]
+                if "loudness_normalize_target_lufs" in keys
+                else None
+            ),
+            asset_naming_pattern=(
+                row["asset_naming_pattern"] if "asset_naming_pattern" in keys else None
+            ),
+            asset_pivot_tolerance=(
+                row["asset_pivot_tolerance"] if "asset_pivot_tolerance" in keys else None
+            ),
+            palette_drift_threshold=(
+                row["palette_drift_threshold"] if "palette_drift_threshold" in keys else None
+            ),
+            mix_qa_silence_ms=(
+                row["mix_qa_silence_ms"] if "mix_qa_silence_ms" in keys else None
+            ),
+            shader_variant_threshold=(
+                row["shader_variant_threshold"] if "shader_variant_threshold" in keys else None
+            ),
+            retarget_alias_prefixes=(
+                row["retarget_alias_prefixes"] if "retarget_alias_prefixes" in keys else None
+            ),
+            gpu_shader_budget_ms=(
+                row["gpu_shader_budget_ms"] if "gpu_shader_budget_ms" in keys else None
+            ),
+            gpu_shader_tier=(row["gpu_shader_tier"] if "gpu_shader_tier" in keys else None),
         )

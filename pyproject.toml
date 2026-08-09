@@ -23,6 +23,31 @@ dependencies = [
     # httpx set — a reasonable, well-established addition rather than hand-
     # rolling image decoding.
     "Pillow>=10.0",
+    # Batch Processing & Loudness Normalization (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 1): MIT-licensed wrapper around ffmpeg's EBU R128 `loudnorm`
+    # filter. Requires the `ffmpeg` binary itself on the host -- a system
+    # dependency, not pip-installable -- see docs/loudness_normalize_ffmpeg.md.
+    "ffmpeg-normalize>=1.31",
+    # Texture & Palette Drift Detection (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 4): dominant-color k-means clustering over image pixel arrays.
+    # BSD-licensed, the standard array library for exactly this -- scipy is
+    # deliberately not added alongside it; k-means (a ~15-line loop) and the
+    # Lab/Delta-E color math are hand-rolled on top of plain numpy per the
+    # Bible's own documented fallback ("colormath or a hand-rolled Lab
+    # conversion"), since colormath is unmaintained upstream.
+    "numpy>=1.24",
+    # UV Unwrapping + LOD Generation (SPICED_IMPLEMENTATION_BIBLE.md,
+    # Feature 8): mesh I/O (OBJ/glTF/GLB only -- FBX has no reliable pure-
+    # Python loader, see automation/uv_lod_generation.py), UV unwrapping,
+    # and LOD simplification. All three are the exact libraries the Bible
+    # names, verified against a real generated mesh in this environment
+    # (not merely assumed to work): xatlas.Atlas (chart/utilization stats)
+    # and meshoptimizer.simplify (with SIMPLIFY_LOCK_BORDER) both matched
+    # their real installed APIs, which differ from the Bible's C++-shaped
+    # description in places.
+    "trimesh>=4.0",
+    "xatlas>=0.0.9",
+    "meshoptimizer>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +58,19 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.5",
 ]
+
+[project.scripts]
+# CLI-first (SPICED_IMPLEMENTATION_BIBLE.md, section 0): every automation
+# feature works as a standalone command before any UI panel exists.
+spiced-normalize-loudness = "spiced.automation.loudness_normalize:main"
+spiced-visual-regression-capture = "spiced.automation.visual_regression_capture:main"
+spiced-asset-technical-qa = "spiced.automation.asset_technical_qa:main"
+spiced-palette-drift = "spiced.automation.palette_drift:main"
+spiced-mix-technical-qa = "spiced.automation.mix_technical_qa:main"
+spiced-shader-variant-analysis = "spiced.automation.shader_variant_analysis:main"
+spiced-state-machine-retarget-validation = "spiced.automation.state_machine_validation:main"
+spiced-uv-lod-generation = "spiced.automation.uv_lod_generation:main"
+spiced-gpu-shader-profiling = "spiced.automation.gpu_shader_profiling:main"
 
 [project.gui-scripts]
 spiced = "spiced.app.main:main"

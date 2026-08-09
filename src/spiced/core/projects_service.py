@@ -93,6 +93,67 @@ class ProjectsService:
         """
         return self._repo.set_design_doc_sync_settings(project_id, enabled)
 
+    def set_loudness_normalize_target(
+        self, project_id: int, target_lufs: float | None
+    ) -> Project:
+        """Set (or clear, with None) this project's EBU R128 loudness target
+        (SPICED_IMPLEMENTATION_BIBLE.md, Feature 1). NULL falls back to
+        ``automation.loudness_normalize.DEFAULT_TARGET_LUFS``.
+        """
+        return self._repo.set_loudness_normalize_target(project_id, target_lufs)
+
+    def set_asset_qa_settings(
+        self, project_id: int, naming_pattern: str | None, pivot_tolerance: float | None
+    ) -> Project:
+        """Set this project's Asset Technical QA Scan naming-convention regex
+        and pivot-offset tolerance (SPICED_IMPLEMENTATION_BIBLE.md, Feature 3).
+        NULL falls back to ``automation.asset_technical_qa``'s defaults.
+        """
+        return self._repo.set_asset_qa_settings(project_id, naming_pattern, pivot_tolerance)
+
+    def set_palette_drift_threshold(self, project_id: int, threshold: float | None) -> Project:
+        """Set (or clear, with None) this project's palette-drift Delta-E
+        flag threshold (SPICED_IMPLEMENTATION_BIBLE.md, Feature 4). NULL
+        falls back to ``automation.palette_drift.DEFAULT_DELTA_E_THRESHOLD``.
+        """
+        return self._repo.set_palette_drift_threshold(project_id, threshold)
+
+    def set_mix_qa_silence_ms(self, project_id: int, silence_ms: float | None) -> Project:
+        """Set (or clear, with None) this project's Mix Technical QA
+        minimum-silent-region threshold in ms (SPICED_IMPLEMENTATION_BIBLE.md,
+        Feature 5). NULL falls back to
+        ``automation.mix_technical_qa.DEFAULT_SILENCE_MS``.
+        """
+        return self._repo.set_mix_qa_silence_ms(project_id, silence_ms)
+
+    def set_shader_variant_threshold(self, project_id: int, threshold: int | None) -> Project:
+        """Set (or clear, with None) this project's shader variant-count
+        flag threshold (SPICED_IMPLEMENTATION_BIBLE.md, Feature 6). NULL
+        falls back to
+        ``automation.shader_variant_analysis.DEFAULT_VARIANT_THRESHOLD``.
+        """
+        return self._repo.set_shader_variant_threshold(project_id, threshold)
+
+    def set_retarget_alias_prefixes(
+        self, project_id: int, alias_prefixes: str | None
+    ) -> Project:
+        """Set (or clear, with None) this project's comma-separated retarget
+        bone-name alias prefixes (SPICED_IMPLEMENTATION_BIBLE.md, Feature 7).
+        NULL falls back to
+        ``automation.state_machine_validation.DEFAULT_ALIAS_PREFIXES``.
+        """
+        return self._repo.set_retarget_alias_prefixes(project_id, alias_prefixes)
+
+    def set_gpu_shader_profiling_settings(
+        self, project_id: int, budget_ms: float | None, tier: str | None
+    ) -> Project:
+        """Set this project's GPU shader-profiling per-shader budget and
+        default target hardware tier (SPICED_IMPLEMENTATION_BIBLE.md,
+        Feature 9). NULL budget falls back to
+        ``automation.gpu_shader_profiling.tier_budget_ms``.
+        """
+        return self._repo.set_gpu_shader_profiling_settings(project_id, budget_ms, tier)
+
     def ensure_project_uuid(self, project_id: int) -> str:
         """Return this project's stable cross-machine id, minting one on first use.
 
