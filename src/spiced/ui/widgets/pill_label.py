@@ -1,19 +1,33 @@
 """A QLabel that always paints a genuinely round, antialiased shape.
 
-Same fix as ``pill_button.PillButton`` -- see its module docstring for the
-full story, including why the radius is recomputed lazily at the top of
-``paintEvent`` (self-correcting against premature-height reads) rather than
-only in ``resizeEvent``. Used for solid-filled status pills (e.g.
-``ReadinessBadge``'s "Needs Review"/"Ready for Playtesters" pill) where the
-oversized ``border-radius: 999px`` trick proved just as unreliable on QLabel
-as it was on QPushButton; an exact radius matching the label's real height
-fixes it the same way.
+Same underlying problem as ``pill_button.PillButton`` -- see its module
+docstring for the full "QSS border-radius isn't reliably honored" story --
+and the same fix shape: render unclipped, then punch the corners outside a
+rounded-rect path back to transparent. Used for solid-filled status pills
+(e.g. ``ReadinessBadge``'s "Needs Review"/"Ready for Playtesters" pill).
+
+QLabel needs one extra step ``PillButton`` doesn't: a stylesheet-styled
+QLabel gets ``Qt.WA_StyledBackground`` set automatically, which makes Qt
+paint the label's QSS background as an implicit *opaque, square* pre-fill
+before ``paintEvent`` even runs. Punching transparent corners into our own
+painted buffer doesn't help if that square pre-fill is still sitting
+underneath it on the backing store -- the "transparent" corners just let
+the square fill show back through. ``Qt.WA_NoSystemBackground`` turns that
+implicit pre-fill off so our buffer is the only thing painted.
+
+QLabel also has no single "draw the whole control" style call the way
+``QStyle.CE_PushButton`` covers a button's background/border/label in one
+go, so background and text are drawn as two separate steps here:
+``QStyle.PE_Widget`` for the QSS-driven background/border (the same
+primitive Qt itself would've used for that implicit pre-fill), then the
+text drawn directly with the label's own font/alignment/palette color.
 """
 
 from __future__ import annotations
 
-from PySide6.QtGui import QPaintEvent
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QPainter, QPainterPath, QPaintEvent, QPixmap
+from PySide6.QtWidgets import QLabel, QStyle, QStyleOption, QWidget
 
 
 class PillLabel(QLabel):
@@ -22,23 +36,38 @@ class PillLabel(QLabel):
     ) -> None:
         super().__init__(text, parent)
         self._fixed_radius = radius
-        self._applied_radius: int | None = None
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        self._apply_exact_radius()
-        super().paintEvent(event)
+        if self.width() <= 0 or self.height() <= 0:
+            super().paintEvent(event)
+            return
 
-    def _apply_exact_radius(self) -> None:
-        if self.height() <= 0:
-            return
-        radius = round(self._fixed_radius if self._fixed_radius is not None else self.height() / 2)
-        if radius <= 0 or radius == self._applied_radius:
-            return
-        self._applied_radius = radius
-        self.setStyleSheet(f"border-radius: {radius}px;")
-        # setStyleSheet() alone doesn't reliably force Qt's cached style-sheet
-        # render rules to refresh in time for the paint pass already under
-        # way when this runs (it's called from paintEvent) -- unpolish/polish
-        # is the explicit way to invalidate that cache immediately.
-        self.style().unpolish(self)
-        self.style().polish(self)
+        radius = self._fixed_radius if self._fixed_radius is not None else self.height() / 2
+
+        buffer = QPixmap(self.size())
+        buffer.fill(Qt.transparent)
+        buffer_painter = QPainter(buffer)
+        buffer_painter.setRenderHint(QPainter.Antialiasing)
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, buffer_painter, self)
+        buffer_painter.setPen(self.palette().color(self.foregroundRole()))
+        buffer_painter.setFont(self.font())
+        buffer_painter.drawText(self.rect(), int(self.alignment()), self.text())
+        buffer_painter.end()
+
+        buffer_painter = QPainter(buffer)
+        buffer_painter.setRenderHint(QPainter.Antialiasing)
+        full_rect = QPainterPath()
+        full_rect.addRect(QRectF(buffer.rect()))
+        rounded_rect = QPainterPath()
+        rounded_rect.addRoundedRect(QRectF(buffer.rect()), radius, radius)
+        corners = full_rect.subtracted(rounded_rect)
+        buffer_painter.setCompositionMode(QPainter.CompositionMode_Clear)
+        buffer_painter.fillPath(corners, Qt.transparent)
+        buffer_painter.end()
+
+        widget_painter = QPainter(self)
+        widget_painter.setRenderHint(QPainter.Antialiasing)
+        widget_painter.drawPixmap(0, 0, buffer)
