@@ -61,6 +61,9 @@ from spiced.core.release_checklist import (
     analyze_checklist,
     build_checklist,
 )
+from spiced.core.test_generator import NoUnityFolderError
+from spiced.core.test_generator import ProviderNotReadyError as TestGenNotReadyError
+from spiced.core.test_generator import TestGenerationResult
 from spiced.core.testing import (
     SOURCE_FILE,
     SOURCE_PASTE,
@@ -535,6 +538,32 @@ class _ChecklistAIWorker(QObject):
             self.failed.emit(f"Something went wrong: {exc}")
 
 
+class _TestCaseScriptWorker(QObject):
+    done = Signal(object)  # TestGenerationResult
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, test_case) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._test_case = test_case
+
+    def run(self) -> None:
+        try:
+            provider = self._services.build_provider()
+            result = self._services.test_generator.generate_draft_from_test_case(
+                provider,
+                self._project,
+                self._test_case,
+                record_usage=self._services.usage.record_prompt,
+            )
+            self.done.emit(result)
+        except TestGenNotReadyError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while drafting the script: {exc}")
+
+
 class _EconomySimulationAIWorker(QObject):
     done = Signal(object)  # EconomySimulationReview
     failed = Signal(str)
@@ -623,6 +652,7 @@ class TestingScreen(QWidget):
         self._perf_pending_filename: str | None = None
         self._access_pending_filename: str | None = None
         self._last_checklist: ReleaseChecklist | None = None
+        self._current_test_script_draft: TestGenerationResult | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -787,12 +817,13 @@ class TestingScreen(QWidget):
     # --- Functional tab ------------------------------------------------
 
     def _build_functional_tab(self) -> QWidget:
-        # Save Compatibility and Test Generation aren't shown in this pass
-        # (per the design handoff).
+        # Save Compatibility isn't shown in this pass (per the design
+        # handoff).
         container, layout = self._scrollable()
         self._build_case_form(_card_section(layout))
         self._build_unity_run(_hero_section(layout))
         self._build_case_and_issue_list(_card_section(layout))
+        self._build_test_generation(_card_section(layout))
         self._build_analyze(_card_section(layout))
         return container
 
@@ -1027,6 +1058,73 @@ class TestingScreen(QWidget):
         self._player_crash_sync_btn.clicked.connect(self._on_sync_player_crashes)
         sync_row.addWidget(self._player_crash_sync_btn)
         layout.addLayout(sync_row)
+
+    # --- Generate Unity test script from an existing test case --------------
+
+    def _build_test_generation(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Generate a Unity test script")
+        heading.setObjectName("CardTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Select one of your existing test cases above, then draft a Unity/NUnit test "
+            "script for it. The draft is shown below for you to review and edit — nothing is "
+            "written to your Unity project until you click \"Approve & write to Unity folder\" "
+            "on this specific draft."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._testgen_source_hint = QLabel("Select an existing test case above first.")
+        self._testgen_source_hint.setObjectName("Muted")
+        self._testgen_source_hint.setWordWrap(True)
+        layout.addWidget(self._testgen_source_hint)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._testgen_generate_btn = PillButton("Generate Unity test script")
+        self._testgen_generate_btn.setEnabled(False)
+        self._testgen_generate_btn.clicked.connect(self._on_generate_test_script)
+        row.addWidget(self._testgen_generate_btn)
+        layout.addLayout(row)
+
+        draft_label = QLabel("Draft (editable before approving):")
+        draft_label.setObjectName("Muted")
+        layout.addWidget(draft_label)
+        self._testgen_draft = QPlainTextEdit()
+        self._testgen_draft.setPlaceholderText("The AI-drafted Unity test script will appear here.")
+        self._testgen_draft.setFixedHeight(200)
+        layout.addWidget(self._testgen_draft)
+
+        self._testgen_notes = QTextEdit()
+        self._testgen_notes.setReadOnly(True)
+        self._testgen_notes.setPlaceholderText(
+            "Assumptions the AI made about your project's class/method names will appear here."
+        )
+        self._testgen_notes.setFixedHeight(70)
+        layout.addWidget(self._testgen_notes)
+
+        approve_row = QHBoxLayout()
+        approve_row.addStretch(1)
+        self._testgen_approve_btn = PillButton("Approve & write to Unity folder")
+        self._testgen_approve_btn.setEnabled(False)
+        self._testgen_approve_btn.clicked.connect(self._on_approve_test_script)
+        approve_row.addWidget(self._testgen_approve_btn)
+        layout.addLayout(approve_row)
+
+        self._testgen_status = QLabel()
+        self._testgen_status.setObjectName("Muted")
+        self._testgen_status.setWordWrap(True)
+        layout.addWidget(self._testgen_status)
+
+        history_title = QLabel("Recent test scripts")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._testgen_history = QTextEdit()
+        self._testgen_history.setReadOnly(True)
+        self._testgen_history.setFixedHeight(90)
+        layout.addWidget(self._testgen_history)
 
     # --- Economy Simulation tab ---------------------------------------------
 
@@ -1372,6 +1470,7 @@ class TestingScreen(QWidget):
         self._refresh_build_pipeline_status()
         self._refresh_build_history()
         self._refresh_economy_history()
+        self._refresh_testgen_history()
         self._update_edit_buttons()
 
     def _update_edit_buttons(self) -> None:
@@ -1383,6 +1482,13 @@ class TestingScreen(QWidget):
             self._selection_hint.setText("Editing the selected test case.")
         else:
             self._selection_hint.setText("Editing a new test case.")
+        self._testgen_generate_btn.setEnabled(has_selection)
+        if has_selection:
+            self._testgen_source_hint.setText(
+                f"Will generate a script for: “{self._title_input.text().strip()}”"
+            )
+        else:
+            self._testgen_source_hint.setText("Select an existing test case above first.")
         has_issue = self._selected_issue_id is not None
         self._resolve_btn.setEnabled(has_issue)
         self._reopen_btn.setEnabled(has_issue)
@@ -1912,6 +2018,92 @@ class TestingScreen(QWidget):
         self._player_crash_sync_btn.setText("Sync player crash reports")
         self._player_crash_sync_btn.setEnabled(True)
         self._player_crash_status.setText(message)
+
+    # --- Generate Unity test script handlers ----------------------------------
+
+    def _on_generate_test_script(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        if self._selected_case_id is None:
+            QMessageBox.information(
+                self,
+                "Select a test case first",
+                "Select one of your existing test cases above, then generate a script for it.",
+            )
+            return
+        test_case = self._services.testing.get_case(self._selected_case_id)
+        self._testgen_generate_btn.setEnabled(False)
+        self._testgen_generate_btn.setText("Thinking…")
+        self._testgen_approve_btn.setEnabled(False)
+        self._testgen_status.setText("")
+
+        worker = _TestCaseScriptWorker(self._services, project, test_case)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_test_script_generated)
+        worker.failed.connect(self._on_test_script_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_test_script_generated(self, result: TestGenerationResult) -> None:
+        self._testgen_generate_btn.setEnabled(True)
+        self._testgen_generate_btn.setText("Generate Unity test script")
+        self._current_test_script_draft = result
+        self._testgen_draft.setPlainText(result.draft.draft_text or "")
+        self._testgen_notes.setPlainText(result.response_text)
+        self._testgen_approve_btn.setEnabled(True)
+        self._testgen_status.setText(
+            "Draft saved for review. Edit the code above if you like, then Approve to write it "
+            "into your Unity project."
+        )
+        self.usage_changed.emit()
+        self._refresh_testgen_history()
+
+    def _on_test_script_failed(self, message: str) -> None:
+        self._testgen_generate_btn.setEnabled(True)
+        self._testgen_generate_btn.setText("Generate Unity test script")
+        self._testgen_status.setText(message)
+
+    def _on_approve_test_script(self) -> None:
+        project = self._services.active_project()
+        if project is None or self._current_test_script_draft is None:
+            return
+        edited = self._testgen_draft.toPlainText()
+        try:
+            draft = self._services.test_generator.approve_and_write(
+                project, self._current_test_script_draft.draft.id, edited_text=edited
+            )
+        except NoUnityFolderError as exc:
+            QMessageBox.warning(self, "Couldn't write file", str(exc))
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Couldn't write file", str(exc))
+            return
+        self._testgen_status.setText(f"Written to {draft.written_path}.")
+        self._testgen_approve_btn.setEnabled(False)
+        self._refresh_testgen_history()
+
+    def _refresh_testgen_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._testgen_history.setPlainText(
+                "Generated scripts are saved once you select an active project."
+            )
+            return
+        drafts = self._services.test_generator.history(project.id, limit=5)
+        if not drafts:
+            self._testgen_history.setPlainText("No test scripts generated for this project yet.")
+            return
+        lines = []
+        for d in drafts:
+            status = f"written to {d.written_path}" if d.approved else "not yet approved"
+            lines.append(f"[{d.created_at}] {d.system_label or '(unnamed test case)'} · {status}")
+        self._testgen_history.setPlainText("\n".join(lines))
 
     # --- Performance handlers ------------------------------------------------
 

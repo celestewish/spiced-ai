@@ -21,6 +21,7 @@ from spiced.core.test_generator import (
 from spiced.storage.database import Database
 from spiced.storage.generated_test_drafts import GeneratedTestDraftRepository
 from spiced.storage.projects import ProjectRepository
+from spiced.storage.test_cases import TestCaseRepository
 
 CANNED = (
     "Here's a draft test file for InventorySystem.\n\n"
@@ -200,3 +201,108 @@ def test_approve_and_write_overwrite_true_replaces_target(tmp_path):
 
     assert draft.written_path == str(existing)
     assert "old content" not in existing.read_text(encoding="utf-8")
+
+
+# --- generate_draft_from_test_case ---------------------------------------------
+#
+# Distinct from generate_draft above: the source here is one of the
+# developer's own already-created QA test cases (title/steps/expected), not
+# a pasted script -- see ui.screens.testing's "Generate a Unity test script"
+# section on the Functional tab, which lets the developer pick one of their
+# existing test cases and generate a script from it.
+
+CASE_CANNED = (
+    "Here's a draft Unity test script for \"Player takes damage from spikes\".\n\n"
+    "```csharp\n"
+    "using NUnit.Framework;\n\n"
+    "public class PlayerTakesDamageFromSpikesTests\n"
+    "{\n"
+    "    [Test]\n"
+    "    public void Player_LosesHealth_WhenTouchingSpikes()\n"
+    "    {\n"
+    "        Assert.Pass();\n"
+    "    }\n"
+    "}\n"
+    "```\n\n"
+    "Assumptions I made about your project:\n- None.\n\n"
+    "Before you approve this:\nReview it first."
+)
+
+
+def _service_project_and_case(tmp_path):
+    db = Database(":memory:")
+    repo = ProjectRepository(db)
+    project = repo.create("Moonlit Depths", engine="Unity")
+    project = repo.set_unity_folder(project.id, str(tmp_path), "unknown")
+    service = TestGeneratorService(GeneratedTestDraftRepository(db))
+    case = TestCaseRepository(db).create(
+        project.id,
+        "Player takes damage from spikes",
+        steps="1. Walk player into a spike trap\n2. Observe health bar",
+        expected_result="Player health decreases by the spike's configured damage amount",
+    )
+    return service, project, case
+
+
+def test_generate_draft_from_test_case_raises_when_provider_unavailable(tmp_path):
+    service, project, case = _service_project_and_case(tmp_path)
+    with pytest.raises(ProviderNotReadyError):
+        service.generate_draft_from_test_case(FakeProvider(available=False), project, case)
+
+
+def test_generate_draft_from_test_case_never_writes_to_disk(tmp_path):
+    service, project, case = _service_project_and_case(tmp_path)
+    result = service.generate_draft_from_test_case(FakeProvider(text=CASE_CANNED), project, case)
+    assert result.draft.written_path is None
+    assert result.draft.approved is False
+
+
+def test_generate_draft_from_test_case_saves_extracted_code_and_labels_by_title(tmp_path):
+    service, project, case = _service_project_and_case(tmp_path)
+    result = service.generate_draft_from_test_case(FakeProvider(text=CASE_CANNED), project, case)
+    assert result.draft.draft_text is not None
+    assert "```" not in result.draft.draft_text
+    assert result.draft.system_label == case.title
+    # The test case's own fields are what's kept as the excerpt/audit trail
+    # -- there's no pasted source code for this flow.
+    assert case.title in result.draft.source_excerpt
+    assert case.steps in result.draft.source_excerpt
+    assert case.expected_result in result.draft.source_excerpt
+
+
+def test_generate_draft_from_test_case_prompt_includes_case_fields():
+    captured = {}
+
+    class CapturingProvider(FakeProvider):
+        def generate(self, prompt):
+            captured["prompt"] = prompt
+            return super().generate(prompt)
+
+    db = Database(":memory:")
+    repo = ProjectRepository(db)
+    project = repo.create("Moonlit Depths", engine="Unity")
+    case = TestCaseRepository(db).create(
+        project.id,
+        "Player takes damage from spikes",
+        steps="Walk into a spike trap",
+        expected_result="Health decreases",
+    )
+    service = TestGeneratorService(GeneratedTestDraftRepository(db))
+    service.generate_draft_from_test_case(CapturingProvider(text=CASE_CANNED), project, case)
+
+    prompt = captured["prompt"]
+    assert "Player takes damage from spikes" in prompt
+    assert "Walk into a spike trap" in prompt
+    assert "Health decreases" in prompt
+    # This flow has no pasted source code -- the prompt shouldn't claim there is any.
+    assert "Source code the developer supplied" not in prompt
+
+
+def test_generate_draft_from_test_case_can_then_be_approved_and_written(tmp_path):
+    service, project, case = _service_project_and_case(tmp_path)
+    result = service.generate_draft_from_test_case(FakeProvider(text=CASE_CANNED), project, case)
+    draft = service.approve_and_write(project, result.draft.id)
+    assert draft.approved is True
+    written = tmp_path / "Assets" / "Tests" / "EditMode" / "PlayerTakesDamageFromSpikesTests.cs"
+    assert written.is_file()
+    assert "Player_LosesHealth_WhenTouchingSpikes" in written.read_text(encoding="utf-8")
