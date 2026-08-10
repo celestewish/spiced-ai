@@ -42,6 +42,11 @@ from spiced.automation.palette_drift import (
     DEFAULT_DELTA_E_THRESHOLD,
     NoReferencePaletteError,
 )
+from spiced.automation.retopology_assist import (
+    DEFAULT_TARGET_FACE_COUNT,
+    BlenderNotAvailableError,
+    RetopologyRunResult,
+)
 from spiced.automation.uv_lod_generation import (
     DEFAULT_LOD_RATIOS,
     SUPPORTED_EXTENSIONS,
@@ -270,6 +275,47 @@ def _format_uv_lod_generation(finding: Finding) -> str:
     return "\n".join(lines)
 
 
+class _RetopologyWorker(QObject):
+    done = Signal(object)  # RetopologyRunResult
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, mesh_path: str, output_path: str,
+        target_face_count: int,
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._mesh_path = mesh_path
+        self._output_path = output_path
+        self._target_face_count = target_face_count
+
+    def run(self) -> None:
+        try:
+            result, _record = self._services.retopology_assist.retopologize(
+                self._project, self._mesh_path,
+                output_path=self._output_path or None, target_face_count=self._target_face_count,
+            )
+            self._services.record_telemetry_event("art.retopology_assist_run")
+            self.done.emit(result)
+        except BlenderNotAvailableError as exc:
+            self.failed.emit(
+                f"{exc}\nSee docs/blender_retopology_assist.md for install instructions."
+            )
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while remeshing: {exc}")
+
+
+def _format_retopology(finding: Finding) -> str:
+    lines = [finding.summary, ""]
+    if not finding.items:
+        lines.append("Nothing was remeshed.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 class ArtScreen(QWidget):
     usage_changed = Signal()
 
@@ -312,6 +358,7 @@ class ArtScreen(QWidget):
                 ("Asset Technical QA Scan", self._build_asset_technical_qa),
                 ("Texture & Palette Drift Detection", self._build_palette_drift),
                 ("UV Unwrapping + LOD Generation", self._build_uv_lod_generation),
+                ("Retopology Assist", self._build_retopology_assist),
             ],
         )
         layout.addLayout(columns, 1)
@@ -1157,6 +1204,138 @@ class ArtScreen(QWidget):
             "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
         )
 
+    # --- Retopology Assist (Implementation Bible, Feature 10) -----------------
+
+    def _build_retopology_assist(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Retopology Assist")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Auto-retopologizes a mesh (quad-based remesh) as a starting point, via Blender's "
+            "QuadriFlow remesher run headlessly in a subprocess. Requires Blender installed on "
+            "this machine (see docs/blender_retopology_assist.md) -- not verified against a real "
+            "Blender install in this build, see that doc for the caveat. "
+            f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))} only."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        mesh_row = QHBoxLayout()
+        self._retopo_mesh_input = QLineEdit()
+        self._retopo_mesh_input.setPlaceholderText("Source mesh file (.obj/.gltf/.glb)")
+        mesh_row.addWidget(self._retopo_mesh_input, 1)
+        self._retopo_mesh_browse_btn = PillButton("Browse…")
+        self._retopo_mesh_browse_btn.clicked.connect(self._on_retopo_browse_mesh)
+        mesh_row.addWidget(self._retopo_mesh_browse_btn)
+        layout.addLayout(mesh_row)
+
+        output_row = QHBoxLayout()
+        self._retopo_output_input = QLineEdit()
+        self._retopo_output_input.setPlaceholderText(
+            "Output mesh path (blank = <name>_retopo next to the source)"
+        )
+        output_row.addWidget(self._retopo_output_input, 1)
+        layout.addLayout(output_row)
+
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target face count:"))
+        self._retopo_target_input = QLineEdit()
+        self._retopo_target_input.setPlaceholderText(str(DEFAULT_TARGET_FACE_COUNT))
+        target_row.addWidget(self._retopo_target_input, 1)
+        target_row.addStretch(1)
+        self._retopo_run_btn = PillButton("Retopologize")
+        self._retopo_run_btn.clicked.connect(self._on_retopo_run)
+        target_row.addWidget(self._retopo_run_btn)
+        layout.addLayout(target_row)
+
+        self._retopo_result = QTextEdit()
+        self._retopo_result.setReadOnly(True)
+        self._retopo_result.setPlaceholderText(
+            "Quad ratio / face count / non-manifold findings will appear here."
+        )
+        self._retopo_result.setFixedHeight(200)
+        layout.addWidget(self._retopo_result)
+
+        history_title = QLabel("Recent runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._retopo_history = QTextEdit()
+        self._retopo_history.setReadOnly(True)
+        self._retopo_history.setFixedHeight(80)
+        layout.addWidget(self._retopo_history)
+
+    def _on_retopo_browse_mesh(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pick a source mesh", "", "Meshes (*.obj *.gltf *.glb)"
+        )
+        if path:
+            self._retopo_mesh_input.setText(path)
+
+    def _on_retopo_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        mesh_path = self._retopo_mesh_input.text().strip()
+        if not mesh_path or not Path(mesh_path).is_file():
+            QMessageBox.information(
+                self, "Pick a mesh", "Enter or browse to a source mesh file first."
+            )
+            return
+        output_path = self._retopo_output_input.text().strip()
+        target_text = self._retopo_target_input.text().strip()
+        try:
+            target_face_count = int(target_text) if target_text else DEFAULT_TARGET_FACE_COUNT
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid target", "Target face count must be a whole number."
+            )
+            return
+
+        self._retopo_run_btn.setEnabled(False)
+        self._retopo_run_btn.setText("Remeshing…")
+        self._retopo_result.setPlainText("Launching Blender and remeshing (this can take a while)…")
+
+        worker = _RetopologyWorker(
+            self._services, project, mesh_path, output_path, target_face_count
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_retopo_done)
+        worker.failed.connect(self._on_retopo_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_retopo_done(self, result: RetopologyRunResult) -> None:
+        self._retopo_run_btn.setEnabled(True)
+        self._retopo_run_btn.setText("Retopologize")
+        self._retopo_result.setPlainText(_format_retopology(result.finding))
+        self.usage_changed.emit()
+        self._refresh_retopo_history()
+
+    def _on_retopo_failed(self, message: str) -> None:
+        self._retopo_run_btn.setEnabled(True)
+        self._retopo_run_btn.setText("Retopologize")
+        self._retopo_result.setPlainText(message)
+
+    def _refresh_retopo_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._retopo_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.retopology_assist.history(project.id, limit=5)
+        if not records:
+            self._retopo_history.setPlainText("No runs saved yet.")
+            return
+        self._retopo_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -------------------------------------------------------------
 
     def refresh(self) -> None:
@@ -1174,6 +1353,7 @@ class ArtScreen(QWidget):
         self._refresh_palette_reference_list()
         self._refresh_palette_history()
         self._refresh_uld_history()
+        self._refresh_retopo_history()
         if project is not None:
             self._atq_naming_input.setText(project.asset_naming_pattern or "")
             self._atq_tolerance_input.setText(

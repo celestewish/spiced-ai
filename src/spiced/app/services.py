@@ -10,11 +10,17 @@ import uuid
 from pathlib import Path
 
 from spiced.ai import DEFAULT_PROVIDER, AIProvider, build_provider
+from spiced.automation.animation_bug_detection_live import LiveAnimationBugDetectionService
 from spiced.automation.asset_technical_qa import AssetTechnicalQaService
 from spiced.automation.gpu_shader_profiling import GpuShaderProfilingService
+from spiced.automation.localization_content_verification import (
+    LocalizationContentVerificationService,
+)
 from spiced.automation.loudness_normalize import LoudnessNormalizeService
 from spiced.automation.mix_technical_qa import MixTechnicalQaService
+from spiced.automation.mocap_cleanup_assist import MocapCleanupAssistService
 from spiced.automation.palette_drift import PaletteDriftService
+from spiced.automation.retopology_assist import RetopologyAssistService
 from spiced.automation.shader_variant_analysis import ShaderVariantAnalysisService
 from spiced.automation.state_machine_validation import StateMachineValidationService
 from spiced.automation.uv_lod_generation import UvLodGenerationService
@@ -387,6 +393,45 @@ class Services:
             VisualRegressionKeySceneRepository(self.db),
             VisualRegressionCaptureRepository(self.db),
             AutomationFindingRepository(self.db),
+        )
+
+        # Phase 2 of the Bible's live-engine-integration track (Features
+        # 10-13), built in process order 11, 12, 10, 13 (11 builds the
+        # shared foot-sliding/velocity helper -- automation.motion_quality
+        # -- that 12 then reuses; 10 and 13 are independent of both and of
+        # each other).
+        #
+        # Automated Animation Bug Detection, Live Capture (Feature 11):
+        # Spiced's one deliberate, considered exception to the local-first/
+        # read-only principle documented on core.animation_bug_detection --
+        # a real Unity Play Mode capture, kept side by side with that
+        # existing static scan rather than replacing it.
+        self.live_animation_bug_detection = LiveAnimationBugDetectionService(
+            AutomationFindingRepository(self.db)
+        )
+
+        # Mocap Cleanup Assist (Feature 12): detection-only offline BVH
+        # scan, reusing Feature 11's foot-sliding helper
+        # (automation.motion_quality) against forward-kinematics positions
+        # computed from the raw mocap file (automation.bvh_mocap) -- no
+        # live engine connection needed at all.
+        self.mocap_cleanup_assist = MocapCleanupAssistService(AutomationFindingRepository(self.db))
+
+        # Retopology Assist (Feature 10): headless Blender + QuadriFlow,
+        # subprocess-isolated exactly like Feature 8's xatlas worker (a
+        # native remesh crash must not take down the app). UNVERIFIED
+        # against a real Blender install in this environment -- see
+        # automation.retopology_assist's module docstring.
+        self.retopology_assist = RetopologyAssistService(AutomationFindingRepository(self.db))
+
+        # Localization Audio Sync Checker, Content Verification (Feature
+        # 13): self-hosted faster-whisper, subprocess-isolated, kept side
+        # by side with core.localization_audio_sync's existing staleness/
+        # coverage heuristic rather than replacing it -- this is the real
+        # content-verification path that module's docstring says is out of
+        # scope for it.
+        self.localization_content_verification = LocalizationContentVerificationService(
+            AutomationFindingRepository(self.db)
         )
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:

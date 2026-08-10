@@ -37,6 +37,10 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.automation.finding import Finding
+from spiced.automation.localization_content_verification import (
+    CAVEAT as CONTENT_VERIFICATION_CAVEAT,
+)
+from spiced.automation.localization_content_verification import DEFAULT_SIMILARITY_THRESHOLD
 from spiced.automation.loudness_normalize import DEFAULT_TARGET_LUFS, FfmpegNotAvailableError
 from spiced.automation.mix_technical_qa import DEFAULT_SILENCE_MS
 from spiced.core.audio_implementation_checklist import AudioImplementationScan
@@ -306,6 +310,41 @@ def _format_loudness_normalize(finding: Finding) -> str:
     return "\n".join(lines)
 
 
+class _ContentVerificationWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, script_text: str, folder: str, threshold: float,
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._script_text = script_text
+        self._folder = folder
+        self._threshold = threshold
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.localization_content_verification.check(
+                self._project, self._script_text, self._folder, threshold=self._threshold
+            )
+            self._services.record_telemetry_event("audio.localization_content_verification_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while checking content: {exc}")
+
+
+def _format_content_verification(finding: Finding) -> str:
+    lines = [CONTENT_VERIFICATION_CAVEAT, "", finding.summary, ""]
+    if not finding.items:
+        lines.append("Nothing to report.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 class AudioScreen(QWidget):
     usage_changed = Signal()
 
@@ -344,6 +383,7 @@ class AudioScreen(QWidget):
                 ("Localization Audio Sync", self._build_localization_audio_sync),
                 ("Batch Loudness Normalization", self._build_loudness_normalize),
                 ("Mix Technical QA", self._build_mix_technical_qa),
+                ("Localization Content Verification", self._build_content_verification),
             ],
         )
         layout.addLayout(columns, 1)
@@ -915,6 +955,133 @@ class AudioScreen(QWidget):
             "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
         )
 
+    # --- Localization Content Verification (Implementation Bible, Feature 13) --
+
+    def _build_content_verification(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Localization Content Verification")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Paired with Localization Audio Sync above, not a replacement for it: that section "
+            "checks file timestamps only; this one actually transcribes each matched recording "
+            "(local speech-to-text, faster-whisper -- no audio ever leaves this machine) and "
+            "compares it to the script line's text. " + CONTENT_VERIFICATION_CAVEAT
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._cv_script_input = QPlainTextEdit()
+        self._cv_script_input.setPlaceholderText(
+            "One script line per row, as: line_id,text\n"
+            "e.g.\nline001,Welcome to the dungeon, traveler!\nline002,Watch out for traps."
+        )
+        self._cv_script_input.setFixedHeight(100)
+        layout.addWidget(self._cv_script_input)
+
+        row = QHBoxLayout()
+        self._cv_folder_input = QLineEdit()
+        self._cv_folder_input.setPlaceholderText("Folder of voice-line audio files")
+        row.addWidget(self._cv_folder_input, 1)
+        self._cv_browse_btn = PillButton("Browse…")
+        self._cv_browse_btn.clicked.connect(self._on_cv_browse)
+        row.addWidget(self._cv_browse_btn)
+        layout.addLayout(row)
+
+        threshold_row = QHBoxLayout()
+        threshold_row.addWidget(QLabel("Similarity threshold:"))
+        self._cv_threshold_input = QLineEdit()
+        self._cv_threshold_input.setPlaceholderText(str(DEFAULT_SIMILARITY_THRESHOLD))
+        threshold_row.addWidget(self._cv_threshold_input, 1)
+        threshold_row.addStretch(1)
+        self._cv_run_btn = PillButton("Check content")
+        self._cv_run_btn.clicked.connect(self._on_cv_run)
+        threshold_row.addWidget(self._cv_run_btn)
+        layout.addLayout(threshold_row)
+
+        self._cv_result = QTextEdit()
+        self._cv_result.setReadOnly(True)
+        self._cv_result.setPlaceholderText("Content-mismatch findings will appear here.")
+        self._cv_result.setFixedHeight(200)
+        layout.addWidget(self._cv_result)
+
+        history_title = QLabel("Recent checks")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._cv_history = QTextEdit()
+        self._cv_history.setReadOnly(True)
+        self._cv_history.setFixedHeight(80)
+        layout.addWidget(self._cv_history)
+
+    def _on_cv_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Pick a folder of voice-line audio")
+        if folder:
+            self._cv_folder_input.setText(folder)
+
+    def _on_cv_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        script_text = self._cv_script_input.toPlainText().strip()
+        folder = self._cv_folder_input.text().strip()
+        if not script_text or not folder:
+            QMessageBox.information(
+                self, "Missing input", "Paste script lines and pick a voice-line folder first."
+            )
+            return
+        threshold_text = self._cv_threshold_input.text().strip()
+        try:
+            threshold = float(threshold_text) if threshold_text else DEFAULT_SIMILARITY_THRESHOLD
+        except ValueError:
+            QMessageBox.information(
+                self, "Invalid threshold", "Similarity threshold must be a number, e.g. 0.6."
+            )
+            return
+
+        self._cv_run_btn.setEnabled(False)
+        self._cv_run_btn.setText("Checking…")
+        self._cv_result.setPlainText(
+            "Transcribing and comparing voice lines (this can take a while)…"
+        )
+
+        worker = _ContentVerificationWorker(self._services, project, script_text, folder, threshold)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_cv_done)
+        worker.failed.connect(self._on_cv_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_cv_done(self, finding: Finding) -> None:
+        self._cv_run_btn.setEnabled(True)
+        self._cv_run_btn.setText("Check content")
+        self._cv_result.setPlainText(_format_content_verification(finding))
+        self.usage_changed.emit()
+        self._refresh_cv_history()
+
+    def _on_cv_failed(self, message: str) -> None:
+        self._cv_run_btn.setEnabled(True)
+        self._cv_run_btn.setText("Check content")
+        self._cv_result.setPlainText(message)
+
+    def _refresh_cv_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._cv_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.localization_content_verification.history(project.id, limit=5)
+        if not records:
+            self._cv_history.setPlainText("No checks saved yet.")
+            return
+        self._cv_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -929,6 +1096,7 @@ class AudioScreen(QWidget):
         self._refresh_audio_checklist_history()
         self._refresh_loudness_history()
         self._refresh_mtq_history()
+        self._refresh_cv_history()
         if project is not None:
             if project.loudness_normalize_target_lufs is not None:
                 self._loudness_target_input.setText(str(project.loudness_normalize_target_lufs))
