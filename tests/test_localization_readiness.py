@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from spiced.core.localization_readiness import (
+    HEURISTIC_CAVEAT,
     LocalizationReadinessService,
     NoUnityFolderError,
     scan_localization_readiness,
@@ -126,3 +127,13 @@ def test_service_scan_saves_a_report(tmp_path):
     assert len(history) == 1
     assert history[0].id == report.id
     assert history[0].findings["scripts_scanned"] == 1
+
+
+def test_heuristic_caveat_explains_the_real_limits_without_hedging():
+    caveat = HEURISTIC_CAVEAT.lower()
+    # Still honest about what the heuristic can miss/over-flag...
+    assert "can miss" in caveat
+    assert "can flag" in caveat
+    # ...but doesn't fall back on vague "not certainty" hedge framing.
+    assert "not certainty" not in caveat
+    assert "not a confirmed defect" not in caveat

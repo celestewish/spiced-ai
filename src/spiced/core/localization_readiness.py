@@ -48,12 +48,12 @@ from spiced.storage.localization_readiness_reports import (
 from spiced.storage.projects import Project
 
 HEURISTIC_CAVEAT = (
-    "Heuristic, not certainty: hardcoded-string detection flags string literals that read as "
-    "user-facing text (a nearby UI-ish keyword, or just length + sentence shape) — it will miss "
-    "strings that don't match those patterns and will flag some non-UI text (log/exception "
+    "How this works: hardcoded-string detection flags string literals that read as "
+    "user-facing text (a nearby UI-ish keyword, or just length + sentence shape) — it can miss "
+    "strings that don't match those patterns and can flag some non-UI text (log/exception "
     "messages) that happens to read like a sentence. Prefab/scene text detection flags "
     "m_Text values with no placeholder token — it can't tell whether that text is actually "
-    "reachable by a player. Treat every finding as worth a look, not a confirmed defect."
+    "reachable by a player. Give each finding a quick look before treating it as a real issue."
 )
 
 MIN_STRING_LENGTH = 12

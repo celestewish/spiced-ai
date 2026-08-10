@@ -1324,8 +1324,8 @@ class DebuggingScreen(QWidget):
         intro = QLabel(
             "Localization Readiness Check: a read-only scan of this project's .cs scripts for "
             "likely-hardcoded user-facing strings, plus prefab/scene text components that "
-            "aren't obviously parameterized. Heuristic, not certainty — see the note below the "
-            "results for exactly what it can and can't catch."
+            "aren't obviously parameterized. See the note below the results for exactly what "
+            "it can and can't catch."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)

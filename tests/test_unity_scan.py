@@ -170,6 +170,14 @@ def test_scan_references_caveat_mentions_dynamic_loading():
     assert "Addressables" in ReferenceScanResult().caveat
 
 
+def test_scan_references_caveat_states_the_limit_plainly_not_as_a_hedge():
+    from spiced.connectors.unity_scan import ReferenceScanResult
+
+    caveat = ReferenceScanResult().caveat.lower()
+    assert "best-effort only" not in caveat
+    assert "not certainties" not in caveat
+
+
 # --- infer_naming_convention ----------------------------------------------------
 
 
