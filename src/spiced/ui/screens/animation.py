@@ -18,8 +18,11 @@ screen does that needs an engine connection.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,7 +34,9 @@ from PySide6.QtWidgets import (
 )
 
 from spiced.app.services import Services
+from spiced.automation.animation_bug_detection_live import CAVEAT as LIVE_BUG_DETECTION_CAVEAT
 from spiced.automation.finding import Finding
+from spiced.automation.mocap_cleanup_assist import CAVEAT as MOCAP_CLEANUP_CAVEAT
 from spiced.automation.state_machine_validation import DEFAULT_ALIAS_PREFIXES
 from spiced.core.animation_bug_detection import AnimationBugScanResult, detect_animation_bugs
 from spiced.core.animation_state_machine_check import NoUnityFolderError, StateMachineScanResult
@@ -226,6 +231,84 @@ def _format_state_machine_scan(result: StateMachineScanResult) -> str:
     return "\n".join(lines)
 
 
+def _split_names(text: str) -> list[str]:
+    return [n.strip() for n in text.split(",") if n.strip()]
+
+
+class _LiveBugDetectionWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(
+        self, services: Services, project, unity_path: str, scene_path: str, marker_name: str,
+        foot_bone_names: list[str], tracked_bone_names: list[str], state_names: list[str] | None,
+    ) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._unity_path = unity_path
+        self._scene_path = scene_path
+        self._marker_name = marker_name
+        self._foot_bone_names = foot_bone_names
+        self._tracked_bone_names = tracked_bone_names
+        self._state_names = state_names
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.live_animation_bug_detection.run(
+                self._project, self._unity_path, scene_path=self._scene_path,
+                marker_name=self._marker_name, foot_bone_names=self._foot_bone_names,
+                tracked_bone_names=self._tracked_bone_names, state_names=self._state_names,
+            )
+            self._services.record_telemetry_event("animation.live_playtest_bug_detection_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong during the playtest capture: {exc}")
+
+
+def _format_live_bug_detection(finding: Finding) -> str:
+    lines = [LIVE_BUG_DETECTION_CAVEAT, "", finding.summary, ""]
+    if not finding.items:
+        lines.append("Nothing to report.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
+class _MocapCleanupWorker(QObject):
+    done = Signal(object)  # Finding
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project, bvh_path: str,
+                 foot_joint_names: list[str] | None) -> None:
+        super().__init__()
+        self._services = services
+        self._project = project
+        self._bvh_path = bvh_path
+        self._foot_joint_names = foot_joint_names
+
+    def run(self) -> None:
+        try:
+            finding, _record = self._services.mocap_cleanup_assist.scan(
+                self._project, self._bvh_path, foot_joint_names=self._foot_joint_names
+            )
+            self._services.record_telemetry_event("animation.mocap_cleanup_assist_run")
+            self.done.emit(finding)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Something went wrong while scanning the mocap file: {exc}")
+
+
+def _format_mocap_cleanup(finding: Finding) -> str:
+    lines = [MOCAP_CLEANUP_CAVEAT, "", finding.summary, ""]
+    if not finding.items:
+        lines.append("Nothing to report.")
+        return "\n".join(lines)
+    for item in finding.items:
+        lines.append(f"- [{item.severity}] {item.message}")
+    return "\n".join(lines)
+
+
 class AnimationScreen(QWidget):
     usage_changed = Signal()
 
@@ -262,6 +345,8 @@ class AnimationScreen(QWidget):
                 ("Animation Bug Detection", self._build_bug_detection),
                 ("State Machine Health", self._build_state_machine_check),
                 ("State Machine & Retarget Validation", self._build_smv),
+                ("Animation Bug Detection, Live Capture", self._build_live_bug_detection),
+                ("Mocap Cleanup Assist", self._build_mocap_cleanup),
             ],
         )
         layout.addLayout(columns, 1)
@@ -668,6 +753,268 @@ class AnimationScreen(QWidget):
             "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
         )
 
+    # --- Automated Animation Bug Detection, Live Capture (Implementation Bible, Feature 11) ---
+
+    def _build_live_bug_detection(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Animation Bug Detection, Live Capture")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Drives a real Unity Play Mode capture through the requested states and checks the "
+            "actual evaluated pose/bone data for foot sliding, T-posing, and snap transitions -- "
+            "Spiced's one deliberate exception to its local-first/read-only default, kept "
+            "alongside the static Animation Bug Detection risk-indicator scan above rather than "
+            "replacing it."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        scene_row = QHBoxLayout()
+        scene_row.addWidget(QLabel("Scene:"))
+        self._live_scene_input = QLineEdit()
+        self._live_scene_input.setPlaceholderText("Assets/Scenes/Main.unity")
+        scene_row.addWidget(self._live_scene_input, 1)
+        layout.addLayout(scene_row)
+
+        marker_row = QHBoxLayout()
+        marker_row.addWidget(QLabel("Character root:"))
+        self._live_marker_input = QLineEdit()
+        self._live_marker_input.setPlaceholderText("Player")
+        marker_row.addWidget(self._live_marker_input, 1)
+        layout.addLayout(marker_row)
+
+        foot_row = QHBoxLayout()
+        foot_row.addWidget(QLabel("Foot bones:"))
+        self._live_foot_bones_input = QLineEdit()
+        self._live_foot_bones_input.setPlaceholderText("LeftFoot, RightFoot")
+        foot_row.addWidget(self._live_foot_bones_input, 1)
+        layout.addLayout(foot_row)
+
+        tracked_row = QHBoxLayout()
+        tracked_row.addWidget(QLabel("Tracked bones:"))
+        self._live_tracked_bones_input = QLineEdit()
+        self._live_tracked_bones_input.setPlaceholderText("Spine, LeftUpperArm, RightUpperArm, ...")
+        tracked_row.addWidget(self._live_tracked_bones_input, 1)
+        layout.addLayout(tracked_row)
+
+        states_row = QHBoxLayout()
+        states_row.addWidget(QLabel("States:"))
+        self._live_states_input = QLineEdit()
+        self._live_states_input.setPlaceholderText(
+            "Idle, Walk, Jump (blank = inferred from .controller files)"
+        )
+        states_row.addWidget(self._live_states_input, 1)
+        layout.addLayout(states_row)
+
+        run_row = QHBoxLayout()
+        run_row.addStretch(1)
+        self._live_run_btn = PillButton("Run live playtest capture")
+        self._live_run_btn.clicked.connect(self._on_live_run)
+        run_row.addWidget(self._live_run_btn)
+        layout.addLayout(run_row)
+
+        self._live_result = QTextEdit()
+        self._live_result.setReadOnly(True)
+        self._live_result.setPlaceholderText(
+            "Foot-sliding/T-pose/snap-transition findings will appear here."
+        )
+        self._live_result.setFixedHeight(200)
+        layout.addWidget(self._live_result)
+
+        history_title = QLabel("Recent runs")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._live_history = QTextEdit()
+        self._live_history.setReadOnly(True)
+        self._live_history.setFixedHeight(80)
+        layout.addWidget(self._live_history)
+
+    def _on_live_run(self) -> None:
+        project = self._services.active_project()
+        if project is None or not project.path:
+            QMessageBox.information(
+                self, "Pick a project first",
+                "Select a project with a connected Unity folder on the Projects screen.",
+            )
+            return
+        scene_path = self._live_scene_input.text().strip()
+        marker_name = self._live_marker_input.text().strip()
+        foot_bones = _split_names(self._live_foot_bones_input.text())
+        tracked_bones = _split_names(self._live_tracked_bones_input.text())
+        if not scene_path or not marker_name or not foot_bones or not tracked_bones:
+            QMessageBox.information(
+                self, "Missing input",
+                "Enter a scene path, character root name, and at least one foot bone and "
+                "tracked bone first.",
+            )
+            return
+        states = _split_names(self._live_states_input.text()) or None
+
+        required_version = project.engine_metadata.get("unity_version")
+        editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
+        if editor is None:
+            QMessageBox.information(
+                self, "Unity not found",
+                f"Unity {required_version or '(unknown version)'} isn't available. Install it "
+                "via Unity Hub, or set a manual Editor path on the Projects screen.",
+            )
+            return
+
+        self._live_run_btn.setEnabled(False)
+        self._live_run_btn.setText("Capturing…")
+        self._live_result.setPlainText(
+            "Launching Unity and playing through the requested states (this can take a while)…"
+        )
+
+        worker = _LiveBugDetectionWorker(
+            self._services, project, editor.path, scene_path, marker_name, foot_bones,
+            tracked_bones, states,
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_live_run_done)
+        worker.failed.connect(self._on_live_run_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_live_run_done(self, finding: Finding) -> None:
+        self._live_run_btn.setEnabled(True)
+        self._live_run_btn.setText("Run live playtest capture")
+        self._live_result.setPlainText(_format_live_bug_detection(finding))
+        self.usage_changed.emit()
+        self._refresh_live_history()
+
+    def _on_live_run_failed(self, message: str) -> None:
+        self._live_run_btn.setEnabled(True)
+        self._live_run_btn.setText("Run live playtest capture")
+        self._live_result.setPlainText(message)
+
+    def _refresh_live_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._live_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.live_animation_bug_detection.history(project.id, limit=5)
+        if not records:
+            self._live_history.setPlainText("No runs saved yet.")
+            return
+        self._live_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
+    # --- Mocap Cleanup Assist (Implementation Bible, Feature 12) -------------
+
+    def _build_mocap_cleanup(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Mocap Cleanup Assist")
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
+
+        intro = QLabel(
+            "Detection only, no auto-fix. Scans a raw BVH mocap take -- before it's even "
+            "imported, no live engine connection needed -- for foot sliding (the same helper "
+            "the live capture above uses) and single-frame jitter (a joint's rotation spiking "
+            "away from and immediately back to its neighbors' trend)."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        file_row = QHBoxLayout()
+        self._mocap_file_input = QLineEdit()
+        self._mocap_file_input.setPlaceholderText("Path to a .bvh mocap file")
+        file_row.addWidget(self._mocap_file_input, 1)
+        self._mocap_browse_btn = PillButton("Browse…")
+        self._mocap_browse_btn.clicked.connect(self._on_mocap_browse)
+        file_row.addWidget(self._mocap_browse_btn)
+        layout.addLayout(file_row)
+
+        foot_row = QHBoxLayout()
+        foot_row.addWidget(QLabel("Foot joints:"))
+        self._mocap_foot_joints_input = QLineEdit()
+        self._mocap_foot_joints_input.setPlaceholderText(
+            "LeftFoot, RightFoot (blank = auto-guessed by name)"
+        )
+        foot_row.addWidget(self._mocap_foot_joints_input, 1)
+        self._mocap_run_btn = PillButton("Scan mocap take")
+        self._mocap_run_btn.clicked.connect(self._on_mocap_run)
+        foot_row.addWidget(self._mocap_run_btn)
+        layout.addLayout(foot_row)
+
+        self._mocap_result = QTextEdit()
+        self._mocap_result.setReadOnly(True)
+        self._mocap_result.setPlaceholderText("Foot-sliding/jitter findings will appear here.")
+        self._mocap_result.setFixedHeight(200)
+        layout.addWidget(self._mocap_result)
+
+        history_title = QLabel("Recent scans")
+        history_title.setObjectName("SectionTitle")
+        layout.addWidget(history_title)
+        self._mocap_history = QTextEdit()
+        self._mocap_history.setReadOnly(True)
+        self._mocap_history.setFixedHeight(80)
+        layout.addWidget(self._mocap_history)
+
+    def _on_mocap_browse(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Pick a BVH mocap file", "", "BVH (*.bvh)")
+        if path:
+            self._mocap_file_input.setText(path)
+
+    def _on_mocap_run(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            QMessageBox.information(
+                self, "Pick a project first", "Select a project on the Projects screen."
+            )
+            return
+        bvh_path = self._mocap_file_input.text().strip()
+        if not bvh_path or not Path(bvh_path).is_file():
+            QMessageBox.information(
+                self, "Pick a file", "Enter or browse to a .bvh mocap file first."
+            )
+            return
+        foot_joint_names = _split_names(self._mocap_foot_joints_input.text()) or None
+
+        self._mocap_run_btn.setEnabled(False)
+        self._mocap_run_btn.setText("Scanning…")
+        self._mocap_result.setPlainText("Scanning mocap take…")
+
+        worker = _MocapCleanupWorker(self._services, project, bvh_path, foot_joint_names)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_mocap_done)
+        worker.failed.connect(self._on_mocap_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_mocap_done(self, finding: Finding) -> None:
+        self._mocap_run_btn.setEnabled(True)
+        self._mocap_run_btn.setText("Scan mocap take")
+        self._mocap_result.setPlainText(_format_mocap_cleanup(finding))
+        self.usage_changed.emit()
+        self._refresh_mocap_history()
+
+    def _on_mocap_failed(self, message: str) -> None:
+        self._mocap_run_btn.setEnabled(True)
+        self._mocap_run_btn.setText("Scan mocap take")
+        self._mocap_result.setPlainText(message)
+
+    def _refresh_mocap_history(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            self._mocap_history.setPlainText("Runs are saved once you select an active project.")
+            return
+        records = self._services.mocap_cleanup_assist.history(project.id, limit=5)
+        if not records:
+            self._mocap_history.setPlainText("No scans saved yet.")
+            return
+        self._mocap_history.setPlainText(
+            "\n".join(f"[{r.created_at}] {r.summary}" for r in records)
+        )
+
     # --- Refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -681,5 +1028,7 @@ class AnimationScreen(QWidget):
             self._context_label.setText(f"Active project: {project.name}")
         self._refresh_sm_history()
         self._refresh_smv_history()
+        self._refresh_live_history()
+        self._refresh_mocap_history()
         if project is not None:
             self._smv_alias_input.setText(project.retarget_alias_prefixes or "")

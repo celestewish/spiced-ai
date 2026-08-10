@@ -48,6 +48,16 @@ dependencies = [
     "trimesh>=4.0",
     "xatlas>=0.0.9",
     "meshoptimizer>=0.2",
+    # Localization Audio Sync Checker, Content Verification
+    # (SPICED_IMPLEMENTATION_BIBLE.md, Feature 13): self-hosted, fully
+    # local speech-to-text -- no audio ever leaves the machine. First run
+    # for a given model size downloads and caches it (see
+    # docs/faster_whisper_model_caching.md); every run after that is
+    # offline. Transcription runs in a subprocess
+    # (automation/_stt_worker.py), the same isolation pattern as Feature
+    # 8's xatlas worker -- a heavier native/ML dependency shouldn't be
+    # able to crash the host process either.
+    "faster-whisper>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +81,10 @@ spiced-shader-variant-analysis = "spiced.automation.shader_variant_analysis:main
 spiced-state-machine-retarget-validation = "spiced.automation.state_machine_validation:main"
 spiced-uv-lod-generation = "spiced.automation.uv_lod_generation:main"
 spiced-gpu-shader-profiling = "spiced.automation.gpu_shader_profiling:main"
+spiced-live-animation-bug-detection = "spiced.automation.animation_bug_detection_live:main"
+spiced-mocap-cleanup-assist = "spiced.automation.mocap_cleanup_assist:main"
+spiced-retopology-assist = "spiced.automation.retopology_assist:main"
+spiced-localization-audio-content-check = "spiced.automation.localization_content_verification:main"
 
 [project.gui-scripts]
 spiced = "spiced.app.main:main"
