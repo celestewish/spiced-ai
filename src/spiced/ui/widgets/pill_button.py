@@ -91,7 +91,9 @@ class PillButton(QPushButton):
 
         radius = self._fixed_radius if self._fixed_radius is not None else self.height() / 2
 
-        buffer = QPixmap(self.size())
+        dpr = self.devicePixelRatioF()
+        buffer = QPixmap(self.size() * dpr)
+        buffer.setDevicePixelRatio(dpr)
         buffer.fill(Qt.transparent)
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
@@ -104,10 +106,11 @@ class PillButton(QPushButton):
 
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
+        logical_rect = QRectF(0, 0, self.width(), self.height())
         full_rect = QPainterPath()
-        full_rect.addRect(QRectF(buffer.rect()))
+        full_rect.addRect(logical_rect)
         rounded_rect = QPainterPath()
-        rounded_rect.addRoundedRect(QRectF(buffer.rect()), radius, radius)
+        rounded_rect.addRoundedRect(logical_rect, radius, radius)
         corners = full_rect.subtracted(rounded_rect)
         buffer_painter.setCompositionMode(QPainter.CompositionMode_Clear)
         buffer_painter.fillPath(corners, Qt.transparent)
@@ -115,7 +118,7 @@ class PillButton(QPushButton):
 
         if border_color is not None:
             inset = _GHOST_BORDER_WIDTH / 2.0
-            stroke_rect = QRectF(buffer.rect()).adjusted(inset, inset, -inset, -inset)
+            stroke_rect = logical_rect.adjusted(inset, inset, -inset, -inset)
             stroke_radius = max(radius - inset, 0)
             stroke_path = QPainterPath()
             stroke_path.addRoundedRect(stroke_rect, stroke_radius, stroke_radius)
@@ -131,14 +134,22 @@ class PillButton(QPushButton):
     def _sample_ghost_border_color(buffer: QPixmap) -> QColor | None:
         """Read the border color Qt already rendered, just inside the left edge.
 
-        A single fixed probe point at vertical-center, 1px in from the
-        edge -- close enough to the border to be unambiguous, but not the
+        A single fixed probe point at vertical-center, 1 logical px in from
+        the edge -- close enough to the border to be unambiguous, but not the
         very edge pixel (which can be a partial-coverage antialiasing
         blend). Only called for ``ghost=True`` buttons, where a border is
         already known to exist, so there's no "is this actually a border"
         judgment call to get wrong.
+
+        ``toImage()`` addresses raw physical pixels, not the logical,
+        devicePixelRatio-adjusted ones ``buffer`` itself reports -- on a
+        scaled display the probe point has to be scaled up to match, or it
+        samples an antialiased edge pixel instead of solid border color.
         """
-        height = buffer.height()
-        if height <= 0 or buffer.width() <= 1:
+        image = buffer.toImage()
+        height = image.height()
+        if height <= 0 or image.width() <= 1:
             return None
-        return QColor(buffer.toImage().pixel(1, height // 2))
+        dpr = buffer.devicePixelRatio() or 1.0
+        probe_x = max(1, round(dpr))
+        return QColor(image.pixel(probe_x, height // 2))

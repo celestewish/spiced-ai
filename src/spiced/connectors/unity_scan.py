@@ -158,9 +158,9 @@ class ReferenceScanResult:
     @property
     def caveat(self) -> str:
         return (
-            "Best-effort only: an asset can be loaded dynamically (Resources.Load, "
-            "Addressables) or come from an installed package, and this scan cannot see "
-            "either — treat both lists as things worth a manual look, not certainties."
+            "Heads up: assets loaded dynamically (Resources.Load, Addressables) or pulled in "
+            "from an installed package won't show up here. Give both lists a quick manual look "
+            "before acting on them."
         )
 
 
@@ -170,7 +170,7 @@ def scan_references(project_path: str | Path) -> ReferenceScanResult:
     Flags (a) referenced GUIDs with no matching ``.meta`` under ``Assets/``
     (broken reference) and (b) ``.meta``-backed assets never referenced by
     anything else scanned (orphaned candidate). See ``ReferenceScanResult.
-    caveat`` — this is a best-effort signal, not certainty.
+    caveat`` for exactly what this scan can miss.
     """
     root = Path(project_path)
     assets_dir = root / "Assets"

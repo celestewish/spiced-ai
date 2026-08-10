@@ -45,7 +45,9 @@ class PillLabel(QLabel):
 
         radius = self._fixed_radius if self._fixed_radius is not None else self.height() / 2
 
-        buffer = QPixmap(self.size())
+        dpr = self.devicePixelRatioF()
+        buffer = QPixmap(self.size() * dpr)
+        buffer.setDevicePixelRatio(dpr)
         buffer.fill(Qt.transparent)
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
@@ -64,10 +66,11 @@ class PillLabel(QLabel):
 
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
+        logical_rect = QRectF(0, 0, self.width(), self.height())
         full_rect = QPainterPath()
-        full_rect.addRect(QRectF(buffer.rect()))
+        full_rect.addRect(logical_rect)
         rounded_rect = QPainterPath()
-        rounded_rect.addRoundedRect(QRectF(buffer.rect()), radius, radius)
+        rounded_rect.addRoundedRect(logical_rect, radius, radius)
         corners = full_rect.subtracted(rounded_rect)
         buffer_painter.setCompositionMode(QPainter.CompositionMode_Clear)
         buffer_painter.fillPath(corners, Qt.transparent)

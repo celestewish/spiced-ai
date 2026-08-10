@@ -326,11 +326,11 @@ class ArtScreen(QWidget):
         layout.addWidget(heading)
 
         intro = QLabel(
-            "Pick files, or paste a folder path, to review. Spiced runs local, deterministic "
-            "checks: power-of-two resolution (a heads-up, not a hard rule), file-size sanity, "
-            "source-only format warnings, and (for assets under this project's Assets/ folder) "
-            ".meta introspection -- mipmap setting and a missing-.meta flag. Automated technical "
-            "checks only, never an art-direction review."
+            "Pick files, or paste a folder path, to review. Spiced runs local checks (no AI, "
+            "same result every time): power-of-two resolution (a heads-up, not a hard rule), "
+            "file-size sanity, source-only format warnings, and (for assets under this "
+            "project's Assets/ folder) .meta introspection -- mipmap setting and a "
+            "missing-.meta flag. Automated technical checks only, never an art-direction review."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
@@ -462,8 +462,8 @@ class ArtScreen(QWidget):
         intro = QLabel(
             "Runs against the same files picked/loaded above for the Asset Review Queue. "
             "Compares each image's resolution, aspect ratio, and a cheap dominant-color proxy "
-            "against the rest of that set, flagging clear statistical outliers. This is a "
-            "relative/statistical heuristic, NOT true style understanding -- Spiced has no model "
+            "against the rest of that set, flagging clear outliers. This is a relative "
+            "comparison against the set, not true style understanding -- Spiced has no model "
             "of art style, linework, or shading technique. Treat every flag as worth a second "
             "look, never a verdict."
         )

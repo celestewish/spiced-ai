@@ -1153,9 +1153,9 @@ class TestingScreen(QWidget):
         heading.setObjectName("CardTitle")
         heading.setToolTip(
             "Only useful for projects with a buy-with-currency progression system (items, "
-            "costs, unlock levels). Paste economy data below and Spiced runs a local, "
-            "deterministic simulation across many simulated playthroughs, flagging any item "
-            f"that turns out to be the mathematically dominant choice.\n\n{ECONOMY_SCHEMA_DOC}"
+            "costs, unlock levels). Paste economy data below and Spiced runs a local "
+            "simulation (no AI, same result every time) across many simulated playthroughs, "
+            f"flagging any item that turns out to be the clear best choice.\n\n{ECONOMY_SCHEMA_DOC}"
         )
         layout.addWidget(heading)
 
@@ -1407,9 +1407,9 @@ class TestingScreen(QWidget):
         heading = QLabel("Store Page / Build Checklist")
         heading.setObjectName("CardTitle")
         heading.setToolTip(
-            "A small, deterministic \"ready to ship\" checklist per store — works fully "
-            "offline, no AI needed. Platform specifics change over time, so every checklist "
-            "ends with a reminder to verify against the platform's current docs."
+            "A small \"ready to ship\" checklist per store — works fully offline, no AI "
+            "needed, same result every time. Platform specifics change over time, so every "
+            "checklist ends with a reminder to verify against the platform's current docs."
         )
         layout.addWidget(heading)
 
