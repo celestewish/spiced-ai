@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPaintEvent, QRadialGradient, QShortcut
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -20,6 +21,7 @@ from spiced.ui import theme
 from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
+from spiced.ui.effects.background_scene import OceanBackgroundWidget
 from spiced.ui.effects.motion import set_active_services
 from spiced.ui.effects.transitions import FadeStackedWidget
 from spiced.ui.screens.animation import AnimationScreen
@@ -41,14 +43,6 @@ from spiced.ui.top_bar import TopBar
 from spiced.ui.widgets.mascot_logo import MascotLogo
 from spiced.ui.widgets.nav_icons import NavOrbButton
 
-# Frutiger Aqua ambient background (MainWindow.paintEvent): two soft radial
-# "glow" blobs -- one warm (echoing the sunset horizon/mascot), one cool
-# (echoing the aqua accent) -- sitting behind the sidebar/workspace/context
-# panel chrome, per the design handoff. Static, not animated -- see
-# ui.theme's module docstring on why (no animation infra in this codebase).
-_GLOW_WARM = QColor(255, 240, 200, 130)
-_GLOW_COOL = QColor(127, 231, 255, 90)
-_TWINKLE = QColor(255, 255, 255, 160)
 # Card/ReadinessCard frames are dashboard.py's -- rebuilt fresh on every
 # refresh(), so they get their own shadow applied at construction time (see
 # dashboard.py's _card()) rather than here, where a one-time findChildren
@@ -129,11 +123,27 @@ class MainWindow(QWidget):
         self.setWindowTitle("Spiced")
         self.resize(1180, 760)
         self.setMinimumSize(920, 600)
-        # Frutiger Aqua theme (ui.theme): lets the #Root QSS rule (the
-        # sunset-gradient shell) actually paint -- a plain QWidget subclass
-        # doesn't auto-paint a stylesheet background otherwise. paintEvent
-        # below then layers the ambient glow blobs on top of it.
+        # Frutiger Aqua theme (ui.theme): lets the #Root QSS rule (a plain
+        # sunset gradient, solid white in the high-contrast palette) paint
+        # -- a plain QWidget subclass doesn't auto-paint a stylesheet
+        # background otherwise. OceanBackgroundWidget below normally covers
+        # this entirely with its own richer scene; this QSS rule is what
+        # shows through instead when that widget hides itself for
+        # high-contrast (see OceanBackgroundWidget.refresh_accessibility_state).
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        # Ocean background scene (island, waves, orbs, wind, mouse
+        # parallax) -- sits behind the top bar/sidebar/workspace/context
+        # panel row built below, added first and explicitly lowered so
+        # creation order never matters. Resized to fill the window in
+        # resizeEvent; fed live mouse position via the QApplication-wide
+        # event filter installed below, since the panels above it cover
+        # nearly the whole window and would otherwise swallow most mouse
+        # moves before this widget's own mouseMoveEvent ever saw them.
+        self._background = OceanBackgroundWidget(self._services, self)
+        self._background.setGeometry(self.rect())
+        self._background.lower()
+        QApplication.instance().installEventFilter(self)
 
         # Top bar (Phase K, section 9 part 1, foundation): a thin strip
         # above the existing three-region layout, holding the Multi-Project
@@ -197,43 +207,28 @@ class MainWindow(QWidget):
 
         self._apply_glass_elevation()
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 (Qt override)
-        """Paint the sunset-gradient shell (via the #Root QSS rule, see
-        WA_StyledBackground above) then layer two soft ambient "glow" blobs
-        and a few static twinkle dots on top -- Qt then draws the
-        sidebar/workspace/context-panel chrome as normal child widgets over
-        this, so the glow only shows through the gaps/margins around them,
-        matching the design handoff's "z-index 0 behind the chrome" glow
-        blobs.
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._background.setGeometry(self.rect())
+        super().resizeEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 (Qt override)
+        """Feeds the ocean background's mouse parallax from every mouse
+        move in the app, not just ones MainWindow's own mouseMoveEvent
+        would see. The sidebar/workspace/context-panel row covers nearly
+        the whole window, and (without setMouseTracking enabled on every
+        one of them) a plain child widget only receives move events while
+        a button is held -- an application-wide filter is simpler and more
+        reliable than chasing that down across ~20 widget classes. Ignores
+        moves outside this window (e.g. while a dialog has focus) rather
+        than tracking those too.
         """
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        warm_cx, warm_cy, warm_r = self.width() * 0.86, self.height() * 0.08, 420
-        warm = QRadialGradient(warm_cx, warm_cy, warm_r)
-        warm.setColorAt(0.0, _GLOW_WARM)
-        warm.setColorAt(1.0, QColor(_GLOW_WARM.red(), _GLOW_WARM.green(), _GLOW_WARM.blue(), 0))
-        painter.setBrush(warm)
-        painter.drawEllipse(
-            int(warm_cx - warm_r), int(warm_cy - warm_r), int(warm_r * 2), int(warm_r * 2)
-        )
-
-        cool_cx, cool_cy, cool_r = self.width() * 0.1, self.height() * 0.94, 520
-        cool = QRadialGradient(cool_cx, cool_cy, cool_r)
-        cool.setColorAt(0.0, _GLOW_COOL)
-        cool.setColorAt(1.0, QColor(_GLOW_COOL.red(), _GLOW_COOL.green(), _GLOW_COOL.blue(), 0))
-        painter.setBrush(cool)
-        painter.drawEllipse(
-            int(cool_cx - cool_r), int(cool_cy - cool_r), int(cool_r * 2), int(cool_r * 2)
-        )
-
-        painter.setBrush(_TWINKLE)
-        for x_frac, y_frac, radius in ((0.55, 0.12, 2.4), (0.68, 0.22, 1.6), (0.4, 0.06, 1.8)):
-            cx, cy = self.width() * x_frac, self.height() * y_frac
-            diameter = int(radius * 2)
-            painter.drawEllipse(int(cx - radius), int(cy - radius), diameter, diameter)
+        if event.type() == QEvent.Type.MouseMove:
+            local = self.mapFromGlobal(event.globalPosition().toPoint())
+            if self.rect().contains(local) and self.width() and self.height():
+                x = local.x() / self.width() * 2 - 1
+                y = local.y() / self.height() * 2 - 1
+                self._background.set_mouse_norm(x, y)
+        return super().eventFilter(watched, event)
 
     def _apply_glass_elevation(self) -> None:
         """Real drop-shadow elevation on the glass panels/cards -- Qt QSS has
@@ -252,6 +247,9 @@ class MainWindow(QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._build_scheduler.stop()
         self._top_bar.stop()
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         super().closeEvent(event)
 
     def _on_top_bar_project_switched(self) -> None:
@@ -552,6 +550,11 @@ class MainWindow(QWidget):
         # custom-painted nav glyphs can't pick that up from QSS alone, so
         # they're re-tinted explicitly here too.
         self._settings_screen.settings_changed.connect(self._apply_nav_glyph_colors)
+        # Same reason: Reduce Motion and high-contrast both change how (or
+        # whether) the ocean background paints itself.
+        self._settings_screen.settings_changed.connect(
+            self._background.refresh_accessibility_state
+        )
         # Team Mode toggling changes whether the Testing screen's Build
         # Health badge shows its team-linked note. Rapid Prototyping Mode
         # toggling changes which panel the Testing screen foregrounds.
