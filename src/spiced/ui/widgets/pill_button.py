@@ -1,5 +1,9 @@
 """A QPushButton that always paints a genuinely round, antialiased shape.
 
+``water_fill=True`` opts a button into an indeterminate "water level"
+loading indicator (``set_loading``) -- see that method's docstring for why
+this is deliberately indeterminate rather than a real percentage.
+
 Qt's QSS ``border-radius`` on ``QPushButton`` is not reliably honored by
 this app's Qt/PySide6 build: reproduced with a minimal, isolated repro
 (a single ``QPushButton`` with nothing but ``background`` / ``border`` /
@@ -51,15 +55,35 @@ rounded shape itself instead of asking Qt's stylesheet cascade for it:
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton, QWidget
 
+from spiced.ui.effects.motion import Ticker, current_reduced_motion
 from spiced.ui.effects.splash import attach_splash
 
 # Border stroke width to draw for ghost=True buttons, matching the
 # `QPushButton#Ghost { border: 2px solid ... }` rule in ui.theme.
 _GHOST_BORDER_WIDTH = 2
+
+# Water-fill loading indicator (icons.md's aqua accent ramp).
+_FILL_DEEP = QColor("#0A7EA8")
+_FILL_BRIGHT = QColor("#BDF3FF")
+_FILL_TICK_MS = 16
+_FILL_PERIOD_SECONDS = 1.6
+_FILL_MIN_FRAC = 0.15
+_FILL_MAX_FRAC = 0.85
+_FILL_STATIC_FRAC = 0.4  # reduced-motion resting level while loading
 
 
 class PillButton(QPushButton):
@@ -82,6 +106,7 @@ class PillButton(QPushButton):
         *,
         radius: float | None = None,
         ghost: bool = False,
+        water_fill: bool = False,
     ) -> None:
         super().__init__(text, parent)
         self._fixed_radius = radius
@@ -89,6 +114,51 @@ class PillButton(QPushButton):
         if ghost:
             self.setObjectName("Ghost")
         attach_splash(self)
+
+        self._water_fill_enabled = water_fill
+        self._loading = False
+        self._fill_elapsed = 0.0
+        self._fill_ticker: Ticker | None = None
+        if water_fill:
+            self._fill_ticker = Ticker(_FILL_TICK_MS, self)
+            self._fill_ticker.tick.connect(self._on_fill_tick)
+
+    def set_loading(self, active: bool) -> None:
+        """Show (or clear) an indeterminate water-level loading fill.
+
+        Deliberately indeterminate, not a real percentage: this button has
+        no per-stage progress signal to report from (a single AI call is
+        one opaque request/response), and Spiced never fakes a number it
+        doesn't actually have. A future screen whose worker does emit real
+        incremental progress should get its own real percentage API when
+        that lands, not this one repurposed to fake it.
+
+        No-op if this instance wasn't constructed with ``water_fill=True``.
+        """
+        if not self._water_fill_enabled or self._fill_ticker is None:
+            return
+        self._loading = active
+        if active and not current_reduced_motion():
+            self._fill_elapsed = 0.0
+            self._fill_ticker.start()
+        else:
+            self._fill_ticker.stop()
+            self._fill_elapsed = 0.0
+        self.update()
+
+    def _on_fill_tick(self) -> None:
+        self._fill_elapsed += _FILL_TICK_MS / 1000.0
+        self.update()
+
+    def _fill_fraction(self) -> float:
+        """0..1 height fraction for the current frame -- a smooth raised-
+        cosine breathing motion between _FILL_MIN_FRAC/_FILL_MAX_FRAC while
+        the ticker is running, or a fixed resting level when it isn't
+        (Reduce Motion, or between ticks right after set_loading(True))."""
+        if self._fill_ticker is None or not self._fill_ticker.is_active():
+            return _FILL_STATIC_FRAC
+        swing = (1 - math.cos(2 * math.pi * self._fill_elapsed / _FILL_PERIOD_SECONDS)) / 2
+        return _FILL_MIN_FRAC + (_FILL_MAX_FRAC - _FILL_MIN_FRAC) * swing
 
     def paintEvent(self, event: QPaintEvent) -> None:
         if self.width() <= 0 or self.height() <= 0:
@@ -121,6 +191,21 @@ class PillButton(QPushButton):
         buffer_painter.setCompositionMode(QPainter.CompositionMode_Clear)
         buffer_painter.fillPath(corners, Qt.transparent)
         buffer_painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+        if self._water_fill_enabled and self._loading:
+            fill_frac = self._fill_fraction()
+            fill_height = logical_rect.height() * fill_frac
+            fill_rect = QRectF(
+                0, logical_rect.height() - fill_height, logical_rect.width(), fill_height
+            )
+            gradient = QLinearGradient(0, fill_rect.top(), 0, fill_rect.bottom())
+            gradient.setColorAt(0.0, _FILL_BRIGHT)
+            gradient.setColorAt(1.0, _FILL_DEEP)
+            buffer_painter.save()
+            buffer_painter.setClipPath(rounded_rect)
+            buffer_painter.setOpacity(0.55)
+            buffer_painter.fillRect(fill_rect, gradient)
+            buffer_painter.restore()
 
         if border_color is not None:
             inset = _GHOST_BORDER_WIDTH / 2.0

@@ -998,7 +998,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._dev_docs_btn = PillButton("Regenerate docs")
+        self._dev_docs_btn = PillButton("Regenerate docs", water_fill=True)
         self._dev_docs_btn.clicked.connect(self._on_dev_docs_generate)
         row.addWidget(self._dev_docs_btn)
         row.addStretch(1)
@@ -1038,6 +1038,7 @@ class DebuggingScreen(QWidget):
             return
         self._dev_docs_btn.setEnabled(False)
         self._dev_docs_btn.setText("Generating…")
+        self._dev_docs_btn.set_loading(True)
         self._dev_docs_result.setPlainText("Scanning scripts and thinking it through…")
 
         worker = _DevDocsWorker(self._services, project)
@@ -1052,6 +1053,7 @@ class DebuggingScreen(QWidget):
     def _on_dev_docs_done(self, result: DevDocsResult) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
+        self._dev_docs_btn.set_loading(False)
         stats = (
             f"{result.scan.file_count} script(s), {result.scan.class_count} class(es), "
             f"{result.scan.method_count} public method(s) scanned.\n\n"
@@ -1065,6 +1067,7 @@ class DebuggingScreen(QWidget):
     def _on_dev_docs_failed(self, message: str) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
+        self._dev_docs_btn.set_loading(False)
         self._dev_docs_result.setPlainText(message)
 
     def _refresh_dev_docs_history(self) -> None:
