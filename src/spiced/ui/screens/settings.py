@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
@@ -41,6 +42,13 @@ from spiced.ui.theme import TEXT_SIZES, build_stylesheet
 from spiced.ui.thread_utils import launch_worker
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
+
+
+def _hairline() -> QFrame:
+    line = QFrame()
+    line.setObjectName("Hairline")
+    line.setFixedHeight(1)
+    return line
 
 
 class _RoutingLoadWorker(QObject):
@@ -166,6 +174,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(note)
 
         # Solo-Dev Mode vs. Small-Team Mode (off/solo by default)
+        layout.addWidget(_hairline())
         team_title = QLabel("Team")
         team_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -190,6 +199,7 @@ class SettingsScreen(QWidget):
         # Opt-In Only Telemetry (off by default). Mirrors the Community
         # Pulse opt-in pattern exactly (settings.py's community_pulse
         # checkbox / services.community_pulse_enabled()).
+        layout.addWidget(_hairline())
         telemetry_title = QLabel("Privacy")
         telemetry_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -217,6 +227,7 @@ class SettingsScreen(QWidget):
         # Deliberately a separate toggle from Community Pulse above — that's
         # opt-in *read*, this is opt-in *write*, a meaningfully bigger trust
         # boundary (see core.community.discord_poster).
+        layout.addWidget(_hairline())
         discord_title = QLabel("Discord integration")
         discord_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -247,6 +258,7 @@ class SettingsScreen(QWidget):
 
         # Rapid Prototyping Mode (Phase H, section 7 part 2, Core tier). Off
         # by default, same opt-in shape as Team Mode above.
+        layout.addWidget(_hairline())
         prototype_title = QLabel("Prototyping")
         prototype_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -268,12 +280,14 @@ class SettingsScreen(QWidget):
         prototype_note.setWordWrap(True)
         layout.addWidget(prototype_note)
 
+        layout.addWidget(_hairline())
         self._build_accessibility_section(layout)
         self._build_keyboard_shortcuts_section(layout)
         self._build_notification_routing_section(layout)
         self._build_notification_preferences_section(layout)
 
         # Connection test for the selected provider
+        layout.addWidget(_hairline())
         test_title = QLabel("Connection test")
         test_title.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -456,6 +470,7 @@ class SettingsScreen(QWidget):
     # MainWindow._setup_keyboard_shortcuts.
 
     def _build_keyboard_shortcuts_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
         heading = QLabel("Keyboard shortcuts")
         heading.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -548,6 +563,7 @@ class SettingsScreen(QWidget):
     # since routing rules are saved per-team.
 
     def _build_notification_routing_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
         heading = QLabel("Notification routing")
         heading.setObjectName("SectionTitle")
         layout.addSpacing(6)
@@ -596,6 +612,7 @@ class SettingsScreen(QWidget):
     # bucket_by_cadence, which the bell's poller applies).
 
     def _build_notification_preferences_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
         heading = QLabel("Notification settings")
         heading.setObjectName("SectionTitle")
         layout.addSpacing(6)

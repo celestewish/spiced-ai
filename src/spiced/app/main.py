@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 
 from spiced.app.services import Services
+from spiced.storage.database import DatabaseUnavailableError
 
 
 def _load_env() -> None:
@@ -42,7 +43,7 @@ def main() -> int:
     # Imported here so non-GUI tooling can import spiced.app.services without Qt.
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
 
     from spiced.ui.main_window import MainWindow
     from spiced.ui.theme import build_stylesheet
@@ -64,7 +65,11 @@ def main() -> int:
     app.setApplicationName("Spiced")
     _register_bundled_fonts()
 
-    services = Services()
+    try:
+        services = Services()
+    except DatabaseUnavailableError as exc:
+        QMessageBox.critical(None, "Spiced couldn't start", str(exc))
+        return 1
     # In-App Accessibility Settings (Phase L, Core tier): apply whatever was
     # saved from a previous run right away, rather than always starting from
     # the default palette/text size -- see ui.screens.settings for where
