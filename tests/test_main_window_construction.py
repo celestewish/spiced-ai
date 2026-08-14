@@ -15,6 +15,9 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from spiced.app.services import Services  # noqa: E402
@@ -83,3 +86,112 @@ def test_command_palette_ctrl_k_opens_with_nav_items(tmp_path):
     finally:
         window._build_scheduler.stop()
         window._top_bar.stop()
+
+
+# --- Ocean background scene (Frutiger Aero pass 4/5) ------------------------
+
+
+def test_ocean_background_is_mounted_visible_and_sized_to_the_window(tmp_path):
+    window = MainWindow(_services(tmp_path))
+    try:
+        window.resize(1000, 700)
+        window.show()
+        assert window._background.isVisible() is True
+        assert window._background.geometry() == window.rect()
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_resizing_the_window_keeps_the_background_geometry_in_sync(tmp_path):
+    window = MainWindow(_services(tmp_path))
+    try:
+        window.show()  # resizeEvent isn't reliably delivered before this
+        window.resize(950, 650)
+        assert window._background.geometry() == window.rect()
+        window.resize(1400, 900)
+        assert window._background.geometry() == window.rect()
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_event_filter_feeds_mouse_position_to_the_background_as_parallax(tmp_path):
+    window = MainWindow(_services(tmp_path))
+    try:
+        window.resize(1000, 800)
+        window.show()
+        window._background.refresh_accessibility_state()  # ensure motion is on
+
+        # Center of the window -> normalized (0, 0); a synthetic global
+        # move event exercises the same path a real one would (see
+        # MainWindow.eventFilter's own docstring for why this is an
+        # application-wide filter rather than plain setMouseTracking).
+        local = QPointF(500, 400)
+        global_pos = window.mapToGlobal(local.toPoint())
+        event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            local,
+            QPointF(global_pos),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.eventFilter(window, event)
+
+        assert window._background._mouse_norm.x() == pytest.approx(0.0, abs=1e-6)
+        assert window._background._mouse_norm.y() == pytest.approx(0.0, abs=1e-6)
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_event_filter_ignores_moves_outside_the_window(tmp_path):
+    window = MainWindow(_services(tmp_path))
+    try:
+        window.resize(1000, 800)
+        window.move(0, 0)
+        window.show()
+        window._background.set_mouse_norm(0.7, 0.7)
+
+        event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(-500, -500),
+            QPointF(-500, -500),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.eventFilter(window, event)
+
+        # Unchanged -- a move outside the window's own bounds isn't treated
+        # as parallax input.
+        assert window._background._mouse_norm.x() == pytest.approx(0.7)
+        assert window._background._mouse_norm.y() == pytest.approx(0.7)
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_settings_changed_refreshes_the_background_accessibility_state(tmp_path):
+    services = _services(tmp_path)
+    window = MainWindow(services)
+    try:
+        assert window._background._ticker.is_active() is True
+
+        services.set_accessibility_reduce_motion_enabled(True)
+        window._settings_screen.settings_changed.emit()
+
+        assert window._background._ticker.is_active() is False
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_close_event_removes_the_application_event_filter(tmp_path):
+    window = MainWindow(_services(tmp_path))
+    window.close()
+    # Removing an already-removed filter is a documented no-op in Qt, so
+    # this only needs to confirm close() doesn't raise -- there's no public
+    # API to assert a filter is no longer installed.
+    QApplication.instance().removeEventFilter(window)
