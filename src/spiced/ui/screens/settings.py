@@ -370,11 +370,12 @@ class SettingsScreen(QWidget):
     #
     # All four controls apply live -- the stylesheet is rebuilt and
     # reapplied to the running QApplication immediately (see
-    # ``_apply_accessibility_stylesheet``), no restart needed. The one
-    # exception, called out honestly rather than silently: motion reduction
-    # is a currently-no-op toggle, since this app's UI has no animations to
-    # reduce yet (see ``ui.theme``'s module docstring) -- it's still saved
-    # and applied end-to-end so a future animation has something to check.
+    # ``_apply_accessibility_stylesheet``), no restart needed. Motion
+    # reduction is read by ``ui.effects.motion.reduced_motion`` -- every
+    # animation added under ``ui.effects`` (PillButton/NavOrbButton's click
+    # splash so far; tab-fade transitions and the background scene are
+    # landing in later PRs) checks it before starting and skips straight to
+    # its end state when it's on.
 
     def _build_accessibility_section(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Accessibility")
@@ -385,8 +386,8 @@ class SettingsScreen(QWidget):
         note = QLabel(
             "Applies immediately across Spiced's own UI -- no restart needed. Text size and "
             "the high-contrast / colorblind-safe palettes make real, measurable changes to the "
-            "stylesheet (see ui.theme). Motion reduction is saved but currently a no-op: "
-            "Spiced's UI has no animations to reduce yet."
+            "stylesheet (see ui.theme). Motion reduction turns off button click splashes and "
+            "any other animation Spiced adds going forward."
         )
         note.setObjectName("Muted")
         note.setWordWrap(True)
@@ -424,7 +425,7 @@ class SettingsScreen(QWidget):
         palette_note.setWordWrap(True)
         layout.addWidget(palette_note)
 
-        self._reduce_motion_toggle = QCheckBox("Reduce motion (currently a no-op -- see above)")
+        self._reduce_motion_toggle = QCheckBox("Reduce motion")
         self._reduce_motion_toggle.setChecked(self._services.accessibility_reduce_motion_enabled())
         self._reduce_motion_toggle.toggled.connect(self._on_reduce_motion_toggled)
         layout.addWidget(self._reduce_motion_toggle)

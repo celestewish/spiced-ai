@@ -55,6 +55,8 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen, QPixmap
 from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton, QWidget
 
+from spiced.ui.effects.splash import attach_splash
+
 # Border stroke width to draw for ghost=True buttons, matching the
 # `QPushButton#Ghost { border: 2px solid ... }` rule in ui.theme.
 _GHOST_BORDER_WIDTH = 2
@@ -68,6 +70,9 @@ class PillButton(QPushButton):
     for a smaller, card-style corner radius instead (e.g. ``ToolListItem``'s
     14px). Pass ``ghost=True`` instead of ``setObjectName("Ghost")`` for the
     outlined variant.
+
+    Every instance gets a water-drop click splash for free (see
+    ``ui.effects.splash``) -- skipped automatically when Reduce Motion is on.
     """
 
     def __init__(
@@ -83,6 +88,7 @@ class PillButton(QPushButton):
         self._ghost = ghost
         if ghost:
             self.setObjectName("Ghost")
+        attach_splash(self)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         if self.width() <= 0 or self.height() <= 0:

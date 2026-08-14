@@ -47,15 +47,13 @@ via ``build_stylesheet`` --
   *developer's own game*, not Spiced's own UI, and doesn't implement a
   simulation matrix either.
 - **Motion reduction**: checked across this module and every screen in
-  ``ui/`` -- Spiced's UI has no ``QPropertyAnimation``/``QVariantAnimation``/
-  transition anywhere today (the sunset background's "twinkle" dots and the
-  glossy gel buttons are static, painted/styled once, not animated), so
-  there is genuinely nothing to reduce. Rather than inventing motion just to
-  gate it, ``build_stylesheet``'s ``reduce_motion`` parameter is accepted,
-  stored, and threaded through the Settings screen honestly labeled as a
-  no-op for now (see ``ACCESSIBILITY_MOTION_NOTE`` and ``ui.screens.settings``)
-  -- present and wired end-to-end so a future animation automatically has
-  something to check, but not faked today.
+  ``ui/`` -- ``build_stylesheet``'s ``reduce_motion`` parameter still only
+  covers this module's own QSS (there's no sliding-knob checkbox animation
+  or similar to gate here). Real motion now lives in ``ui.effects``
+  (``ui.effects.motion.reduced_motion``/``current_reduced_motion``), checked
+  by every animation added there -- PillButton/NavOrbButton's click splash
+  so far, with tab-fade transitions and the background scene landing in
+  later PRs. See ``ui.screens.settings`` for the toggle itself.
 
 If both ``high_contrast`` and ``colorblind_safe`` are requested together,
 high-contrast wins (documented, not silent) -- it's the stronger
@@ -360,9 +358,8 @@ TEXT_SIZES = {
 DEFAULT_TEXT_SIZE = "normal"
 
 ACCESSIBILITY_MOTION_NOTE = (
-    "Spiced's UI has no animations or transitions today, so this setting has nothing to "
-    "act on yet -- turning it on is safe and future-proof (any animation added later is "
-    "expected to check this setting) but changes nothing visible right now."
+    "Turns off button click splashes and any other animation Spiced adds going forward "
+    "(see ui.effects.motion.reduced_motion, checked by every effect under ui.effects)."
 )
 
 # Registered via QFontDatabase.addApplicationFont in app.main -- see
