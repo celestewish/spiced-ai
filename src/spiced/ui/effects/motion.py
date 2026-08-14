@@ -39,6 +39,31 @@ def reduced_motion(services: _AccessibilityAware | None) -> bool:
     return bool(services.accessibility_reduce_motion_enabled())
 
 
+_active_services: _AccessibilityAware | None = None
+
+
+def set_active_services(services: _AccessibilityAware | None) -> None:
+    """Register the app's live ``Services`` instance for effects that can't
+    easily thread ``services`` through their own constructor -- ``PillButton``
+    in particular, built at around a hundred call sites across every screen,
+    where adding a required parameter would mean touching all of them.
+    Effects built with ``services`` already on hand (e.g. ``NotificationBell``)
+    should keep passing it explicitly instead of relying on this.
+
+    Call once, from ``MainWindow.__init__`` right after ``Services`` exists.
+    """
+    global _active_services
+    _active_services = services
+
+
+def current_reduced_motion() -> bool:
+    """``reduced_motion()`` against whatever was last registered via
+    ``set_active_services``. Defaults to the same safe "reduce motion"
+    answer ``reduced_motion(None)`` gives if nothing has been registered
+    yet -- e.g. a widget built in a unit test that never calls it."""
+    return reduced_motion(_active_services)
+
+
 class Ticker(QObject):
     """One shared ``QTimer`` every ``ui.effects`` animation can subscribe to.
 

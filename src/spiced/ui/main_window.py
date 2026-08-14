@@ -21,6 +21,7 @@ from spiced.ui import theme
 from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
+from spiced.ui.effects.motion import set_active_services
 from spiced.ui.screens.animation import AnimationScreen
 from spiced.ui.screens.art import ArtScreen
 from spiced.ui.screens.audio import AudioScreen
@@ -119,6 +120,11 @@ class MainWindow(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
+        # Registered before any child widget is built below -- PillButton and
+        # NavOrbButton (built at ~100 call sites across every screen) resolve
+        # their splash's reduced_motion check through this rather than
+        # needing Services threaded through their own constructors.
+        set_active_services(services)
         self.setObjectName("Root")
         self.setWindowTitle("Spiced")
         self.resize(1180, 760)

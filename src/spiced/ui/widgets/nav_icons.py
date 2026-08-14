@@ -21,6 +21,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import QPushButton, QWidget
 
+from spiced.ui.effects.splash import attach_splash
+
 _BOX = 24.0  # local drawing coordinate space -- always 24x24, then scaled
 
 
@@ -228,6 +230,7 @@ class NavOrbButton(QPushButton):
         self._kind = kind
         self._idle_color = QColor("#FFFFFF")
         self._active_color = QColor("#0A2A35")
+        attach_splash(self)
 
     def set_glyph_colors(self, idle_hex: str, active_hex: str) -> None:
         """Called from ui.main_window whenever the app's accessibility
