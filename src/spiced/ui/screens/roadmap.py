@@ -293,31 +293,39 @@ class RoadmapScreen(QWidget):
         _clear_layout(self._changelog_layout)
         try:
             entries = self._services.roadmap.list_changelog()
+            self._changelog_empty.setVisible(not entries)
+            for index, entry in enumerate(entries):
+                if index > 0:
+                    self._changelog_layout.addWidget(_hairline())
+                self._changelog_layout.addWidget(self._changelog_row(entry))
         except (BackendAPIError, NotAuthenticatedError) as exc:
             self._changelog_error.setText(f"Couldn't reach the roadmap backend: {exc}")
             self._changelog_empty.setVisible(False)
             return
+        except Exception as exc:  # surfaced calmly to the user, never a crash
+            self._changelog_error.setText(f"Couldn't load the changelog: {exc}")
+            self._changelog_empty.setVisible(False)
+            return
         self._changelog_error.setText("")
-        self._changelog_empty.setVisible(not entries)
-        for index, entry in enumerate(entries):
-            if index > 0:
-                self._changelog_layout.addWidget(_hairline())
-            self._changelog_layout.addWidget(self._changelog_row(entry))
 
     def _refresh_suggestions(self) -> None:
         _clear_layout(self._suggestions_layout)
         try:
             suggestions = self._services.roadmap.list_suggestions()
+            self._suggestions_empty.setVisible(not suggestions)
+            for index, suggestion in enumerate(suggestions):
+                if index > 0:
+                    self._suggestions_layout.addWidget(_hairline())
+                self._suggestions_layout.addWidget(self._suggestion_widget(suggestion))
         except (BackendAPIError, NotAuthenticatedError) as exc:
             self._suggestions_error.setText(f"Couldn't reach the roadmap backend: {exc}")
             self._suggestions_empty.setVisible(False)
             return
+        except Exception as exc:  # surfaced calmly to the user, never a crash
+            self._suggestions_error.setText(f"Couldn't load suggestions: {exc}")
+            self._suggestions_empty.setVisible(False)
+            return
         self._suggestions_error.setText("")
-        self._suggestions_empty.setVisible(not suggestions)
-        for index, suggestion in enumerate(suggestions):
-            if index > 0:
-                self._suggestions_layout.addWidget(_hairline())
-            self._suggestions_layout.addWidget(self._suggestion_widget(suggestion))
 
 
 def _clear_layout(layout: QVBoxLayout) -> None:

@@ -730,6 +730,16 @@ def default_db_path() -> Path:
     return base / "spiced.db"
 
 
+class DatabaseUnavailableError(RuntimeError):
+    """Raised when Spiced's local SQLite database can't be opened or set up.
+
+    Wraps whatever sqlite3 raised -- a locked file from another running
+    Spiced instance, a permissions problem, a full disk, a corrupted file --
+    with the database path and a plain-language hint, since the raw sqlite3
+    message alone isn't actionable for someone who just wants Spiced to open.
+    """
+
+
 class Database:
     """Owns a single SQLite connection and serializes access across threads."""
 
@@ -739,10 +749,17 @@ class Database:
             path = default_db_path()
         self.path = str(path)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON;")
-        self._init_schema()
+        try:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON;")
+            self._init_schema()
+        except sqlite3.Error as exc:
+            raise DatabaseUnavailableError(
+                f"Couldn't open Spiced's local database at {self.path}: {exc}. This usually "
+                "means another Spiced window already has it open, this machine's account "
+                "doesn't have permission to write there, or the disk is full."
+            ) from exc
 
     def _init_schema(self) -> None:
         with self._lock:
