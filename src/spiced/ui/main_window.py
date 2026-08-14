@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QScrollArea,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +21,7 @@ from spiced.ui.build_scheduler import BuildScheduler
 from spiced.ui.command_palette import CommandPalette, PaletteItem
 from spiced.ui.context_panel import ContextPanel
 from spiced.ui.effects.motion import set_active_services
+from spiced.ui.effects.transitions import FadeStackedWidget
 from spiced.ui.screens.animation import AnimationScreen
 from spiced.ui.screens.art import ArtScreen
 from spiced.ui.screens.audio import AudioScreen
@@ -484,7 +484,7 @@ class MainWindow(QWidget):
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(6, 6, 6, 6)
 
-        self._stack = QStackedWidget()
+        self._stack = FadeStackedWidget(services=self._services)
 
         self._dashboard_screen = DashboardScreen(self._services)
         self._projects_screen = ProjectsScreen(self._services)
