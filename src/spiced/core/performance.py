@@ -11,6 +11,7 @@ Two responsibilities, both building on numbers the developer already gathered:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -59,6 +60,7 @@ class PerformanceService:
         source_type: str = SOURCE_PASTE,
         source_filename: str | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> PerformanceReview:
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -72,7 +74,10 @@ class PerformanceService:
         prompt = build_performance_review_prompt(
             parsed, project_name=project.name if project else None, simulation=simulation
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

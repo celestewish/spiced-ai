@@ -17,7 +17,7 @@ import time
 
 from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 
 
 class _DummyWorker(QObject):
@@ -185,6 +185,82 @@ def test_launch_worker_connects_progress_slot_when_worker_declares_progress():
         time.sleep(0.01)
 
     assert received == ["step one", "step two"]
+
+
+# --- AIStreamWorker: shared base for the app's AI-calling workers ----------
+
+
+class _StreamingWorker(AIStreamWorker):
+    """Minimal concrete subclass exercising the base class's mechanics --
+    _call receives the chunk callback and can emit any number of times
+    before returning the final result, exactly like a real
+    core.*.generate(..., on_chunk=on_chunk) call site."""
+
+    def __init__(self, chunks: list[str], result: object = "final result") -> None:
+        super().__init__()
+        self._chunks = chunks
+        self._result = result
+
+    def _call(self, on_chunk):
+        for piece in self._chunks:
+            on_chunk(piece)
+        return self._result
+
+
+def test_ai_stream_worker_emits_chunks_then_done_once():
+    worker = _StreamingWorker(["Hello ", "world"])
+    chunks: list[str] = []
+    done_results: list[object] = []
+    failures: list[str] = []
+    worker.chunk.connect(chunks.append)
+    worker.done.connect(done_results.append)
+    worker.failed.connect(failures.append)
+
+    worker.run()
+
+    assert chunks == ["Hello ", "world"]
+    assert done_results == ["final result"]
+    assert failures == []
+
+
+class _KnownError(Exception):
+    pass
+
+
+class _FailingKnownWorker(AIStreamWorker):
+    def _call(self, on_chunk):
+        raise _KnownError("not ready yet")
+
+    def expected_errors(self):
+        return (_KnownError,)
+
+
+def test_ai_stream_worker_routes_expected_errors_to_failed_verbatim():
+    worker = _FailingKnownWorker()
+    failures: list[str] = []
+    worker.failed.connect(failures.append)
+
+    worker.run()
+
+    assert failures == ["not ready yet"]
+
+
+class _FailingUnexpectedWorker(AIStreamWorker):
+    def _call(self, on_chunk):
+        raise ValueError("boom")
+
+    def error_message(self, exc):
+        return f"Something went wrong while doing the thing: {exc}"
+
+
+def test_ai_stream_worker_routes_unexpected_errors_through_error_message():
+    worker = _FailingUnexpectedWorker()
+    failures: list[str] = []
+    worker.failed.connect(failures.append)
+
+    worker.run()
+
+    assert failures == ["Something went wrong while doing the thing: boom"]
 
 
 def test_launch_worker_with_progress_worker_but_no_progress_slot_still_works():

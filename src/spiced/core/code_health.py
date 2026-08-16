@@ -15,6 +15,7 @@ recursive folder walk is cheap and always reflects the project's current state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -64,6 +65,7 @@ class CodeHealthService:
         project: Project | None = None,
         source_filename: str | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> CodeHealthReview:
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -77,7 +79,10 @@ class CodeHealthService:
         prompt = build_code_health_prompt(
             metrics, excerpt=excerpt, project_name=project.name if project else None
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

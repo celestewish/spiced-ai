@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -43,7 +43,7 @@ from spiced.core.playtester_recruitment import ProviderNotReadyError as RecruitN
 from spiced.core.playtester_recruitment import RecruitmentDraftResult
 from spiced.storage.feedback_tasks import STATUS_ACCEPTED, STATUS_DISMISSED
 from spiced.storage.playtester_signups import STATUSES as SIGNUP_STATUSES
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 from spiced.ui.widgets.accordion import AccordionSection
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
@@ -68,10 +68,16 @@ def _card() -> QFrame:
 _USER_ROLE = 0x0100
 
 
-class _AnalyzeWorker(QObject):
-    done = Signal(object)  # FeedbackReview
-    failed = Signal(str)
+def _append_chunk(widget: QTextEdit, text: str) -> None:
+    """Append streamed text to a result widget in place -- see the
+    equivalent helper in ui.screens.debugging for the full rationale."""
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(text)
+    widget.setTextCursor(cursor)
 
+
+class _AnalyzeWorker(AIStreamWorker):
     def __init__(
         self,
         services: Services,
@@ -87,61 +93,58 @@ class _AnalyzeWorker(QObject):
         self._source_label = source_label
         self._source_filename = source_filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            project = self._services.active_project()
-            team_mode = self._services.team_mode_enabled()
-            review = self._services.feedback.analyze(
-                provider,
-                self._feedback_text,
-                project=project,
-                source_type=self._source_type,
-                source_label=self._source_label,
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-                team_mode=team_mode,
-                team_members=self._services.team_prompt_context(project) if team_mode else None,
-            )
-            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
-            # never the feedback content itself. No-op unless enabled.
-            self._services.record_telemetry_event("feedback.analysis_run")
-            self.done.emit(review)
-        except ProviderNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during analysis: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        project = self._services.active_project()
+        team_mode = self._services.team_mode_enabled()
+        review = self._services.feedback.analyze(
+            provider,
+            self._feedback_text,
+            project=project,
+            source_type=self._source_type,
+            source_label=self._source_label,
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            team_mode=team_mode,
+            team_members=self._services.team_prompt_context(project) if team_mode else None,
+            on_chunk=on_chunk,
+        )
+        # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
+        # never the feedback content itself. No-op unless enabled.
+        self._services.record_telemetry_event("feedback.analysis_run")
+        return review
+
+    def expected_errors(self):
+        return (ProviderNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during analysis: {exc}"
 
 
-class _PulseWorker(QObject):
-    done = Signal(object)  # CommunityPulseResult
-    failed = Signal(str)
-
+class _PulseWorker(AIStreamWorker):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            source = self._services.build_community_source()
-            result = self._services.community_pulse.check_in(
-                provider,
-                source,
-                project=self._services.active_project(),
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(result)
-        except (SourceNotReadyError, PulseProviderNotReadyError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"Something went wrong during the check-in: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        source = self._services.build_community_source()
+        return self._services.community_pulse.check_in(
+            provider,
+            source,
+            project=self._services.active_project(),
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (SourceNotReadyError, PulseProviderNotReadyError)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during the check-in: {exc}"
 
 
-class _RecruitmentWorker(QObject):
-    done = Signal(object)  # RecruitmentDraftResult
-    failed = Signal(str)
-
+class _RecruitmentWorker(AIStreamWorker):
     def __init__(
         self, services: Services, needs_description: str, target_platform: str, timeframe: str
     ) -> None:
@@ -151,23 +154,25 @@ class _RecruitmentWorker(QObject):
         self._target_platform = target_platform
         self._timeframe = timeframe
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.playtester_recruitment.draft_post(
-                provider,
-                needs_description=self._needs_description,
-                target_platform=self._target_platform,
-                timeframe=self._timeframe,
-                project=self._services.active_project(),
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("feedback.playtester_recruitment_draft_run")
-            self.done.emit(result)
-        except RecruitNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while drafting the post: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        result = self._services.playtester_recruitment.draft_post(
+            provider,
+            needs_description=self._needs_description,
+            target_platform=self._target_platform,
+            timeframe=self._timeframe,
+            project=self._services.active_project(),
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("feedback.playtester_recruitment_draft_run")
+        return result
+
+    def expected_errors(self):
+        return (RecruitNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while drafting the post: {exc}"
 
 
 _SIGNUP_USER_ROLE = 0x0101
@@ -563,7 +568,7 @@ class FeedbackScreen(QWidget):
     def _on_recruit_draft(self) -> None:
         self._recruit_draft_btn.setEnabled(False)
         self._recruit_draft_btn.setText("Drafting…")
-        self._recruit_result.setPlainText("Thinking through a draft post…")
+        self._recruit_result.clear()
 
         worker = _RecruitmentWorker(
             self._services,
@@ -573,11 +578,15 @@ class FeedbackScreen(QWidget):
         )
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_recruit_chunk)
         worker.done.connect(self._on_recruit_done)
         worker.failed.connect(self._on_recruit_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_recruit_chunk(self, text: str) -> None:
+        _append_chunk(self._recruit_result, text)
 
     def _on_recruit_done(self, result: RecruitmentDraftResult) -> None:
         self._recruit_draft_btn.setEnabled(True)
@@ -704,16 +713,20 @@ class FeedbackScreen(QWidget):
     def _on_pulse_run(self) -> None:
         self._pulse_run_btn.setEnabled(False)
         self._pulse_run_btn.setText("Reading…")
-        self._pulse_result.setPlainText("Reading recent messages and thinking it through…")
+        self._pulse_result.clear()
 
         worker = _PulseWorker(self._services)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_pulse_chunk)
         worker.done.connect(self._on_pulse_done)
         worker.failed.connect(self._on_pulse_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_pulse_chunk(self, text: str) -> None:
+        _append_chunk(self._pulse_result, text)
 
     def _on_pulse_done(self, result: CommunityPulseResult) -> None:
         self._pulse_result.setPlainText(result.response_text)
@@ -860,18 +873,22 @@ class FeedbackScreen(QWidget):
         source_type = SOURCE_FILE if self._pending_filename else SOURCE_PASTE
         label = self._label_input.text().strip() or None
         self._set_busy(True)
-        self._result.setPlainText("Reading the feedback and thinking it through…")
+        self._result.clear()
 
         worker = _AnalyzeWorker(
             self._services, text, source_type, label, self._pending_filename
         )
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_chunk)
         worker.done.connect(self._on_done)
         worker.failed.connect(self._on_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_chunk(self, text: str) -> None:
+        _append_chunk(self._result, text)
 
     def _on_done(self, review: FeedbackReview) -> None:
         self._result.setPlainText(review.response_text)

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -70,11 +71,22 @@ from spiced.core.localization_readiness import (
 from spiced.core.scope_creep import detect_scope_creep
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 from spiced.ui.widgets.diff_viewer import DiffViewerDialog
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.progress_trail import ProgressTrail
 from spiced.ui.widgets.source_link import SourceLinkExpander
+
+
+def _append_chunk(widget: QTextEdit, text: str) -> None:
+    """Append streamed text to a result widget in place, growing text as the
+    "still working" signal for a plain request/response AI call -- the
+    caller's own ``done`` handler always fully overwrites this with the
+    authoritative final text once the reply completes."""
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(text)
+    widget.setTextCursor(cursor)
 
 
 def _format_asset_findings(findings: AssetScanFindings) -> str:
@@ -98,10 +110,7 @@ def _format_asset_findings(findings: AssetScanFindings) -> str:
     return "\n".join(lines)
 
 
-class _CrashWorker(QObject):
-    done = Signal(object)  # DebugAnalysis
-    failed = Signal(str)
-
+class _CrashWorker(AIStreamWorker):
     def __init__(
         self, services: Services, log_text: str, source_type: str, source_filename: str | None
     ) -> None:
@@ -111,85 +120,84 @@ class _CrashWorker(QObject):
         self._source_type = source_type
         self._source_filename = source_filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            project = self._services.active_project()
-            team_mode = self._services.team_mode_enabled()
-            analysis = self._services.debugging.analyze(
-                provider,
-                self._log_text,
-                project=project,
-                source_type=self._source_type,
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-                team_mode=team_mode,
-                team_members=self._services.team_prompt_context(project) if team_mode else None,
-            )
-            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
-            # no log content, file paths, or project data. No-op unless the
-            # developer has explicitly turned this on in Settings.
-            self._services.record_telemetry_event("debugging.crash_diagnosis_run")
-            self.done.emit(analysis)
-        except ProviderNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during analysis: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        project = self._services.active_project()
+        team_mode = self._services.team_mode_enabled()
+        analysis = self._services.debugging.analyze(
+            provider,
+            self._log_text,
+            project=project,
+            source_type=self._source_type,
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            team_mode=team_mode,
+            team_members=self._services.team_prompt_context(project) if team_mode else None,
+            on_chunk=on_chunk,
+        )
+        # Opt-In Only Telemetry (Phase C): a bare, anonymous event name — no
+        # log content, file paths, or project data. No-op unless the
+        # developer has explicitly turned this on in Settings.
+        self._services.record_telemetry_event("debugging.crash_diagnosis_run")
+        return analysis
+
+    def expected_errors(self):
+        return (ProviderNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during analysis: {exc}"
 
 
-class _VersionCheckWorker(QObject):
-    done = Signal(object)  # VersionCheckReview
-    failed = Signal(str)
-
+class _VersionCheckWorker(AIStreamWorker):
     def __init__(self, services: Services, code_text: str, filename: str | None) -> None:
         super().__init__()
         self._services = services
         self._code_text = code_text
         self._filename = filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.version_check.analyze(
-                provider,
-                self._code_text,
-                project=self._services.active_project(),
-                source_filename=self._filename,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(review)
-        except VersionCheckNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"Something went wrong during the review: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.version_check.analyze(
+            provider,
+            self._code_text,
+            project=self._services.active_project(),
+            source_filename=self._filename,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (VersionCheckNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during the review: {exc}"
 
 
-class _CodeHealthWorker(QObject):
-    done = Signal(object)  # CodeHealthReview
-    failed = Signal(str)
-
+class _CodeHealthWorker(AIStreamWorker):
     def __init__(self, services: Services, code_text: str, filename: str | None) -> None:
         super().__init__()
         self._services = services
         self._code_text = code_text
         self._filename = filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.code_health.analyze(
-                provider,
-                self._code_text,
-                project=self._services.active_project(),
-                source_filename=self._filename,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("debugging.code_health_check_run")
-            self.done.emit(review)
-        except CodeHealthNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"Something went wrong during the review: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        review = self._services.code_health.analyze(
+            provider,
+            self._code_text,
+            project=self._services.active_project(),
+            source_filename=self._filename,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("debugging.code_health_check_run")
+        return review
+
+    def expected_errors(self):
+        return (CodeHealthNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during the review: {exc}"
 
 
 class _ProjectHealthScanWorker(QObject):
@@ -223,30 +231,28 @@ class _ProjectHealthScanWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
-class _ChangelogWorker(QObject):
-    done = Signal(object)  # ChangelogResult
-    failed = Signal(str)
-
+class _ChangelogWorker(AIStreamWorker):
     def __init__(self, services: Services, project, since_date: str | None) -> None:
         super().__init__()
         self._services = services
         self._project = project
         self._since_date = since_date
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.changelog.draft(
-                provider,
-                self._project,
-                since_date=self._since_date,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(result)
-        except (ChangelogNotReadyError, ChangelogNotAGitRepoError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while drafting the changelog: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.changelog.draft(
+            provider,
+            self._project,
+            since_date=self._since_date,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (ChangelogNotReadyError, ChangelogNotAGitRepoError)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while drafting the changelog: {exc}"
 
 
 class _DiscordPostWorker(QObject):
@@ -297,26 +303,23 @@ class _AssetScanWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
-class _AssetScanAIWorker(QObject):
-    done = Signal(object)  # AssetScanReview
-    failed = Signal(str)
-
+class _AssetScanAIWorker(AIStreamWorker):
     def __init__(self, services: Services, project) -> None:
         super().__init__()
         self._services = services
         self._project = project
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.asset_scan.analyze(
-                provider, self._project, record_usage=self._services.usage.record_prompt
-            )
-            self.done.emit(review)
-        except (AssetScanNotReadyError, AssetScanNoUnityFolderError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.asset_scan.analyze(
+            provider,
+            self._project,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (AssetScanNotReadyError, AssetScanNoUnityFolderError)
 
 
 def _format_dependency_findings(findings: DependencyCheckFindings) -> str:
@@ -362,79 +365,76 @@ class _DependencyCheckWorker(QObject):
             self.failed.emit(f"Something went wrong while checking dependencies: {exc}")
 
 
-class _DependencyCheckAIWorker(QObject):
-    done = Signal(object)  # DependencyCheckReview
-    failed = Signal(str)
-
+class _DependencyCheckAIWorker(AIStreamWorker):
     def __init__(self, services: Services, project) -> None:
         super().__init__()
         self._services = services
         self._project = project
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.dependency_check.analyze(
-                provider, self._project, record_usage=self._services.usage.record_prompt
-            )
-            self.done.emit(review)
-        except (
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.dependency_check.analyze(
+            provider,
+            self._project,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (
             DependencyNotReadyError,
             DependencyNoUnityFolderError,
             DependencyNoManifestError,
-        ) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong: {exc}")
+        )
 
 
-class _DevDocsWorker(QObject):
-    done = Signal(object)  # DevDocsResult
-    failed = Signal(str)
-
+class _DevDocsWorker(AIStreamWorker):
     def __init__(self, services: Services, project) -> None:
         super().__init__()
         self._services = services
         self._project = project
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.dev_docs.generate(
-                provider, self._project, record_usage=self._services.usage.record_prompt
-            )
-            self.done.emit(result)
-        except (DevDocsNotReadyError, DevDocsNoUnityFolderError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while generating docs: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.dev_docs.generate(
+            provider,
+            self._project,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (DevDocsNotReadyError, DevDocsNoUnityFolderError)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while generating docs: {exc}"
 
 
-class _DesignDocSyncWorker(QObject):
-    done = Signal(object)  # DesignDocSyncResult
-    failed = Signal(str)
-
+class _DesignDocSyncWorker(AIStreamWorker):
     def __init__(self, services: Services, project) -> None:
         super().__init__()
         self._services = services
         self._project = project
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.design_doc_sync.compare(
-                provider, self._project, record_usage=self._services.usage.record_prompt
-            )
-            self.done.emit(result)
-        except (
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.design_doc_sync.compare(
+            provider,
+            self._project,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (
             DesignDocSyncNotReadyError,
             DesignDocSyncNotEnabledError,
             NoDesignDocError,
             DevDocsNoUnityFolderError,
-        ) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while checking design drift: {exc}")
+        )
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while checking design drift: {exc}"
 
 
 class _LocalizationScanWorker(QObject):
@@ -456,10 +456,7 @@ class _LocalizationScanWorker(QObject):
             self.failed.emit(f"Something went wrong while scanning: {exc}")
 
 
-class _DraftTranslationWorker(QObject):
-    done = Signal(object)  # DraftTranslationResult
-    failed = Signal(str)
-
+class _DraftTranslationWorker(AIStreamWorker):
     def __init__(
         self, services: Services, text: str, target_language: str, source_filename: str | None
     ) -> None:
@@ -469,23 +466,25 @@ class _DraftTranslationWorker(QObject):
         self._target_language = target_language
         self._source_filename = source_filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.draft_translation.translate(
-                provider,
-                self._text,
-                self._target_language,
-                project=self._services.active_project(),
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("debugging.draft_translation_run")
-            self.done.emit(result)
-        except (DraftTranslationNotReadyError, DraftTranslationNoDialogueError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while translating: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        result = self._services.draft_translation.translate(
+            provider,
+            self._text,
+            self._target_language,
+            project=self._services.active_project(),
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("debugging.draft_translation_run")
+        return result
+
+    def expected_errors(self):
+        return (DraftTranslationNotReadyError, DraftTranslationNoDialogueError)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while translating: {exc}"
 
 
 class DebuggingScreen(QWidget):
@@ -998,7 +997,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._dev_docs_btn = PillButton("Regenerate docs", water_fill=True)
+        self._dev_docs_btn = PillButton("Regenerate docs")
         self._dev_docs_btn.clicked.connect(self._on_dev_docs_generate)
         row.addWidget(self._dev_docs_btn)
         row.addStretch(1)
@@ -1038,22 +1037,24 @@ class DebuggingScreen(QWidget):
             return
         self._dev_docs_btn.setEnabled(False)
         self._dev_docs_btn.setText("Generating…")
-        self._dev_docs_btn.set_loading(True)
-        self._dev_docs_result.setPlainText("Scanning scripts and thinking it through…")
+        self._dev_docs_result.clear()
 
         worker = _DevDocsWorker(self._services, project)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_dev_docs_chunk)
         worker.done.connect(self._on_dev_docs_done)
         worker.failed.connect(self._on_dev_docs_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
 
+    def _on_dev_docs_chunk(self, text: str) -> None:
+        _append_chunk(self._dev_docs_result, text)
+
     def _on_dev_docs_done(self, result: DevDocsResult) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
-        self._dev_docs_btn.set_loading(False)
         stats = (
             f"{result.scan.file_count} script(s), {result.scan.class_count} class(es), "
             f"{result.scan.method_count} public method(s) scanned.\n\n"
@@ -1067,7 +1068,6 @@ class DebuggingScreen(QWidget):
     def _on_dev_docs_failed(self, message: str) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
-        self._dev_docs_btn.set_loading(False)
         self._dev_docs_result.setPlainText(message)
 
     def _refresh_dev_docs_history(self) -> None:
@@ -1219,16 +1219,20 @@ class DebuggingScreen(QWidget):
             return
         self._design_drift_btn.setEnabled(False)
         self._design_drift_btn.setText("Checking…")
-        self._design_drift_result.setPlainText("Comparing your design doc against Dev Docs…")
+        self._design_drift_result.clear()
 
         worker = _DesignDocSyncWorker(self._services, project)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_design_drift_chunk)
         worker.done.connect(self._on_design_drift_done)
         worker.failed.connect(self._on_design_drift_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_design_drift_chunk(self, text: str) -> None:
+        _append_chunk(self._design_drift_result, text)
 
     def _scope_creep_message(self, project) -> str | None:
         """Scope-Creep Flagging: pure local computation over the Dev Docs
@@ -1522,16 +1526,20 @@ class DebuggingScreen(QWidget):
         filename = self._translation_pending_filename
         self._translation_run_btn.setEnabled(False)
         self._translation_run_btn.setText("Translating…")
-        self._translation_result.setPlainText("Drafting a translation…")
+        self._translation_result.clear()
 
         worker = _DraftTranslationWorker(self._services, text, target_language, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_translation_chunk)
         worker.done.connect(self._on_translation_done)
         worker.failed.connect(self._on_translation_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_translation_chunk(self, text: str) -> None:
+        _append_chunk(self._translation_result, text)
 
     def _on_translation_done(self, result: DraftTranslationResult) -> None:
         self._translation_run_btn.setEnabled(True)
@@ -1675,16 +1683,20 @@ class DebuggingScreen(QWidget):
         source_type = SOURCE_FILE if self._pending_filename else SOURCE_PASTE
         filename = self._pending_filename
         self._set_busy(True)
-        self._result.setPlainText("Reading the log and thinking it through…")
+        self._result.clear()
 
         worker = _CrashWorker(self._services, log_text, source_type, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_chunk)
         worker.done.connect(self._on_done)
         worker.failed.connect(self._on_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_chunk(self, text: str) -> None:
+        _append_chunk(self._result, text)
 
     def _on_done(self, analysis: DebugAnalysis) -> None:
         text = analysis.response_text
@@ -1763,16 +1775,20 @@ class DebuggingScreen(QWidget):
         filename = self._version_pending_filename
         self._version_analyze_btn.setEnabled(False)
         self._version_analyze_btn.setText("Analyzing…")
-        self._version_result.setPlainText("Reading the script and thinking it through…")
+        self._version_result.clear()
 
         worker = _VersionCheckWorker(self._services, code_text, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_version_chunk)
         worker.done.connect(self._on_version_done)
         worker.failed.connect(self._on_version_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_version_chunk(self, text: str) -> None:
+        _append_chunk(self._version_result, text)
 
     def _on_version_done(self, review: VersionCheckReview) -> None:
         self._version_result.setPlainText(review.response_text)
@@ -1822,16 +1838,20 @@ class DebuggingScreen(QWidget):
         filename = self._health_pending_filename
         self._health_analyze_btn.setEnabled(False)
         self._health_analyze_btn.setText("Checking…")
-        self._health_result.setPlainText("Reading the file and thinking it through…")
+        self._health_result.clear()
 
         worker = _CodeHealthWorker(self._services, code_text, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_health_chunk)
         worker.done.connect(self._on_health_done)
         worker.failed.connect(self._on_health_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_health_chunk(self, text: str) -> None:
+        _append_chunk(self._health_result, text)
 
     def _on_health_done(self, review: CodeHealthReview) -> None:
         self._health_result.setPlainText(review.response_text)
@@ -1890,16 +1910,20 @@ class DebuggingScreen(QWidget):
 
         self._changelog_draft_btn.setEnabled(False)
         self._current_changelog_draft_id = None
-        self._changelog_text.setPlainText("Reading git log and thinking it through…")
+        self._changelog_text.clear()
 
         worker = _ChangelogWorker(self._services, project, since_date)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_changelog_chunk)
         worker.done.connect(self._on_changelog_done)
         worker.failed.connect(self._on_changelog_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_changelog_chunk(self, text: str) -> None:
+        _append_chunk(self._changelog_text, text)
 
     def _on_changelog_done(self, result: ChangelogResult) -> None:
         self._changelog_draft_btn.setEnabled(True)
@@ -2039,16 +2063,20 @@ class DebuggingScreen(QWidget):
             return
         self._asset_scan_ai_btn.setEnabled(False)
         self._asset_scan_ai_btn.setText("Thinking…")
-        self._asset_scan_result.setPlainText("Scanning and thinking it through…")
+        self._asset_scan_result.clear()
 
         worker = _AssetScanAIWorker(self._services, project)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_asset_scan_ai_chunk)
         worker.done.connect(self._on_asset_scan_ai_done)
         worker.failed.connect(self._on_asset_scan_ai_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_asset_scan_ai_chunk(self, text: str) -> None:
+        _append_chunk(self._asset_scan_result, text)
 
     def _on_asset_scan_ai_done(self, review: AssetScanReview) -> None:
         self._asset_scan_ai_btn.setEnabled(True)
@@ -2128,16 +2156,20 @@ class DebuggingScreen(QWidget):
             return
         self._dependency_check_ai_btn.setEnabled(False)
         self._dependency_check_ai_btn.setText("Thinking…")
-        self._dependency_check_result.setPlainText("Checking dependencies and thinking it through…")
+        self._dependency_check_result.clear()
 
         worker = _DependencyCheckAIWorker(self._services, project)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_dependency_check_ai_chunk)
         worker.done.connect(self._on_dependency_check_ai_done)
         worker.failed.connect(self._on_dependency_check_ai_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_dependency_check_ai_chunk(self, text: str) -> None:
+        _append_chunk(self._dependency_check_result, text)
 
     def _on_dependency_check_ai_done(self, review: DependencyCheckReview) -> None:
         self._dependency_check_ai_btn.setEnabled(True)

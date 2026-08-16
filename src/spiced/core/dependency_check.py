@@ -12,6 +12,7 @@ uploaded, only package names the developer already declared are looked up.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -103,7 +104,12 @@ class DependencyCheckService:
         return check_dependencies(project)
 
     def analyze(
-        self, provider: AIProvider, project: Project, *, record_usage=None
+        self,
+        provider: AIProvider,
+        project: Project,
+        *,
+        record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> DependencyCheckReview:
         """Check, then ask the provider for optional plain-language commentary."""
         if not provider.is_available():
@@ -115,7 +121,10 @@ class DependencyCheckService:
             )
         findings = self.check(project)
         prompt = build_dependency_check_prompt(findings.results, project_name=project.name)
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

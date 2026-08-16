@@ -15,6 +15,7 @@ tracked over time.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -66,6 +67,7 @@ class PlaytesterRecruitmentService:
         timeframe: str,
         project: Project | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> RecruitmentDraftResult:
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -78,7 +80,10 @@ class PlaytesterRecruitmentService:
             timeframe=timeframe,
             project_name=project.name if project else None,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
         return RecruitmentDraftResult(response_text=response.text, provider=response.provider)

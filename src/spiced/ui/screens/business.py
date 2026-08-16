@@ -13,8 +13,8 @@ just search for themselves.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -36,37 +36,45 @@ from spiced.core.budget_tracker import RunwaySummary
 from spiced.core.competitive_landscape import CompetitiveLandscapeResult
 from spiced.core.competitive_landscape import ProviderNotReadyError as LandscapeNotReadyError
 from spiced.storage.budget_entries import FREQUENCIES
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
 _USER_ROLE = 0x0100
 
 
-class _LandscapeWorker(QObject):
-    done = Signal(object)  # CompetitiveLandscapeResult
-    failed = Signal(str)
+def _append_chunk(widget: QTextEdit, text: str) -> None:
+    """Append streamed text to a result widget in place -- see the
+    equivalent helper in ui.screens.debugging for the full rationale."""
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(text)
+    widget.setTextCursor(cursor)
 
+
+class _LandscapeWorker(AIStreamWorker):
     def __init__(self, services: Services, description: str) -> None:
         super().__init__()
         self._services = services
         self._description = description
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.competitive_landscape.analyze(
-                provider,
-                self._description,
-                project=self._services.active_project(),
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("business.competitive_landscape_run")
-            self.done.emit(result)
-        except LandscapeNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during the scan: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        result = self._services.competitive_landscape.analyze(
+            provider,
+            self._description,
+            project=self._services.active_project(),
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("business.competitive_landscape_run")
+        return result
+
+    def expected_errors(self):
+        return (LandscapeNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during the scan: {exc}"
 
 
 def _card() -> QFrame:
@@ -410,16 +418,20 @@ class BusinessScreen(QWidget):
             return
         self._landscape_scan_btn.setEnabled(False)
         self._landscape_scan_btn.setText("Scanning…")
-        self._landscape_result.setPlainText("Thinking through comparable titles…")
+        self._landscape_result.clear()
 
         worker = _LandscapeWorker(self._services, description)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_landscape_chunk)
         worker.done.connect(self._on_landscape_done)
         worker.failed.connect(self._on_landscape_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_landscape_chunk(self, text: str) -> None:
+        _append_chunk(self._landscape_result, text)
 
     def _on_landscape_done(self, result: CompetitiveLandscapeResult) -> None:
         self._landscape_scan_btn.setEnabled(True)

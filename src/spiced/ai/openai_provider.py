@@ -8,6 +8,7 @@ key is never hardcoded, logged, or written to disk by this module.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
 
@@ -57,6 +58,39 @@ class OpenAIProvider(AIProvider):
         except Exception as exc:
             raise self._friendly_error(exc) from exc
         text = (result.choices[0].message.content or "").strip() or "(No text returned by OpenAI.)"
+        return AIResponse(text=text, provider=self.name, model=self.model)
+
+    def generate_stream(self, prompt: str, on_chunk: Callable[[str], None]) -> AIResponse:
+        key = self._api_key()
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Add it to your environment or a local "
+                ".env file (see .env.example) to use the OpenAI provider."
+            )
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "The 'openai' package is not installed. "
+                "Install project dependencies to use OpenAI."
+            ) from exc
+
+        client = OpenAI(api_key=key)
+        parts: list[str] = []
+        try:
+            stream = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+            )
+            for event in stream:
+                delta = event.choices[0].delta.content if event.choices else None
+                if delta:
+                    parts.append(delta)
+                    on_chunk(delta)
+        except Exception as exc:
+            raise self._friendly_error(exc) from exc
+        text = "".join(parts).strip() or "(No text returned by OpenAI.)"
         return AIResponse(text=text, provider=self.name, model=self.model)
 
     def _friendly_error(self, exc: Exception) -> RuntimeError:

@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread
+from PySide6.QtCore import QObject, QThread, Signal
 
 
 def launch_worker(
@@ -75,3 +75,43 @@ def launch_worker(
 
     thread.finished.connect(_cleanup)
     return thread
+
+
+class AIStreamWorker(QObject):
+    """Shared base for the app's "one opaque AI call" workers -- the ones
+    that call a single ``core.*.generate(provider, ..., on_chunk=...)``
+    helper and report back via exactly the ``done``/``failed`` pair every
+    such worker has always had, now with a ``chunk`` signal alongside for
+    streamed partial text.
+
+    Subclasses implement ``_call(on_chunk)`` (build the provider, call the
+    right ``core.*.generate`` helper, return its typed result) and, if their
+    core call can raise feature-specific exceptions the user should see a
+    plain message for rather than "Something went wrong", override
+    ``expected_errors``/``error_message``. This centralizes the
+    chunk-signal wiring and the try/except shape that used to be
+    hand-duplicated in each worker's own ``run()``.
+    """
+
+    chunk = Signal(str)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def _call(self, on_chunk: Callable[[str], None]) -> Any:
+        raise NotImplementedError
+
+    def expected_errors(self) -> tuple[type[Exception], ...]:
+        """Exception types with a message worth showing the user as-is."""
+        return ()
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong: {exc}"
+
+    def run(self) -> None:
+        try:
+            result = self._call(self.chunk.emit)
+            self.done.emit(result)
+        except self.expected_errors() as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(self.error_message(exc))

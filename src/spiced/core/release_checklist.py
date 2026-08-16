@@ -16,6 +16,7 @@ a provider being configured.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -123,7 +124,11 @@ def build_checklist(platform: str, build_size_bytes: int | None = None) -> Relea
 
 
 def analyze_checklist(
-    provider: AIProvider, checklist: ReleaseChecklist, *, project_name: str | None = None
+    provider: AIProvider,
+    checklist: ReleaseChecklist,
+    *,
+    project_name: str | None = None,
+    on_chunk: Callable[[str], None] | None = None,
 ) -> str:
     """Optional brief AI commentary layered on the deterministic checklist.
 
@@ -134,4 +139,6 @@ def analyze_checklist(
     from spiced.ai.prompt_templates import build_release_checklist_prompt
 
     prompt = build_release_checklist_prompt(checklist, project_name=project_name)
+    if on_chunk is not None:
+        return provider.generate_stream(prompt, on_chunk).text
     return provider.generate(prompt).text

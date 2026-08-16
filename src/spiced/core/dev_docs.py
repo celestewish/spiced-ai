@@ -14,6 +14,7 @@ Scope-Creep Flagging (``core.scope_creep``) and Design Doc Sync
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -52,11 +53,20 @@ class DevDocsService:
         return scan_scripts(project.path)
 
     def generate(
-        self, provider: AIProvider, project: Project, *, record_usage=None
+        self,
+        provider: AIProvider,
+        project: Project,
+        *,
+        record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> DevDocsResult:
         """Scan, ask the provider for a plain-language summary, and save a
         new versioned snapshot. Raises ``NoUnityFolderError`` /
-        ``ProviderNotReadyError`` as appropriate."""
+        ``ProviderNotReadyError`` as appropriate.
+
+        ``on_chunk``, if given, streams partial response text as it arrives
+        (see ``AIProvider.generate_stream``) instead of blocking silently
+        for the whole reply."""
         if not provider.is_available():
             raise ProviderNotReadyError(
                 f"The {provider.display_name()} provider isn't ready. Add its API key to a "
@@ -64,7 +74,10 @@ class DevDocsService:
             )
         scan_result = self.scan(project)
         prompt = build_dev_docs_prompt(scan_result, project_name=project.name)
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

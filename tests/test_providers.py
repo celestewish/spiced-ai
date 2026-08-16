@@ -1,4 +1,5 @@
 from spiced.ai import DEFAULT_PROVIDER, MockProvider, OpenAIProvider, build_provider
+from spiced.ai.base import AIProvider, AIResponse
 from spiced.ai.gemini_provider import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL
 from spiced.ai.gemini_provider import GeminiProvider
 from spiced.ai.openai_provider import DEFAULT_MODEL as OPENAI_DEFAULT_MODEL
@@ -10,6 +11,108 @@ def test_mock_provider_always_available():
     response = provider.generate("Why is my player falling through the floor?")
     assert response.provider == "mock"
     assert response.text
+
+
+# --- Streaming ---
+
+
+def test_mock_generate_stream_emits_multiple_chunks_and_final_text_matches():
+    provider = MockProvider()
+    chunks: list[str] = []
+    prompt = "Why is my player falling through the floor?"
+    response = provider.generate_stream(prompt, chunks.append)
+    assert len(chunks) > 1
+    assert "".join(chunks) == response.text
+
+
+def test_default_generate_stream_fallback_emits_whole_response_once():
+    class _OnlyGenerate(AIProvider):
+        name = "only-generate"
+
+        def is_available(self) -> bool:
+            return True
+
+        def generate(self, prompt: str) -> AIResponse:
+            return AIResponse(text="whole response", provider=self.name)
+
+    chunks: list[str] = []
+    response = _OnlyGenerate().generate_stream("hello", chunks.append)
+    assert chunks == ["whole response"]
+    assert response.text == "whole response"
+
+
+class _FakeOpenAIDelta:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+
+class _FakeOpenAIChoice:
+    def __init__(self, content: str | None) -> None:
+        self.delta = _FakeOpenAIDelta(content)
+
+
+class _FakeOpenAIChunk:
+    def __init__(self, content: str | None) -> None:
+        self.choices = [_FakeOpenAIChoice(content)]
+
+
+class _FakeOpenAIClient:
+    captured_kwargs: dict = {}
+
+    def __init__(self, api_key: str | None = None) -> None:
+        self.chat = self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        _FakeOpenAIClient.captured_kwargs = kwargs
+        return [_FakeOpenAIChunk("Hello "), _FakeOpenAIChunk("world"), _FakeOpenAIChunk(None)]
+
+
+def test_openai_generate_stream_accumulates_delta_content(monkeypatch):
+    import openai
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAIClient)
+
+    provider = OpenAIProvider(model="gpt-4o-mini")
+    chunks: list[str] = []
+    response = provider.generate_stream("hello", chunks.append)
+
+    assert chunks == ["Hello ", "world"]
+    assert response.text == "Hello world"
+    assert _FakeOpenAIClient.captured_kwargs["stream"] is True
+
+
+class _FakeGeminiChunk:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _FakeGeminiModel:
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    def generate_content(self, prompt: str, *, stream: bool = False):
+        assert stream is True
+        return [_FakeGeminiChunk("Hi "), _FakeGeminiChunk("there")]
+
+
+def test_gemini_generate_stream_accumulates_text_chunks(monkeypatch):
+    import google.generativeai as genai
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(genai, "configure", lambda **kwargs: None)
+    monkeypatch.setattr(genai, "GenerativeModel", _FakeGeminiModel)
+
+    provider = GeminiProvider(model="gemini-2.0-flash")
+    chunks: list[str] = []
+    response = provider.generate_stream("hello", chunks.append)
+
+    assert chunks == ["Hi ", "there"]
+    assert response.text == "Hi there"
 
 
 # --- Provider factory / default selection ---
