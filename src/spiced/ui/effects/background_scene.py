@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPen,
+    QPixmap,
     QRadialGradient,
 )
 from PySide6.QtWidgets import QWidget
@@ -179,6 +180,16 @@ class OceanBackgroundWidget(QWidget):
 
         self._island_back, self._island_front = _build_island_paths()
 
+        # Sky/sun/island only depend on size and mouse-parallax offset, not
+        # on _elapsed_seconds -- unlike waves/orbs/wind/stars, they're
+        # identical from one 16ms tick to the next whenever the mouse hasn't
+        # moved (the common case), so they're worth baking into a cached
+        # pixmap instead of repainting a 9-stop gradient fill + two more
+        # layers from scratch every single tick (see tools/profile_effects.py
+        # for the measurement that motivated this).
+        self._backdrop_cache: QPixmap | None = None
+        self._backdrop_cache_key: tuple | None = None
+
         self.refresh_accessibility_state()
 
     # --- Public API ----------------------------------------------------
@@ -226,13 +237,33 @@ class OceanBackgroundWidget(QWidget):
         amp = 0.0 if reduced_motion(self._services) else 1.0
         px, py = self._mouse_norm.x() * amp, self._mouse_norm.y() * amp
 
-        self._paint_sky(painter, px, py)
-        self._paint_sun(painter, px, py)
-        self._paint_island(painter, px, py)
+        painter.drawPixmap(0, 0, self._backdrop_pixmap(px, py))
         self._paint_ocean_and_waves(painter, px, py)
         self._paint_orbs(painter, px, py)
         self._paint_wind_streaks(painter)
         self._paint_stars(painter)
+
+    def _backdrop_pixmap(self, px: float, py: float) -> QPixmap:
+        """The cached sky+sun+island layer -- see the cache fields' comment
+        in __init__. Rebuilt only when size/parallax/DPR actually change."""
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), round(px, 3), round(py, 3), dpr)
+        if self._backdrop_cache is not None and self._backdrop_cache_key == key:
+            return self._backdrop_cache
+
+        pixmap = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        cache_painter = QPainter(pixmap)
+        cache_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_sky(cache_painter, px, py)
+        self._paint_sun(cache_painter, px, py)
+        self._paint_island(cache_painter, px, py)
+        cache_painter.end()
+
+        self._backdrop_cache = pixmap
+        self._backdrop_cache_key = key
+        return pixmap
 
     def _paint_sky(self, painter: QPainter, px: float, py: float) -> None:
         w, h = self.width(), self.height()
