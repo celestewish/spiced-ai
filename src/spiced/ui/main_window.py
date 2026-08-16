@@ -463,8 +463,9 @@ class MainWindow(QWidget):
         QSS alone can't reach) in sync with whichever accessibility palette
         is currently active -- called once at startup and again whenever
         Settings saves an accessibility change (see __init__)."""
+        high_contrast = self._services.accessibility_high_contrast_enabled()
         palette = theme.resolve_palette(
-            high_contrast=self._services.accessibility_high_contrast_enabled(),
+            high_contrast=high_contrast,
             colorblind_safe=self._services.accessibility_colorblind_safe_enabled(),
         )
         idle = palette["TEXT_ON_DARK"]
@@ -472,9 +473,9 @@ class MainWindow(QWidget):
         settings_idle = palette["NEUTRAL_TEXT"]
         for btn in self._nav_buttons:
             if btn.objectName() == "NavButtonSettings":
-                btn.set_glyph_colors(settings_idle, active)
+                btn.set_glyph_colors(settings_idle, active, high_contrast=high_contrast)
             else:
-                btn.set_glyph_colors(idle, active)
+                btn.set_glyph_colors(idle, active, high_contrast=high_contrast)
 
     def _build_workspace(self) -> QFrame:
         panel = QFrame()
