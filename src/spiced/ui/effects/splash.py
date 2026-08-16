@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QWidget
 
 from spiced.ui.effects.motion import current_reduced_motion, reduced_motion
 
-# icons.md's aqua accent ramp bright highlight -- the default splash color
+# ui.theme's aqua accent ramp bright highlight -- the default splash color
 # for any button that doesn't pass its own.
 SPLASH_COLOR = QColor("#7FE7FF")
 

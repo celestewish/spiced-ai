@@ -7,6 +7,7 @@ The full log is never sent or stored; only a trimmed excerpt is used.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -57,6 +58,7 @@ class DebuggingService:
         record_usage=None,
         team_mode: bool = False,
         team_members: list[str] | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> DebugAnalysis:
         """Parse the log, ask the provider, and save a session if we have a project.
 
@@ -82,7 +84,10 @@ class DebuggingService:
             team_members=team_members,
         )
 
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

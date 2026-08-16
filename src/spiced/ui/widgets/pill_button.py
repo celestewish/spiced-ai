@@ -76,7 +76,7 @@ from spiced.ui.effects.splash import attach_splash
 # `QPushButton#Ghost { border: 2px solid ... }` rule in ui.theme.
 _GHOST_BORDER_WIDTH = 2
 
-# Water-fill loading indicator (icons.md's aqua accent ramp).
+# Water-fill loading indicator (the aqua accent ramp from ui.theme).
 _FILL_DEEP = QColor("#0A7EA8")
 _FILL_BRIGHT = QColor("#BDF3FF")
 _FILL_TICK_MS = 16

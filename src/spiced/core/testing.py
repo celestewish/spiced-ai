@@ -13,6 +13,7 @@ Two responsibilities, both human-centered:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -130,6 +131,7 @@ class TestingService:
         record_usage=None,
         team_mode: bool = False,
         team_members: list[str] | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> TestReview:
         """Parse results, ask the provider for a review, and save a run.
 
@@ -152,7 +154,10 @@ class TestingService:
             team_mode=team_mode,
             team_members=team_members,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

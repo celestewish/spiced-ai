@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -61,9 +61,8 @@ from spiced.core.release_checklist import (
     analyze_checklist,
     build_checklist,
 )
-from spiced.core.test_generator import NoUnityFolderError
+from spiced.core.test_generator import NoUnityFolderError, TestGenerationResult
 from spiced.core.test_generator import ProviderNotReadyError as TestGenNotReadyError
-from spiced.core.test_generator import TestGenerationResult
 from spiced.core.testing import (
     SOURCE_FILE,
     SOURCE_PASTE,
@@ -75,7 +74,7 @@ from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_ed
 from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 from spiced.ui.widgets.bar_chart import FrameRateBarChart
 from spiced.ui.widgets.comments_widget import CommentsWidget
 from spiced.ui.widgets.pill_button import PillButton
@@ -94,6 +93,15 @@ _USER_ROLE = 0x0100
 _ITEM_KIND_ROLE = 0x0101
 _NO_HARDWARE = "(none — no simulation)"
 _BOTH_PLATFORMS = "Both"
+
+
+def _append_chunk(widget: QTextEdit, text: str) -> None:
+    """Append streamed text to a result widget in place -- see the
+    equivalent helper in ui.screens.debugging for the full rationale."""
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(text)
+    widget.setTextCursor(cursor)
 
 
 def _path_size_bytes(path_str: str | None) -> int | None:
@@ -259,10 +267,7 @@ def _clear_layout(layout: QVBoxLayout) -> None:
             widget.deleteLater()
 
 
-class _FunctionalWorker(QObject):
-    done = Signal(object)  # TestReview
-    failed = Signal(str)
-
+class _FunctionalWorker(AIStreamWorker):
     def __init__(
         self, services: Services, results_text: str, source_type: str, source_filename: str | None
     ) -> None:
@@ -272,29 +277,31 @@ class _FunctionalWorker(QObject):
         self._source_type = source_type
         self._source_filename = source_filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            project = self._services.active_project()
-            team_mode = self._services.team_mode_enabled()
-            review = self._services.testing.analyze(
-                provider,
-                self._results_text,
-                project=project,
-                source_type=self._source_type,
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-                team_mode=team_mode,
-                team_members=self._services.team_prompt_context(project) if team_mode else None,
-            )
-            # Opt-In Only Telemetry (Phase C): a bare, anonymous event name —
-            # no test content or project data. No-op unless enabled.
-            self._services.record_telemetry_event("testing.test_review_run")
-            self.done.emit(review)
-        except ProviderNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during analysis: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        project = self._services.active_project()
+        team_mode = self._services.team_mode_enabled()
+        review = self._services.testing.analyze(
+            provider,
+            self._results_text,
+            project=project,
+            source_type=self._source_type,
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            team_mode=team_mode,
+            team_members=self._services.team_prompt_context(project) if team_mode else None,
+            on_chunk=on_chunk,
+        )
+        # Opt-In Only Telemetry (Phase C): a bare, anonymous event name — no
+        # test content or project data. No-op unless enabled.
+        self._services.record_telemetry_event("testing.test_review_run")
+        return review
+
+    def expected_errors(self):
+        return (ProviderNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during analysis: {exc}"
 
 
 class _UnityRunWorker(QObject):
@@ -382,10 +389,7 @@ class _UnityRunWorker(QObject):
         self.finished.emit()
 
 
-class _PerformanceWorker(QObject):
-    done = Signal(object)  # PerformanceReview
-    failed = Signal(str)
-
+class _PerformanceWorker(AIStreamWorker):
     def __init__(
         self,
         services: Services,
@@ -401,30 +405,29 @@ class _PerformanceWorker(QObject):
         self._source_filename = source_filename
         self._target_hardware = target_hardware
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.performance.analyze(
-                provider,
-                self._text,
-                project=self._services.active_project(),
-                target_hardware=self._target_hardware,
-                source_type=self._source_type,
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("testing.performance_review_run")
-            self.done.emit(review)
-        except PerformanceNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"Something went wrong during analysis: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        review = self._services.performance.analyze(
+            provider,
+            self._text,
+            project=self._services.active_project(),
+            target_hardware=self._target_hardware,
+            source_type=self._source_type,
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("testing.performance_review_run")
+        return review
+
+    def expected_errors(self):
+        return (PerformanceNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during analysis: {exc}"
 
 
-class _AccessibilityWorker(QObject):
-    done = Signal(object)  # AccessibilityReview
-    failed = Signal(str)
-
+class _AccessibilityWorker(AIStreamWorker):
     def __init__(
         self, services: Services, text: str, source_type: str, source_filename: str | None
     ) -> None:
@@ -434,22 +437,23 @@ class _AccessibilityWorker(QObject):
         self._source_type = source_type
         self._source_filename = source_filename
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.accessibility.analyze(
-                provider,
-                self._text,
-                project=self._services.active_project(),
-                source_type=self._source_type,
-                source_filename=self._source_filename,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(review)
-        except AccessibilityNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:
-            self.failed.emit(f"Something went wrong during analysis: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.accessibility.analyze(
+            provider,
+            self._text,
+            project=self._services.active_project(),
+            source_type=self._source_type,
+            source_filename=self._source_filename,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (AccessibilityNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during analysis: {exc}"
 
 
 class _PlayerCrashSyncWorker(QObject):
@@ -509,82 +513,77 @@ class _BuildWorker(QObject):
             self.failed.emit(f"Something went wrong while building: {exc}")
 
 
-class _ChecklistAIWorker(QObject):
-    done = Signal(str)
-    failed = Signal(str)
-
+class _ChecklistAIWorker(AIStreamWorker):
     def __init__(self, services: Services, checklist: ReleaseChecklist) -> None:
         super().__init__()
         self._services = services
         self._checklist = checklist
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            if not provider.is_available():
-                self.failed.emit(
-                    f"The {provider.display_name()} provider isn't ready. The checklist above "
-                    "still works with no provider — add its API key to a local .env file, or "
-                    "switch to the Mock provider in Settings, for an AI take."
-                )
-                return
-            project = self._services.active_project()
-            text = analyze_checklist(
-                provider, self._checklist, project_name=project.name if project else None
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        if not provider.is_available():
+            raise RuntimeError(
+                f"The {provider.display_name()} provider isn't ready. The checklist above "
+                "still works with no provider — add its API key to a local .env file, or "
+                "switch to the Mock provider in Settings, for an AI take."
             )
-            self._services.usage.record_prompt(provider.name)
-            self.done.emit(text)
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong: {exc}")
+        project = self._services.active_project()
+        text = analyze_checklist(
+            provider,
+            self._checklist,
+            project_name=project.name if project else None,
+            on_chunk=on_chunk,
+        )
+        self._services.usage.record_prompt(provider.name)
+        return text
+
+    def expected_errors(self):
+        return (RuntimeError,)
 
 
-class _TestCaseScriptWorker(QObject):
-    done = Signal(object)  # TestGenerationResult
-    failed = Signal(str)
-
+class _TestCaseScriptWorker(AIStreamWorker):
     def __init__(self, services: Services, project, test_case) -> None:
         super().__init__()
         self._services = services
         self._project = project
         self._test_case = test_case
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            result = self._services.test_generator.generate_draft_from_test_case(
-                provider,
-                self._project,
-                self._test_case,
-                record_usage=self._services.usage.record_prompt,
-            )
-            self.done.emit(result)
-        except TestGenNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong while drafting the script: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.test_generator.generate_draft_from_test_case(
+            provider,
+            self._project,
+            self._test_case,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (TestGenNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong while drafting the script: {exc}"
 
 
-class _EconomySimulationAIWorker(QObject):
-    done = Signal(object)  # EconomySimulationReview
-    failed = Signal(str)
-
+class _EconomySimulationAIWorker(AIStreamWorker):
     def __init__(self, services: Services, project, data: dict) -> None:
         super().__init__()
         self._services = services
         self._project = project
         self._data = data
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.economy_simulator.analyze(
-                provider, self._project, self._data, record_usage=self._services.usage.record_prompt
-            )
-            self.done.emit(review)
-        except (EconomyNotReadyError, InvalidEconomyDataError) as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        return self._services.economy_simulator.analyze(
+            provider,
+            self._project,
+            self._data,
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+
+    def expected_errors(self):
+        return (EconomyNotReadyError, InvalidEconomyDataError)
 
 
 # "Send to Team Board" routing entry point (Phase J, #3) for Known Issues.
@@ -1793,16 +1792,20 @@ class TestingScreen(QWidget):
         source_type = SOURCE_FILE if self._pending_filename else SOURCE_PASTE
         filename = self._pending_filename
         self._set_busy(True)
-        self._result.setPlainText("Reading the results and thinking it through…")
+        self._result.clear()
 
         worker = _FunctionalWorker(self._services, results_text, source_type, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_chunk)
         worker.done.connect(self._on_done)
         worker.failed.connect(self._on_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_chunk(self, text: str) -> None:
+        _append_chunk(self._result, text)
 
     def _on_done(self, review: TestReview) -> None:
         text = review.response_text
@@ -2040,15 +2043,20 @@ class TestingScreen(QWidget):
         self._testgen_generate_btn.setText("Thinking…")
         self._testgen_approve_btn.setEnabled(False)
         self._testgen_status.setText("")
+        self._testgen_notes.clear()
 
         worker = _TestCaseScriptWorker(self._services, project, test_case)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_test_script_chunk)
         worker.done.connect(self._on_test_script_generated)
         worker.failed.connect(self._on_test_script_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_test_script_chunk(self, text: str) -> None:
+        _append_chunk(self._testgen_notes, text)
 
     def _on_test_script_generated(self, result: TestGenerationResult) -> None:
         self._testgen_generate_btn.setEnabled(True)
@@ -2068,6 +2076,7 @@ class TestingScreen(QWidget):
         self._testgen_generate_btn.setEnabled(True)
         self._testgen_generate_btn.setText("Generate Unity test script")
         self._testgen_status.setText(message)
+        self._testgen_notes.clear()
 
     def _on_approve_test_script(self) -> None:
         project = self._services.active_project()
@@ -2136,18 +2145,22 @@ class TestingScreen(QWidget):
         filename = self._perf_pending_filename
         self._perf_analyze_btn.setEnabled(False)
         self._perf_analyze_btn.setText("Analyzing…")
-        self._perf_result.setPlainText("Reading the numbers and thinking it through…")
+        self._perf_result.clear()
 
         worker = _PerformanceWorker(
             self._services, text, source_type, filename, target_hardware
         )
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_perf_chunk)
         worker.done.connect(self._on_perf_done)
         worker.failed.connect(self._on_perf_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_perf_chunk(self, text: str) -> None:
+        _append_chunk(self._perf_result, text)
 
     def _on_perf_done(self, review: PerformanceReview) -> None:
         self._perf_result.setPlainText(review.response_text)
@@ -2215,16 +2228,20 @@ class TestingScreen(QWidget):
         filename = self._access_pending_filename
         self._access_analyze_btn.setEnabled(False)
         self._access_analyze_btn.setText("Analyzing…")
-        self._access_result.setPlainText("Running the checklist and thinking it through…")
+        self._access_result.clear()
 
         worker = _AccessibilityWorker(self._services, text, source_type, filename)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_access_chunk)
         worker.done.connect(self._on_access_done)
         worker.failed.connect(self._on_access_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_access_chunk(self, text: str) -> None:
+        _append_chunk(self._access_result, text)
 
     def _on_access_done(self, review: AccessibilityReview) -> None:
         self._access_result.setPlainText(review.response_text)
@@ -2431,28 +2448,37 @@ class TestingScreen(QWidget):
         self._last_checklist = checklist
         self._checklist_ai_btn.setEnabled(False)
         self._checklist_ai_btn.setText("Thinking…")
+        # Snapshot the deterministic checklist text once, before streaming
+        # appends anything -- the done/failed handlers below recompose from
+        # this rather than re-reading the (by then AI-chunk-appended) widget.
+        self._checklist_base_text = self._checklist_result.toPlainText()
+        self._checklist_result.setPlainText(f"{self._checklist_base_text}\n\n--- AI take ---\n")
 
         worker = _ChecklistAIWorker(self._services, checklist)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_checklist_ai_chunk)
         worker.done.connect(self._on_checklist_ai_done)
         worker.failed.connect(self._on_checklist_ai_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
 
+    def _on_checklist_ai_chunk(self, text: str) -> None:
+        _append_chunk(self._checklist_result, text)
+
     def _on_checklist_ai_done(self, text: str) -> None:
         self._checklist_ai_btn.setEnabled(True)
         self._checklist_ai_btn.setText("Get AI take")
-        current = self._checklist_result.toPlainText()
-        self._checklist_result.setPlainText(f"{current}\n\n--- AI take ---\n{text}")
+        self._checklist_result.setPlainText(
+            f"{self._checklist_base_text}\n\n--- AI take ---\n{text}"
+        )
         self.usage_changed.emit()
 
     def _on_checklist_ai_failed(self, message: str) -> None:
         self._checklist_ai_btn.setEnabled(True)
         self._checklist_ai_btn.setText("Get AI take")
-        current = self._checklist_result.toPlainText()
-        self._checklist_result.setPlainText(f"{current}\n\n{message}")
+        self._checklist_result.setPlainText(f"{self._checklist_base_text}\n\n{message}")
 
     # --- Economy Simulation handlers ----------------------------------------
 
@@ -2513,16 +2539,20 @@ class TestingScreen(QWidget):
             return
         self._economy_ai_btn.setEnabled(False)
         self._economy_ai_btn.setText("Thinking…")
-        self._economy_result.setPlainText("Simulating and thinking it through…")
+        self._economy_result.clear()
 
         worker = _EconomySimulationAIWorker(self._services, project, data)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_economy_ai_chunk)
         worker.done.connect(self._on_economy_ai_done)
         worker.failed.connect(self._on_economy_ai_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_economy_ai_chunk(self, text: str) -> None:
+        _append_chunk(self._economy_result, text)
 
     def _on_economy_ai_done(self, review: EconomySimulationReview) -> None:
         self._economy_ai_btn.setEnabled(True)

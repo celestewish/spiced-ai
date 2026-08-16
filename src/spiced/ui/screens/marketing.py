@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -38,7 +38,7 @@ from spiced.app.services import Services
 from spiced.core.store_page_advisor import ProviderNotReadyError as StorePageNotReadyError
 from spiced.core.store_page_advisor import StorePageReviewResult
 from spiced.core.wishlist_analytics import InvalidAnalyticsFormatError, WishlistAnalyticsDigest
-from spiced.ui.thread_utils import launch_worker
+from spiced.ui.thread_utils import AIStreamWorker, launch_worker
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.source_link import SourceLinkExpander
 
@@ -60,10 +60,16 @@ _TILE_METRICS = [
 ]
 
 
-class _StorePageWorker(QObject):
-    done = Signal(object)  # StorePageReviewResult
-    failed = Signal(str)
+def _append_chunk(widget: QTextEdit, text: str) -> None:
+    """Append streamed text to a result widget in place -- see the
+    equivalent helper in ui.screens.debugging for the full rationale."""
+    cursor = widget.textCursor()
+    cursor.movePosition(QTextCursor.MoveOperation.End)
+    cursor.insertText(text)
+    widget.setTextCursor(cursor)
 
+
+class _StorePageWorker(AIStreamWorker):
     def __init__(self, services: Services, title: str, description: str, tags_text: str) -> None:
         super().__init__()
         self._services = services
@@ -71,23 +77,25 @@ class _StorePageWorker(QObject):
         self._description = description
         self._tags_text = tags_text
 
-    def run(self) -> None:
-        try:
-            provider = self._services.build_provider()
-            review = self._services.store_page_advisor.review(
-                provider,
-                self._title,
-                self._description,
-                self._tags_text,
-                project=self._services.active_project(),
-                record_usage=self._services.usage.record_prompt,
-            )
-            self._services.record_telemetry_event("marketing.store_page_review_run")
-            self.done.emit(review)
-        except StorePageNotReadyError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # surfaced calmly to the user
-            self.failed.emit(f"Something went wrong during the review: {exc}")
+    def _call(self, on_chunk):
+        provider = self._services.build_provider()
+        review = self._services.store_page_advisor.review(
+            provider,
+            self._title,
+            self._description,
+            self._tags_text,
+            project=self._services.active_project(),
+            record_usage=self._services.usage.record_prompt,
+            on_chunk=on_chunk,
+        )
+        self._services.record_telemetry_event("marketing.store_page_review_run")
+        return review
+
+    def expected_errors(self):
+        return (StorePageNotReadyError,)
+
+    def error_message(self, exc: Exception) -> str:
+        return f"Something went wrong during the review: {exc}"
 
 
 def _card() -> QFrame:
@@ -238,18 +246,22 @@ class MarketingScreen(QWidget):
             return
         self._sp_review_btn.setEnabled(False)
         self._sp_review_btn.setText("Reviewing…")
-        self._sp_result.setPlainText("Reading your draft and thinking it through…")
+        self._sp_result.clear()
 
         worker = _StorePageWorker(
             self._services, title, description, self._sp_tags_input.text()
         )
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
+        worker.chunk.connect(self._on_sp_chunk)
         worker.done.connect(self._on_sp_done)
         worker.failed.connect(self._on_sp_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
+
+    def _on_sp_chunk(self, text: str) -> None:
+        _append_chunk(self._sp_result, text)
 
     def _on_sp_done(self, result: StorePageReviewResult) -> None:
         self._sp_review_btn.setEnabled(True)

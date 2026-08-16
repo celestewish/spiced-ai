@@ -9,6 +9,7 @@ back to the community.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -50,6 +51,7 @@ class CommunityPulseService:
         project: Project | None = None,
         limit: int = DEFAULT_MESSAGE_LIMIT,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> CommunityPulseResult:
         if not source.is_available():
             raise SourceNotReadyError(
@@ -67,7 +69,10 @@ class CommunityPulseService:
         prompt = build_community_pulse_prompt(
             messages, channel_label=channel_label, project_name=project.name if project else None
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

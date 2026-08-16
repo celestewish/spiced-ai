@@ -9,6 +9,7 @@ preview what Spiced detected before spending a prompt.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -113,6 +114,7 @@ class FeedbackService:
         record_usage=None,
         team_mode: bool = False,
         team_members: list[str] | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> FeedbackReview:
         """Parse + classify locally, ask the provider for a review, and save a batch.
 
@@ -139,7 +141,10 @@ class FeedbackService:
             team_mode=team_mode,
             team_members=team_members,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

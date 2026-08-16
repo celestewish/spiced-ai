@@ -12,6 +12,7 @@ publishes anything on a store page itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
@@ -60,6 +61,7 @@ class StorePageAdvisorService:
         *,
         project: Project | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> StorePageReviewResult:
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -78,7 +80,10 @@ class StorePageAdvisorService:
             tags=draft.tags,
             project_name=project.name if project else None,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

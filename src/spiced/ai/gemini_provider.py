@@ -7,6 +7,7 @@ never hardcoded, logged, or written to disk by this module.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
 
@@ -54,6 +55,35 @@ class GeminiProvider(AIProvider):
         except Exception as exc:
             raise self._friendly_error(exc) from exc
         text = getattr(result, "text", None) or "(No text returned by Gemini.)"
+        return AIResponse(text=text, provider=self.name, model=self.model)
+
+    def generate_stream(self, prompt: str, on_chunk: Callable[[str], None]) -> AIResponse:
+        key = self._api_key()
+        if not key:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Add it to your environment or a local "
+                ".env file (see .env.example) to use the Gemini provider."
+            )
+        try:
+            import google.generativeai as genai
+        except ImportError as exc:
+            raise RuntimeError(
+                "The 'google-generativeai' package is not installed. "
+                "Install project dependencies to use Gemini."
+            ) from exc
+
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel(self.model)
+        parts: list[str] = []
+        try:
+            for event in model.generate_content(prompt, stream=True):
+                delta = getattr(event, "text", None)
+                if delta:
+                    parts.append(delta)
+                    on_chunk(delta)
+        except Exception as exc:
+            raise self._friendly_error(exc) from exc
+        text = "".join(parts) or "(No text returned by Gemini.)"
         return AIResponse(text=text, provider=self.name, model=self.model)
 
     def _friendly_error(self, exc: Exception) -> RuntimeError:

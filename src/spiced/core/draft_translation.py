@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -186,6 +187,7 @@ class DraftTranslationService:
         project: Project | None = None,
         source_filename: str | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> DraftTranslationResult:
         if not provider.is_available():
             raise ProviderNotReadyError(
@@ -205,7 +207,10 @@ class DraftTranslationService:
         prompt = build_draft_translation_prompt(
             parsed.lines, target_language=target, project_name=project.name if project else None
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

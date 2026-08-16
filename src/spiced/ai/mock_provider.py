@@ -5,7 +5,11 @@ The voice is calm and professional: a helpful colleague, not a hype machine.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from spiced.ai.base import AIProvider, AIResponse
+
+_STREAM_CHUNK_WORDS = 6
 
 
 class MockProvider(AIProvider):
@@ -28,6 +32,21 @@ class MockProvider(AIProvider):
                 "Connect a real provider in Settings when you're ready and I can go deeper."
             )
         return AIResponse(text=text, provider=self.name, model="mock-1")
+
+    def generate_stream(self, prompt: str, on_chunk: Callable[[str], None]) -> AIResponse:
+        """Fake-chunks the canned reply (word groups, no artificial delay)
+        instead of delivering it whole. This is the only provider path the
+        offscreen test suite actually exercises, so it's also the only place
+        multi-chunk accumulation gets real coverage -- emitting a single
+        chunk here would mean the whole streaming pipeline ships untested."""
+        response = self.generate(prompt)
+        words = response.text.split(" ")
+        for i in range(0, len(words), _STREAM_CHUNK_WORDS):
+            piece = " ".join(words[i : i + _STREAM_CHUNK_WORDS])
+            if i + _STREAM_CHUNK_WORDS < len(words):
+                piece += " "
+            on_chunk(piece)
+        return response
 
     def display_name(self) -> str:
         return "Mock (offline)"

@@ -14,6 +14,7 @@ project unconditionally by design, per the plan's confirmed decision.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -156,6 +157,7 @@ class TestGeneratorService:
         test_case: TestCase,
         *,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> TestGenerationResult:
         """Draft a Unity test script implementing one of the developer's own,
         already-created QA test cases — never writes any file. Same review/
@@ -175,7 +177,10 @@ class TestGeneratorService:
             test_case.expected_result,
             project_name=project.name,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
         excerpt_parts = [f"Title: {test_case.title}"]

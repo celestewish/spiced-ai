@@ -11,6 +11,7 @@ anywhere; Spiced never publishes it. Distinct from the Roadmap's changelog
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -130,6 +131,7 @@ class ChangelogService:
         commit_count: int = DEFAULT_COMMIT_COUNT,
         since_date: str | None = None,
         record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> ChangelogResult:
         """Read git history + resolved issues, ask the provider to draft
         patch notes, and save the draft. Raises ``NotAGitRepoError`` if the
@@ -153,7 +155,10 @@ class ChangelogService:
             resolved_issue_titles=resolved_titles,
             project_name=project.name,
         )
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 

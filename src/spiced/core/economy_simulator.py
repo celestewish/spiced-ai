@@ -19,6 +19,7 @@ show the same honest scope note the developer sees before they paste data.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from spiced.ai.base import AIProvider
@@ -283,7 +284,13 @@ class EconomySimulationService:
         return simulate_economy(economy)
 
     def analyze(
-        self, provider: AIProvider, project: Project, data: dict, *, record_usage=None
+        self,
+        provider: AIProvider,
+        project: Project,
+        data: dict,
+        *,
+        record_usage=None,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> EconomySimulationReview:
         """Simulate, then ask the provider for a plain-language summary, and save it."""
         if not provider.is_available():
@@ -301,7 +308,10 @@ class EconomySimulationService:
         from spiced.ai.prompt_templates import build_economy_simulation_prompt
 
         prompt = build_economy_simulation_prompt(findings, project_name=project.name)
-        response = provider.generate(prompt)
+        if on_chunk is not None:
+            response = provider.generate_stream(prompt, on_chunk)
+        else:
+            response = provider.generate(prompt)
         if record_usage is not None:
             record_usage(response.provider)
 
