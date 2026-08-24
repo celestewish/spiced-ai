@@ -6,6 +6,7 @@ import uuid
 
 from spiced.connectors.godot import GodotDetectionResult, detect_godot_project
 from spiced.connectors.unity import UnityDetectionResult, detect_unity_project
+from spiced.connectors.unreal import UnrealDetectionResult, detect_unreal_project
 from spiced.storage.projects import Project, ProjectRepository
 
 
@@ -30,25 +31,29 @@ class ProjectsService:
 
     def attach_engine_folder(
         self, project_id: int, folder: str
-    ) -> tuple[Project, UnityDetectionResult | GodotDetectionResult]:
+    ) -> tuple[Project, UnityDetectionResult | GodotDetectionResult | UnrealDetectionResult]:
         """Validate a project's folder against its own engine and store its
         path, status, and metadata.
 
         Dispatches on ``project.engine`` -- ``"Godot"`` gets
-        ``detect_godot_project``, everything else (``"Unity"``, ``"Other"``)
-        keeps this method's original Unity-shaped detection, preserving
-        exact prior behavior for every project that isn't Godot. The result
-        is stored whether or not the folder is valid, so the UI can show a
-        friendly warning while still remembering the developer's choice.
+        ``detect_godot_project``, ``"Unreal"`` gets ``detect_unreal_project``,
+        everything else (``"Unity"``, ``"Other"``) keeps this method's
+        original Unity-shaped detection, preserving exact prior behavior for
+        every project that isn't Godot or Unreal. The result is stored
+        whether or not the folder is valid, so the UI can show a friendly
+        warning while still remembering the developer's choice.
 
         Renamed from ``attach_unity_folder`` now that it dispatches across
         engines -- a name that still said "unity" once it could also detect
-        a Godot project would have been actively misleading to read.
+        a Godot or Unreal project would have been actively misleading to
+        read.
         """
         project = self._repo.get(project_id)
-        detection: UnityDetectionResult | GodotDetectionResult
+        detection: UnityDetectionResult | GodotDetectionResult | UnrealDetectionResult
         if project.engine == "Godot":
             detection = detect_godot_project(folder)
+        elif project.engine == "Unreal":
+            detection = detect_unreal_project(folder)
         else:
             detection = detect_unity_project(folder)
         updated = self._repo.set_unity_folder(

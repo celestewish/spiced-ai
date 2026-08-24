@@ -9,14 +9,17 @@ plan-confirmed scope decision). The version history this builds is what
 Scope-Creep Flagging (``core.scope_creep``) and Design Doc Sync
 (``core.design_doc_sync``) both build on.
 
-Engine dispatch (Market-Viability Roadmap, Phase 2): ``.cs``/Unity scripts
-are scanned via ``connectors.unity_docs_scan`` (regex-based, not a real C#
-parser, which the plan calls sufficient here); ``.gd``/Godot scripts via
-``connectors.godot_docs_scan`` (GDScript's own doc-comment convention needs
-its own regex, not a port of the C# one — see that module's docstring).
-Both return the same ``DevDocsScanResult``/``ScannedClass``/``ScannedMethod``
-shape, so everything below this point (the AI prompt, the snapshot storage)
-is genuinely engine-agnostic and needed no changes.
+Engine dispatch (Market-Viability Roadmap, Phases 2-3): ``.cs``/Unity
+scripts are scanned via ``connectors.unity_docs_scan`` (regex-based, not a
+real C# parser, which the plan calls sufficient here); ``.gd``/Godot
+scripts via ``connectors.godot_docs_scan`` (GDScript's own doc-comment
+convention needs its own regex, not a port of the C# one); ``.h``/``.hpp``
+Unreal headers via ``connectors.unreal_docs_scan`` (Unreal's Blueprint
+visual scripts are binary ``.uasset`` files and cannot be scanned this way
+at all — see that module's docstring for the honest statement of that
+limit). All three return the same ``DevDocsScanResult``/``ScannedClass``/
+``ScannedMethod`` shape, so everything below this point (the AI prompt, the
+snapshot storage) is genuinely engine-agnostic and needed no changes.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from dataclasses import dataclass
 
 from spiced.ai.base import AIProvider
 from spiced.ai.prompt_templates import build_dev_docs_prompt
-from spiced.connectors import godot_docs_scan, unity_docs_scan
+from spiced.connectors import godot_docs_scan, unity_docs_scan, unreal_docs_scan
 from spiced.connectors.unity_docs_scan import DevDocsScanResult
 from spiced.storage.dev_docs_snapshots import DevDocsSnapshot, DevDocsSnapshotRepository
 from spiced.storage.projects import Project
@@ -60,6 +63,8 @@ class DevDocsService:
             )
         if project.engine == "Godot":
             return godot_docs_scan.scan_scripts(project.path)
+        if project.engine == "Unreal":
+            return unreal_docs_scan.scan_headers(project.path)
         return unity_docs_scan.scan_scripts(project.path)
 
     def generate(

@@ -69,6 +69,26 @@ def test_scan_dispatches_to_godot_scan_for_godot_projects(tmp_path):
     assert result.classes[0].methods[0].name == "move"
 
 
+def test_scan_dispatches_to_unreal_scan_for_unreal_projects(tmp_path):
+    db = Database(":memory:")
+    repo = ProjectRepository(db)
+    project = repo.create("An Unreal Game", engine="Unreal")
+    project = repo.set_unity_folder(project.id, str(tmp_path), "valid")
+    header_dir = tmp_path / "Source" / "TPS"
+    header_dir.mkdir(parents=True)
+    (header_dir / "Battery.h").write_text(
+        "class TPS_API Battery\n{\npublic:\n    float GetPercent() const;\n};\n",
+        encoding="utf-8",
+    )
+    service = _service(db)
+
+    result = service.scan(project)
+
+    assert result.file_count == 1
+    assert result.classes[0].name == "Battery"
+    assert result.classes[0].methods[0].name == "GetPercent"
+
+
 def test_generate_raises_when_provider_unavailable(tmp_path):
     db = Database(":memory:")
     repo = ProjectRepository(db)

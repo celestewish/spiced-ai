@@ -82,6 +82,29 @@ def test_attach_engine_folder_godot_invalid_still_saves_path(tmp_path):
     assert not updated.is_valid_unity
 
 
+def test_attach_engine_folder_dispatches_to_unreal_detection(tmp_path):
+    (tmp_path / "TPS.uproject").write_text('{"FileVersion": 3}', encoding="utf-8")
+    service = _service()
+    project = service.create_project("An Unreal Game", engine="Unreal")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
+    assert detection.is_valid
+    assert detection.project_name == "TPS"
+    assert updated.path == str(tmp_path)
+    assert updated.is_valid_unity  # generic validity flag, engine-agnostic despite the name
+
+
+def test_attach_engine_folder_unreal_invalid_still_saves_path(tmp_path):
+    service = _service()
+    project = service.create_project("Not Unreal Either", engine="Unreal")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
+    assert not detection.is_valid
+    assert updated.path == str(tmp_path)
+
+
 def test_unity_test_run_settings_default_off():
     service = _service()
     project = service.create_project("Moonlit Depths")

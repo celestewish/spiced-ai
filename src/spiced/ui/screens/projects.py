@@ -1131,7 +1131,10 @@ class ProjectsScreen(QWidget):
             )
             return
         meta = project.engine_metadata
-        version_key = "godot_version" if project.engine == "Godot" else "unity_version"
+        version_key = {
+            "Godot": "godot_version",
+            "Unreal": "engine_association",
+        }.get(project.engine, "unity_version")
         version = meta.get(version_key)
         status = (
             f"valid {project.engine} project"
