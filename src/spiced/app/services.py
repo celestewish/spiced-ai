@@ -28,6 +28,7 @@ from spiced.automation.visual_regression_capture import VisualRegressionCaptureS
 from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
+from spiced.core import git_integration
 from spiced.core.accessibility import AccessibilityService
 from spiced.core.animation_state_machine_check import AnimationStateMachineCheckService
 from spiced.core.asset_review_queue import AssetReviewQueueService
@@ -682,6 +683,44 @@ class Services:
 
     def uninstall_precommit_hook(self, project: Project) -> bool:
         return uninstall_hook(project.path)
+
+    # --- Version Control (opt-in per project) -------------------------------
+    #
+    # Thin pass-throughs to core.git_integration, which re-checks
+    # ``project.git_integration_enabled`` itself on every call (the actual
+    # gate) — these exist only so screen code depends on Services, the same
+    # convention every other feature in this class follows.
+
+    def git_repo_status(self, project: Project):
+        return git_integration.repo_status(project)
+
+    def git_file_history(self, project: Project, relative_path: str, limit: int = 20):
+        return git_integration.file_history(project, relative_path, limit)
+
+    def git_diff_for_path(self, project: Project, relative_path: str, *, staged: bool = False):
+        return git_integration.diff_for_path(project, relative_path, staged=staged)
+
+    def git_stage_paths(self, project: Project, relative_paths: list[str]):
+        return git_integration.stage_paths(project, relative_paths)
+
+    def git_commit_staged(
+        self,
+        project: Project,
+        message: str,
+        *,
+        author_name: str | None = None,
+        author_email: str | None = None,
+    ):
+        return git_integration.commit_staged(
+            project, message, author_name=author_name, author_email=author_email
+        )
+
+    def git_discard_unstaged_changes(
+        self, project: Project, relative_paths: list[str], *, confirmed: bool = False
+    ):
+        return git_integration.discard_unstaged_changes(
+            project, relative_paths, confirmed=confirmed
+        )
 
     def active_project(self) -> Project | None:
         """Return the developer's currently selected project, if still present."""

@@ -716,6 +716,11 @@ PROJECT_MIGRATIONS = {
     # automation.gpu_shader_profiling.tier_budget_ms(DEFAULT_HARDWARE_TIER).
     "gpu_shader_budget_ms": "REAL",
     "gpu_shader_tier": "TEXT",
+    # Version Control connector (Market-Viability Roadmap, Phase 1): off by
+    # default, same opt-in shape as the other per-project toggles. Only when
+    # explicitly on does the Projects screen's "Version Control" section
+    # read/write this project's git repository.
+    "git_integration_enabled": "INTEGER NOT NULL DEFAULT 0",
 }
 
 

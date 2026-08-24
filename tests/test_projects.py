@@ -167,6 +167,21 @@ def test_precommit_review_settings_can_be_enabled_and_disabled():
     assert disabled.precommit_review_enabled is False
 
 
+def test_git_integration_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.git_integration_enabled is False
+
+
+def test_git_integration_settings_can_be_enabled_and_disabled():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    enabled = service.set_git_integration_settings(project.id, True)
+    assert enabled.git_integration_enabled is True
+    disabled = service.set_git_integration_settings(project.id, False)
+    assert disabled.git_integration_enabled is False
+
+
 def test_design_doc_sync_settings_default_off():
     service = _service()
     project = service.create_project("Moonlit Depths")

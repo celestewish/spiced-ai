@@ -93,6 +93,16 @@ class ProjectsService:
         """
         return self._repo.set_design_doc_sync_settings(project_id, enabled)
 
+    def set_git_integration_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of the Version Control connector.
+
+        Off by default, same opt-in shape as the other per-project toggles.
+        This alone never touches the filesystem — see
+        ``core.git_integration`` for the gated read/write operations, which
+        the Projects screen calls separately once this is on.
+        """
+        return self._repo.set_git_integration_settings(project_id, enabled)
+
     def set_loudness_normalize_target(
         self, project_id: int, target_lufs: float | None
     ) -> Project:

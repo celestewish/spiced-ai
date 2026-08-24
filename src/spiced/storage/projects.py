@@ -36,6 +36,7 @@ class Project:
     retarget_alias_prefixes: str | None = None
     gpu_shader_budget_ms: float | None = None
     gpu_shader_tier: str | None = None
+    git_integration_enabled: bool = False
 
     @property
     def engine_metadata(self) -> dict:
@@ -241,6 +242,19 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_git_integration_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of the Version Control connector.
+
+        Off by default, same shape as the other per-project opt-ins. Only
+        when ``enabled`` is True does the Projects screen's Version Control
+        section read/write this project's git repository.
+        """
+        self._db.execute(
+            "UPDATE projects SET git_integration_enabled = ? WHERE id = ?",
+            (1 if enabled else 0, project_id),
+        )
+        return self.get(project_id)
+
     def set_project_uuid(self, project_id: int, project_uuid: str) -> Project:
         """Mint (or reuse) the stable cross-machine id used once a project is team-linked."""
         self._db.execute(
@@ -328,4 +342,9 @@ class ProjectRepository:
                 row["gpu_shader_budget_ms"] if "gpu_shader_budget_ms" in keys else None
             ),
             gpu_shader_tier=(row["gpu_shader_tier"] if "gpu_shader_tier" in keys else None),
+            git_integration_enabled=(
+                bool(row["git_integration_enabled"])
+                if "git_integration_enabled" in keys
+                else False
+            ),
         )

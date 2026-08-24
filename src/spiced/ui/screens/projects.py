@@ -18,6 +18,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QFileDialog,
     QFrame,
@@ -25,6 +26,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QScrollArea,
     QVBoxLayout,
@@ -34,11 +37,18 @@ from PySide6.QtWidgets import (
 from spiced.app.services import Services
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.connectors import unity_build
+from spiced.connectors.git_connector import (
+    GitConnectorError,
+    NotAGitRepositoryError,
+    NothingStagedError,
+)
+from spiced.core.git_integration import GitIntegrationNotEnabledError
 from spiced.core.precommit_hook import ForeignHookExistsError, NotAGitRepoError
 from spiced.core.unity_test_runner import resolve_unity_editor
 from spiced.storage.projects import Project
 from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.widgets.accordion import AccordionSection
+from spiced.ui.widgets.diff_viewer import DiffViewerDialog
 from spiced.ui.widgets.pill_button import PillButton
 from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 
@@ -169,6 +179,7 @@ class ProjectsScreen(QWidget):
         self._build_unity_test_run(self._new_accordion(layout, "Run Unity Tests"))
         self._build_build_pipeline(self._new_accordion(layout, "Build Pipeline"))
         self._build_precommit_review(self._new_accordion(layout, "Pre-Commit Review"))
+        self._build_version_control(self._new_accordion(layout, "Version Control"))
         self._build_design_doc_sync(self._new_accordion(layout, "Design Doc Sync"))
 
         self._build_team_section(layout)
@@ -542,6 +553,254 @@ class ProjectsScreen(QWidget):
                 "directory, or \"Remove hook\" to take it back out."
             )
 
+    # --- Version Control (Git) opt-in ----------------------------------------
+
+    def _build_version_control(self, accordion: AccordionSection) -> None:
+        layout = accordion.body_layout
+        intro = QLabel(
+            "Off by default. When enabled, Spiced can read this project's git status, "
+            "history, and diffs, and stage/commit/discard changes on your say-so. Discarding "
+            "changes always asks you to confirm first — it permanently throws away uncommitted "
+            "work and can't be undone."
+        )
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self._git_pill = _status_pill()
+        accordion.header_extra.addWidget(self._git_pill)
+        self._git_toggle = QCheckBox("Allow Spiced to read/write this project's git repository")
+        self._git_toggle.toggled.connect(self._on_git_toggle)
+        accordion.header_extra.addWidget(self._git_toggle)
+
+        self._git_status_label = QLabel()
+        self._git_status_label.setObjectName("Muted")
+        self._git_status_label.setWordWrap(True)
+        layout.addWidget(self._git_status_label)
+
+        refresh_row = QHBoxLayout()
+        self._git_refresh_btn = PillButton("Refresh status", ghost=True)
+        self._git_refresh_btn.clicked.connect(self._on_git_refresh)
+        refresh_row.addWidget(self._git_refresh_btn)
+        refresh_row.addStretch(1)
+        layout.addLayout(refresh_row)
+
+        changed_label = QLabel("Changed (unstaged + untracked) — select one or more:")
+        layout.addWidget(changed_label)
+        self._git_changed_list = QListWidget()
+        self._git_changed_list.setFixedHeight(90)
+        self._git_changed_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        layout.addWidget(self._git_changed_list)
+
+        changed_actions = QHBoxLayout()
+        self._git_stage_btn = PillButton("Stage selected")
+        self._git_stage_btn.clicked.connect(self._on_git_stage_selected)
+        changed_actions.addWidget(self._git_stage_btn)
+        self._git_diff_changed_btn = PillButton("View diff", ghost=True)
+        self._git_diff_changed_btn.clicked.connect(self._on_git_diff_changed)
+        changed_actions.addWidget(self._git_diff_changed_btn)
+        self._git_discard_btn = PillButton("Discard selected…", ghost=True)
+        self._git_discard_btn.clicked.connect(self._on_git_discard_selected)
+        changed_actions.addWidget(self._git_discard_btn)
+        changed_actions.addStretch(1)
+        layout.addLayout(changed_actions)
+
+        staged_label = QLabel("Staged:")
+        layout.addWidget(staged_label)
+        self._git_staged_list = QListWidget()
+        self._git_staged_list.setFixedHeight(70)
+        self._git_staged_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        layout.addWidget(self._git_staged_list)
+
+        staged_actions = QHBoxLayout()
+        self._git_diff_staged_btn = PillButton("View staged diff", ghost=True)
+        self._git_diff_staged_btn.clicked.connect(self._on_git_diff_staged)
+        staged_actions.addWidget(self._git_diff_staged_btn)
+        staged_actions.addStretch(1)
+        layout.addLayout(staged_actions)
+
+        commit_row = QHBoxLayout()
+        self._git_commit_message = QLineEdit()
+        self._git_commit_message.setPlaceholderText("Commit message")
+        commit_row.addWidget(self._git_commit_message, 1)
+        self._git_commit_btn = PillButton("Commit staged")
+        self._git_commit_btn.clicked.connect(self._on_git_commit)
+        commit_row.addWidget(self._git_commit_btn)
+        layout.addLayout(commit_row)
+
+        self._git_result = QLabel()
+        self._git_result.setObjectName("Muted")
+        self._git_result.setWordWrap(True)
+        layout.addWidget(self._git_result)
+
+    def _on_git_toggle(self, checked: bool) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        self._services.projects.set_git_integration_settings(project.id, checked)
+        self._update_git_status()
+        self.projects_changed.emit()
+
+    def _on_git_refresh(self) -> None:
+        self._update_git_status()
+
+    def _selected_changed_paths(self) -> list[str]:
+        items = self._git_changed_list.selectedItems()
+        return [item.data(Qt.ItemDataRole.UserRole) for item in items]
+
+    def _selected_staged_paths(self) -> list[str]:
+        items = self._git_staged_list.selectedItems()
+        return [item.data(Qt.ItemDataRole.UserRole) for item in items]
+
+    def _on_git_stage_selected(self) -> None:
+        project = self._services.active_project()
+        paths = self._selected_changed_paths()
+        if project is None or not paths:
+            return
+        try:
+            self._services.git_stage_paths(project, paths)
+        except (GitIntegrationNotEnabledError, GitConnectorError) as exc:
+            QMessageBox.warning(self, "Couldn't stage", str(exc))
+            return
+        self._update_git_status()
+        self._git_result.setText(f"Staged {len(paths)} file(s).")
+
+    def _on_git_diff_changed(self) -> None:
+        self._show_git_diff(self._selected_changed_paths(), staged=False)
+
+    def _on_git_diff_staged(self) -> None:
+        self._show_git_diff(self._selected_staged_paths(), staged=True)
+
+    def _show_git_diff(self, paths: list[str], *, staged: bool) -> None:
+        project = self._services.active_project()
+        if project is None or len(paths) != 1:
+            QMessageBox.information(
+                self, "Select one file", "Select exactly one file to view its diff."
+            )
+            return
+        try:
+            text = self._services.git_diff_for_path(project, paths[0], staged=staged)
+        except (GitIntegrationNotEnabledError, GitConnectorError) as exc:
+            QMessageBox.warning(self, "Couldn't load diff", str(exc))
+            return
+        if not text.strip():
+            QMessageBox.information(self, "No differences", f"No diff to show for {paths[0]}.")
+            return
+        dialog = DiffViewerDialog(self, title=f"Diff — {paths[0]}")
+        dialog.viewer.set_text("", text, left_label="before", right_label="unified diff")
+        dialog.exec()
+
+    def _on_git_discard_selected(self) -> None:
+        project = self._services.active_project()
+        paths = self._selected_changed_paths()
+        if project is None or not paths:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Discard changes?",
+            "This permanently discards unstaged changes to:\n\n"
+            + "\n".join(paths)
+            + "\n\nThis cannot be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._services.git_discard_unstaged_changes(project, paths, confirmed=True)
+        except (GitIntegrationNotEnabledError, GitConnectorError) as exc:
+            QMessageBox.warning(self, "Couldn't discard", str(exc))
+            return
+        self._update_git_status()
+        self._git_result.setText(f"Discarded changes to {len(paths)} file(s).")
+
+    def _on_git_commit(self) -> None:
+        project = self._services.active_project()
+        if project is None:
+            return
+        message = self._git_commit_message.text().strip()
+        if not message:
+            QMessageBox.information(self, "Commit message needed", "Enter a commit message first.")
+            return
+        try:
+            result = self._services.git_commit_staged(project, message)
+        except NothingStagedError as exc:
+            QMessageBox.information(self, "Nothing staged", str(exc))
+            return
+        except (GitIntegrationNotEnabledError, GitConnectorError) as exc:
+            QMessageBox.warning(self, "Couldn't commit", str(exc))
+            return
+        self._git_commit_message.clear()
+        self._update_git_status()
+        self._git_result.setText(f"Committed {result.short_hash}: {result.message}")
+
+    def _update_git_status(self) -> None:
+        project = self._services.active_project()
+        has_project = project is not None
+        enabled = project.git_integration_enabled if project else False
+
+        self._git_toggle.blockSignals(True)
+        self._git_toggle.setChecked(bool(enabled))
+        self._git_toggle.blockSignals(False)
+        self._git_toggle.setEnabled(has_project)
+        _set_pill_state(self._git_pill, bool(enabled))
+
+        for widget in (
+            self._git_refresh_btn,
+            self._git_changed_list,
+            self._git_stage_btn,
+            self._git_diff_changed_btn,
+            self._git_discard_btn,
+            self._git_staged_list,
+            self._git_diff_staged_btn,
+            self._git_commit_message,
+            self._git_commit_btn,
+        ):
+            widget.setEnabled(has_project and enabled)
+
+        self._git_changed_list.clear()
+        self._git_staged_list.clear()
+        self._git_result.setText("")
+
+        if not has_project:
+            self._git_status_label.setText("")
+            return
+        if not project.path:
+            self._git_status_label.setText("Connect a Unity folder above first.")
+            return
+        if not enabled:
+            self._git_status_label.setText("Not enabled. Check the box above to turn it on.")
+            return
+
+        try:
+            status = self._services.git_repo_status(project)
+        except NotAGitRepositoryError as exc:
+            self._git_status_label.setText(str(exc))
+            return
+        except GitIntegrationNotEnabledError as exc:
+            self._git_status_label.setText(str(exc))
+            return
+
+        branch_note = "detached HEAD" if status.is_detached else f"branch {status.branch}"
+        ahead_behind = ""
+        if status.ahead or status.behind:
+            ahead_behind = f" · {status.ahead} ahead / {status.behind} behind upstream"
+        clean_note = "clean" if status.is_clean else f"{status.dirty_count} file(s) changed"
+        self._git_status_label.setText(f"On {branch_note}{ahead_behind} · {clean_note}")
+
+        for path in status.unstaged:
+            item = QListWidgetItem(f"modified  {path}")
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self._git_changed_list.addItem(item)
+        for path in status.untracked:
+            item = QListWidgetItem(f"untracked  {path}")
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self._git_changed_list.addItem(item)
+        for path in status.staged:
+            item = QListWidgetItem(path)
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self._git_staged_list.addItem(item)
+
     # --- Design Doc Sync opt-in ----------------------------------------------
 
     def _build_design_doc_sync(self, accordion: AccordionSection) -> None:
@@ -855,6 +1114,7 @@ class ProjectsScreen(QWidget):
         self._update_unity_run_status()
         self._update_build_pipeline_status()
         self._update_precommit_status()
+        self._update_git_status()
         self._update_design_doc_sync_status()
         project = self._services.active_project()
         if project is None:
