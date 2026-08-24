@@ -281,7 +281,7 @@ class FeedbackScreen(QWidget):
         self._preview_btn.clicked.connect(self._on_preview)
         row.addWidget(self._preview_btn)
         row.addStretch(1)
-        self._analyze_btn = PillButton("Analyze")
+        self._analyze_btn = PillButton("Analyze", water_fill=True)
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -514,7 +514,7 @@ class FeedbackScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._recruit_draft_btn = PillButton("Draft recruitment post")
+        self._recruit_draft_btn = PillButton("Draft recruitment post", water_fill=True)
         self._recruit_draft_btn.clicked.connect(self._on_recruit_draft)
         row.addWidget(self._recruit_draft_btn)
         layout.addLayout(row)
@@ -568,6 +568,7 @@ class FeedbackScreen(QWidget):
     def _on_recruit_draft(self) -> None:
         self._recruit_draft_btn.setEnabled(False)
         self._recruit_draft_btn.setText("Drafting…")
+        self._recruit_draft_btn.set_loading(True)
         self._recruit_result.clear()
 
         worker = _RecruitmentWorker(
@@ -591,12 +592,14 @@ class FeedbackScreen(QWidget):
     def _on_recruit_done(self, result: RecruitmentDraftResult) -> None:
         self._recruit_draft_btn.setEnabled(True)
         self._recruit_draft_btn.setText("Draft recruitment post")
+        self._recruit_draft_btn.set_loading(False)
         self._recruit_result.setPlainText(result.response_text)
         self.usage_changed.emit()
 
     def _on_recruit_failed(self, message: str) -> None:
         self._recruit_draft_btn.setEnabled(True)
         self._recruit_draft_btn.setText("Draft recruitment post")
+        self._recruit_draft_btn.set_loading(False)
         self._recruit_result.setPlainText(message)
 
     def _on_signup_add(self) -> None:
@@ -678,7 +681,7 @@ class FeedbackScreen(QWidget):
         self._pulse_source.addItems(["mock", "discord"])
         self._pulse_source.currentTextChanged.connect(self._on_pulse_source_changed)
         source_row.addWidget(self._pulse_source, 1)
-        self._pulse_run_btn = PillButton("Run pulse check-in")
+        self._pulse_run_btn = PillButton("Run pulse check-in", water_fill=True)
         self._pulse_run_btn.clicked.connect(self._on_pulse_run)
         source_row.addWidget(self._pulse_run_btn)
         pulse_layout.addLayout(source_row)
@@ -713,6 +716,7 @@ class FeedbackScreen(QWidget):
     def _on_pulse_run(self) -> None:
         self._pulse_run_btn.setEnabled(False)
         self._pulse_run_btn.setText("Reading…")
+        self._pulse_run_btn.set_loading(True)
         self._pulse_result.clear()
 
         worker = _PulseWorker(self._services)
@@ -735,6 +739,7 @@ class FeedbackScreen(QWidget):
         self._pulse_source_link.set_source(description, excerpt)
         self._pulse_run_btn.setEnabled(True)
         self._pulse_run_btn.setText("Run pulse check-in")
+        self._pulse_run_btn.set_loading(False)
         self.usage_changed.emit()
         self._refresh_pulse_history()
 
@@ -743,6 +748,7 @@ class FeedbackScreen(QWidget):
         self._pulse_source_link.set_source(None, None)
         self._pulse_run_btn.setEnabled(True)
         self._pulse_run_btn.setText("Run pulse check-in")
+        self._pulse_run_btn.set_loading(False)
 
     def _refresh_pulse_history(self) -> None:
         project = self._services.active_project()
@@ -913,3 +919,4 @@ class FeedbackScreen(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy and self._services.active_project() is not None)
         self._analyze_btn.setText("Analyzing…" if busy else "Analyze")
+        self._analyze_btn.set_loading(busy)

@@ -1,12 +1,13 @@
 """DebuggingScreen's "Regenerate docs" button: streaming AI response wiring.
 
-Dev Docs used to be the app's one demonstration of PillButton's
-indeterminate water-fill loading (Frutiger Aero pass 5/5) -- it's now the
-first (and, once the rest of the rollout lands, one of many) screen using
-real token streaming instead, since growing visible text is a stronger
-"still working" signal than an indeterminate animation for a plain
-request/response AI call. See ai.base.AIProvider.generate_stream and
-ui.thread_utils.AIStreamWorker.
+Dev Docs was the app's one demonstration of PillButton's indeterminate
+water-fill loading (Frutiger Aero pass 5/5), and is now also the first
+screen wired for real token streaming (see ai.base.AIProvider.generate_stream
+and ui.thread_utils.AIStreamWorker) -- by explicit product decision, both run
+together: the water-fill animation is the ambient "still working" cue, and
+the streamed text shows real, growing progress underneath it. This pairing
+was rolled out to all 20 streaming-converted AI buttons across the app, not
+just this one.
 
 No display is available in this environment, so this uses Qt's offscreen
 platform plugin, matching the pattern used by the other screen tests.
@@ -38,12 +39,12 @@ def _fake_result() -> SimpleNamespace:
     )
 
 
-def test_dev_docs_button_does_not_use_water_fill(tmp_path):
-    """Streaming text now serves the "still alive" role water-fill used to
-    -- Dev Docs shouldn't carry both a growing-text signal and an
-    indeterminate animation at once."""
+def test_dev_docs_button_uses_water_fill(tmp_path):
+    """Water-fill and streaming run together on this button by explicit
+    product decision -- the animation is the ambient loading cue, the
+    streamed text is the real progress underneath it."""
     screen = DebuggingScreen(_services(tmp_path))
-    assert screen._dev_docs_btn._water_fill_enabled is False
+    assert screen._dev_docs_btn._water_fill_enabled is True
 
 
 def test_generate_disables_the_button_and_clears_the_result_immediately(tmp_path):
@@ -62,6 +63,7 @@ def test_generate_disables_the_button_and_clears_the_result_immediately(tmp_path
         # this project has none) ever runs.
         assert screen._dev_docs_btn.isEnabled() is False
         assert screen._dev_docs_btn.text() == "Generating…"
+        assert screen._dev_docs_btn._loading is True
         assert screen._dev_docs_result.toPlainText() == ""
     finally:
         # Let the real (fast, offline, no-unity-folder) worker finish
@@ -90,12 +92,14 @@ def test_done_replaces_any_partial_streamed_text_and_restores_the_button(tmp_pat
     screen = DebuggingScreen(services)
     screen._dev_docs_btn.setEnabled(False)
     screen._dev_docs_btn.setText("Generating…")
+    screen._dev_docs_btn.set_loading(True)
     screen._on_dev_docs_chunk("Looks ti")  # partial text from mid-stream
 
     screen._on_dev_docs_done(_fake_result())
 
     assert screen._dev_docs_btn.isEnabled() is True
     assert screen._dev_docs_btn.text() == "Regenerate docs"
+    assert screen._dev_docs_btn._loading is False
     assert "Looks tidy." in screen._dev_docs_result.toPlainText()
     assert "Looks ti\n" not in screen._dev_docs_result.toPlainText()
     services.close()
@@ -134,11 +138,13 @@ def test_failed_restores_the_button_and_shows_the_message(tmp_path):
     screen = DebuggingScreen(services)
     screen._dev_docs_btn.setEnabled(False)
     screen._dev_docs_btn.setText("Generating…")
+    screen._dev_docs_btn.set_loading(True)
     screen._on_dev_docs_chunk("partial text")
 
     screen._on_dev_docs_failed("Connect a Unity folder for this project first.")
 
     assert screen._dev_docs_btn.isEnabled() is True
     assert screen._dev_docs_btn.text() == "Regenerate docs"
+    assert screen._dev_docs_btn._loading is False
     assert screen._dev_docs_result.toPlainText() == "Connect a Unity folder for this project first."
     services.close()

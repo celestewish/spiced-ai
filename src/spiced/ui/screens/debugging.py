@@ -599,7 +599,7 @@ class DebuggingScreen(QWidget):
         self._import_btn.clicked.connect(self._import_file)
         row.addWidget(self._import_btn)
         row.addStretch(1)
-        self._analyze_btn = PillButton("Analyze")
+        self._analyze_btn = PillButton("Analyze", water_fill=True)
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -658,7 +658,7 @@ class DebuggingScreen(QWidget):
         self._version_scan_btn.clicked.connect(self._on_version_scan)
         row.addWidget(self._version_scan_btn)
         row.addStretch(1)
-        self._version_analyze_btn = PillButton("Analyze with AI")
+        self._version_analyze_btn = PillButton("Analyze with AI", water_fill=True)
         self._version_analyze_btn.clicked.connect(self._on_version_analyze)
         row.addWidget(self._version_analyze_btn)
         layout.addLayout(row)
@@ -717,7 +717,7 @@ class DebuggingScreen(QWidget):
         self._health_import_btn.clicked.connect(self._on_health_import)
         row.addWidget(self._health_import_btn)
         row.addStretch(1)
-        self._health_analyze_btn = PillButton("Check code health")
+        self._health_analyze_btn = PillButton("Check code health", water_fill=True)
         self._health_analyze_btn.clicked.connect(self._on_health_analyze)
         row.addWidget(self._health_analyze_btn)
         body.addLayout(row)
@@ -866,7 +866,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(self._changelog_status)
 
         row = QHBoxLayout()
-        self._changelog_draft_btn = PillButton("Draft changelog")
+        self._changelog_draft_btn = PillButton("Draft changelog", water_fill=True)
         self._changelog_draft_btn.clicked.connect(self._on_draft_changelog)
         row.addWidget(self._changelog_draft_btn)
         row.addStretch(1)
@@ -917,7 +917,7 @@ class DebuggingScreen(QWidget):
         self._asset_scan_btn.clicked.connect(self._on_asset_scan)
         row.addWidget(self._asset_scan_btn)
         row.addStretch(1)
-        self._asset_scan_ai_btn = PillButton("Get AI summary", ghost=True)
+        self._asset_scan_ai_btn = PillButton("Get AI summary", ghost=True, water_fill=True)
         self._asset_scan_ai_btn.clicked.connect(self._on_asset_scan_ai)
         row.addWidget(self._asset_scan_ai_btn)
         layout.addLayout(row)
@@ -958,7 +958,7 @@ class DebuggingScreen(QWidget):
         self._dependency_check_btn.clicked.connect(self._on_dependency_check)
         row.addWidget(self._dependency_check_btn)
         row.addStretch(1)
-        self._dependency_check_ai_btn = PillButton("Get AI summary", ghost=True)
+        self._dependency_check_ai_btn = PillButton("Get AI summary", ghost=True, water_fill=True)
         self._dependency_check_ai_btn.clicked.connect(self._on_dependency_check_ai)
         row.addWidget(self._dependency_check_ai_btn)
         layout.addLayout(row)
@@ -997,7 +997,7 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         row = QHBoxLayout()
-        self._dev_docs_btn = PillButton("Regenerate docs")
+        self._dev_docs_btn = PillButton("Regenerate docs", water_fill=True)
         self._dev_docs_btn.clicked.connect(self._on_dev_docs_generate)
         row.addWidget(self._dev_docs_btn)
         row.addStretch(1)
@@ -1037,6 +1037,7 @@ class DebuggingScreen(QWidget):
             return
         self._dev_docs_btn.setEnabled(False)
         self._dev_docs_btn.setText("Generating…")
+        self._dev_docs_btn.set_loading(True)
         self._dev_docs_result.clear()
 
         worker = _DevDocsWorker(self._services, project)
@@ -1055,6 +1056,7 @@ class DebuggingScreen(QWidget):
     def _on_dev_docs_done(self, result: DevDocsResult) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
+        self._dev_docs_btn.set_loading(False)
         stats = (
             f"{result.scan.file_count} script(s), {result.scan.class_count} class(es), "
             f"{result.scan.method_count} public method(s) scanned.\n\n"
@@ -1068,6 +1070,7 @@ class DebuggingScreen(QWidget):
     def _on_dev_docs_failed(self, message: str) -> None:
         self._dev_docs_btn.setEnabled(True)
         self._dev_docs_btn.setText("Regenerate docs")
+        self._dev_docs_btn.set_loading(False)
         self._dev_docs_result.setPlainText(message)
 
     def _refresh_dev_docs_history(self) -> None:
@@ -1155,7 +1158,7 @@ class DebuggingScreen(QWidget):
         self._design_doc_save_btn.clicked.connect(self._on_design_doc_save)
         row.addWidget(self._design_doc_save_btn)
         row.addStretch(1)
-        self._design_drift_btn = PillButton("Check design drift")
+        self._design_drift_btn = PillButton("Check design drift", water_fill=True)
         self._design_drift_btn.clicked.connect(self._on_design_drift_check)
         row.addWidget(self._design_drift_btn)
         layout.addLayout(row)
@@ -1219,6 +1222,7 @@ class DebuggingScreen(QWidget):
             return
         self._design_drift_btn.setEnabled(False)
         self._design_drift_btn.setText("Checking…")
+        self._design_drift_btn.set_loading(True)
         self._design_drift_result.clear()
 
         worker = _DesignDocSyncWorker(self._services, project)
@@ -1248,6 +1252,7 @@ class DebuggingScreen(QWidget):
     def _on_design_drift_done(self, result: DesignDocSyncResult) -> None:
         self._design_drift_btn.setEnabled(True)
         self._design_drift_btn.setText("Check design drift")
+        self._design_drift_btn.set_loading(False)
         text = result.response_text
         project = self._services.active_project()
         if project is not None:
@@ -1261,6 +1266,7 @@ class DebuggingScreen(QWidget):
     def _on_design_drift_failed(self, message: str) -> None:
         self._design_drift_btn.setEnabled(True)
         self._design_drift_btn.setText("Check design drift")
+        self._design_drift_btn.set_loading(False)
         self._design_drift_result.setPlainText(message)
 
     def _refresh_design_drift_history(self) -> None:
@@ -1397,7 +1403,7 @@ class DebuggingScreen(QWidget):
         self._translation_import_btn.clicked.connect(self._on_translation_import)
         row2.addWidget(self._translation_import_btn)
         row2.addStretch(1)
-        self._translation_run_btn = PillButton("Draft translation")
+        self._translation_run_btn = PillButton("Draft translation", water_fill=True)
         self._translation_run_btn.clicked.connect(self._on_translation_run)
         row2.addWidget(self._translation_run_btn)
         layout.addLayout(row2)
@@ -1526,6 +1532,7 @@ class DebuggingScreen(QWidget):
         filename = self._translation_pending_filename
         self._translation_run_btn.setEnabled(False)
         self._translation_run_btn.setText("Translating…")
+        self._translation_run_btn.set_loading(True)
         self._translation_result.clear()
 
         worker = _DraftTranslationWorker(self._services, text, target_language, filename)
@@ -1544,6 +1551,7 @@ class DebuggingScreen(QWidget):
     def _on_translation_done(self, result: DraftTranslationResult) -> None:
         self._translation_run_btn.setEnabled(True)
         self._translation_run_btn.setText("Draft translation")
+        self._translation_run_btn.set_loading(False)
         self._translation_result.setPlainText(result.response_text)
         self._translation_pending_filename = None
         self.usage_changed.emit()
@@ -1552,6 +1560,7 @@ class DebuggingScreen(QWidget):
     def _on_translation_failed(self, message: str) -> None:
         self._translation_run_btn.setEnabled(True)
         self._translation_run_btn.setText("Draft translation")
+        self._translation_run_btn.set_loading(False)
         self._translation_result.setPlainText(message)
 
     def _refresh_translation_history(self) -> None:
@@ -1723,6 +1732,7 @@ class DebuggingScreen(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy)
         self._analyze_btn.setText("Analyzing…" if busy else "Analyze")
+        self._analyze_btn.set_loading(busy)
 
     # --- Version-check handlers -----------------------------------------------
 
@@ -1775,6 +1785,7 @@ class DebuggingScreen(QWidget):
         filename = self._version_pending_filename
         self._version_analyze_btn.setEnabled(False)
         self._version_analyze_btn.setText("Analyzing…")
+        self._version_analyze_btn.set_loading(True)
         self._version_result.clear()
 
         worker = _VersionCheckWorker(self._services, code_text, filename)
@@ -1801,6 +1812,7 @@ class DebuggingScreen(QWidget):
         self._version_pending_filename = None
         self._version_analyze_btn.setEnabled(True)
         self._version_analyze_btn.setText("Analyze with AI")
+        self._version_analyze_btn.set_loading(False)
         self.usage_changed.emit()
         self._refresh_version_history()
 
@@ -1809,6 +1821,7 @@ class DebuggingScreen(QWidget):
         self._version_source_link.set_source(None, None)
         self._version_analyze_btn.setEnabled(True)
         self._version_analyze_btn.setText("Analyze with AI")
+        self._version_analyze_btn.set_loading(False)
 
     # --- Code health handlers --------------------------------------------------
 
@@ -1838,6 +1851,7 @@ class DebuggingScreen(QWidget):
         filename = self._health_pending_filename
         self._health_analyze_btn.setEnabled(False)
         self._health_analyze_btn.setText("Checking…")
+        self._health_analyze_btn.set_loading(True)
         self._health_result.clear()
 
         worker = _CodeHealthWorker(self._services, code_text, filename)
@@ -1868,6 +1882,7 @@ class DebuggingScreen(QWidget):
         self._health_pending_filename = None
         self._health_analyze_btn.setEnabled(True)
         self._health_analyze_btn.setText("Check code health")
+        self._health_analyze_btn.set_loading(False)
         self.usage_changed.emit()
         self._refresh_health_history()
 
@@ -1876,6 +1891,7 @@ class DebuggingScreen(QWidget):
         self._health_source_link.set_source(None, None)
         self._health_analyze_btn.setEnabled(True)
         self._health_analyze_btn.setText("Check code health")
+        self._health_analyze_btn.set_loading(False)
 
     # --- Changelog Generation handlers -----------------------------------------
 
@@ -1909,6 +1925,7 @@ class DebuggingScreen(QWidget):
             since_date = stable.created_at[:10]  # "YYYY-MM-DD" prefix
 
         self._changelog_draft_btn.setEnabled(False)
+        self._changelog_draft_btn.set_loading(True)
         self._current_changelog_draft_id = None
         self._changelog_text.clear()
 
@@ -1927,6 +1944,7 @@ class DebuggingScreen(QWidget):
 
     def _on_changelog_done(self, result: ChangelogResult) -> None:
         self._changelog_draft_btn.setEnabled(True)
+        self._changelog_draft_btn.set_loading(False)
         self._current_changelog_draft_id = result.draft.id
         self._changelog_text.setPlainText(result.response_text)
         self.usage_changed.emit()
@@ -1934,6 +1952,7 @@ class DebuggingScreen(QWidget):
 
     def _on_changelog_failed(self, message: str) -> None:
         self._changelog_draft_btn.setEnabled(True)
+        self._changelog_draft_btn.set_loading(False)
         self._changelog_text.setPlainText(message)
 
     def _on_save_changelog_edit(self) -> None:
@@ -2063,6 +2082,7 @@ class DebuggingScreen(QWidget):
             return
         self._asset_scan_ai_btn.setEnabled(False)
         self._asset_scan_ai_btn.setText("Thinking…")
+        self._asset_scan_ai_btn.set_loading(True)
         self._asset_scan_result.clear()
 
         worker = _AssetScanAIWorker(self._services, project)
@@ -2081,6 +2101,7 @@ class DebuggingScreen(QWidget):
     def _on_asset_scan_ai_done(self, review: AssetScanReview) -> None:
         self._asset_scan_ai_btn.setEnabled(True)
         self._asset_scan_ai_btn.setText("Get AI summary")
+        self._asset_scan_ai_btn.set_loading(False)
         text = _format_asset_findings(review.findings)
         if review.response_text:
             text += f"\n\n--- AI summary ---\n{review.response_text}"
@@ -2091,6 +2112,7 @@ class DebuggingScreen(QWidget):
     def _on_asset_scan_ai_failed(self, message: str) -> None:
         self._asset_scan_ai_btn.setEnabled(True)
         self._asset_scan_ai_btn.setText("Get AI summary")
+        self._asset_scan_ai_btn.set_loading(False)
         self._asset_scan_result.setPlainText(message)
 
     def _refresh_asset_scan_history(self) -> None:
@@ -2156,6 +2178,7 @@ class DebuggingScreen(QWidget):
             return
         self._dependency_check_ai_btn.setEnabled(False)
         self._dependency_check_ai_btn.setText("Thinking…")
+        self._dependency_check_ai_btn.set_loading(True)
         self._dependency_check_result.clear()
 
         worker = _DependencyCheckAIWorker(self._services, project)
@@ -2174,6 +2197,7 @@ class DebuggingScreen(QWidget):
     def _on_dependency_check_ai_done(self, review: DependencyCheckReview) -> None:
         self._dependency_check_ai_btn.setEnabled(True)
         self._dependency_check_ai_btn.setText("Get AI summary")
+        self._dependency_check_ai_btn.set_loading(False)
         text = _format_dependency_findings(review.findings)
         if review.response_text:
             text += f"\n\n--- AI summary ---\n{review.response_text}"
@@ -2184,6 +2208,7 @@ class DebuggingScreen(QWidget):
     def _on_dependency_check_ai_failed(self, message: str) -> None:
         self._dependency_check_ai_btn.setEnabled(True)
         self._dependency_check_ai_btn.setText("Get AI summary")
+        self._dependency_check_ai_btn.set_loading(False)
         self._dependency_check_result.setPlainText(message)
 
     def _refresh_dependency_check_history(self) -> None:

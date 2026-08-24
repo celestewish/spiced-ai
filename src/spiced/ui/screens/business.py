@@ -387,7 +387,7 @@ class BusinessScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._landscape_scan_btn = PillButton("Scan landscape")
+        self._landscape_scan_btn = PillButton("Scan landscape", water_fill=True)
         self._landscape_scan_btn.clicked.connect(self._on_landscape_scan)
         row.addWidget(self._landscape_scan_btn)
         layout.addLayout(row)
@@ -418,6 +418,7 @@ class BusinessScreen(QWidget):
             return
         self._landscape_scan_btn.setEnabled(False)
         self._landscape_scan_btn.setText("Scanning…")
+        self._landscape_scan_btn.set_loading(True)
         self._landscape_result.clear()
 
         worker = _LandscapeWorker(self._services, description)
@@ -436,6 +437,7 @@ class BusinessScreen(QWidget):
     def _on_landscape_done(self, result: CompetitiveLandscapeResult) -> None:
         self._landscape_scan_btn.setEnabled(True)
         self._landscape_scan_btn.setText("Scan landscape")
+        self._landscape_scan_btn.set_loading(False)
         self._landscape_result.setPlainText(result.response_text)
         self.usage_changed.emit()
         self._refresh_landscape_history()
@@ -443,6 +445,7 @@ class BusinessScreen(QWidget):
     def _on_landscape_failed(self, message: str) -> None:
         self._landscape_scan_btn.setEnabled(True)
         self._landscape_scan_btn.setText("Scan landscape")
+        self._landscape_scan_btn.set_loading(False)
         self._landscape_result.setPlainText(message)
 
     def _refresh_landscape_history(self) -> None:

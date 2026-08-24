@@ -196,7 +196,7 @@ class MarketingScreen(QWidget):
         self._sp_import_btn.clicked.connect(self._on_sp_import)
         row.addWidget(self._sp_import_btn)
         row.addStretch(1)
-        self._sp_review_btn = PillButton("Review store page")
+        self._sp_review_btn = PillButton("Review store page", water_fill=True)
         self._sp_review_btn.clicked.connect(self._on_sp_review)
         row.addWidget(self._sp_review_btn)
         layout.addLayout(row)
@@ -246,6 +246,7 @@ class MarketingScreen(QWidget):
             return
         self._sp_review_btn.setEnabled(False)
         self._sp_review_btn.setText("Reviewing…")
+        self._sp_review_btn.set_loading(True)
         self._sp_result.clear()
 
         worker = _StorePageWorker(
@@ -266,6 +267,7 @@ class MarketingScreen(QWidget):
     def _on_sp_done(self, result: StorePageReviewResult) -> None:
         self._sp_review_btn.setEnabled(True)
         self._sp_review_btn.setText("Review store page")
+        self._sp_review_btn.set_loading(False)
         self._sp_result.setPlainText(result.response_text)
         excerpt = f"Title: {result.draft.title}\n\n{result.draft.description}"
         self._sp_source_link.set_source(
@@ -277,6 +279,7 @@ class MarketingScreen(QWidget):
     def _on_sp_failed(self, message: str) -> None:
         self._sp_review_btn.setEnabled(True)
         self._sp_review_btn.setText("Review store page")
+        self._sp_review_btn.set_loading(False)
         self._sp_result.setPlainText(message)
         self._sp_source_link.set_source(None, None)
 
