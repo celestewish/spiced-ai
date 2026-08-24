@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from spiced.connectors.godot import GodotDetectionResult, detect_godot_project
 from spiced.connectors.unity import UnityDetectionResult, detect_unity_project
 from spiced.storage.projects import Project, ProjectRepository
 
@@ -27,22 +28,36 @@ class ProjectsService:
     def get_project(self, project_id: int) -> Project:
         return self._repo.get(project_id)
 
-    def attach_unity_folder(
+    def attach_engine_folder(
         self, project_id: int, folder: str
-    ) -> tuple[Project, UnityDetectionResult]:
-        """Validate a Unity folder and store its path, status, and metadata.
+    ) -> tuple[Project, UnityDetectionResult | GodotDetectionResult]:
+        """Validate a project's folder against its own engine and store its
+        path, status, and metadata.
 
-        The result is stored whether or not the folder is valid, so the UI can
-        show a friendly warning while still remembering the developer's choice.
+        Dispatches on ``project.engine`` -- ``"Godot"`` gets
+        ``detect_godot_project``, everything else (``"Unity"``, ``"Other"``)
+        keeps this method's original Unity-shaped detection, preserving
+        exact prior behavior for every project that isn't Godot. The result
+        is stored whether or not the folder is valid, so the UI can show a
+        friendly warning while still remembering the developer's choice.
+
+        Renamed from ``attach_unity_folder`` now that it dispatches across
+        engines -- a name that still said "unity" once it could also detect
+        a Godot project would have been actively misleading to read.
         """
-        detection = detect_unity_project(folder)
-        project = self._repo.set_unity_folder(
+        project = self._repo.get(project_id)
+        detection: UnityDetectionResult | GodotDetectionResult
+        if project.engine == "Godot":
+            detection = detect_godot_project(folder)
+        else:
+            detection = detect_unity_project(folder)
+        updated = self._repo.set_unity_folder(
             project_id,
             path=str(folder),
             validation_status=detection.validation_status,
             metadata=detection.metadata() or None,
         )
-        return project, detection
+        return updated, detection
 
     def set_unity_test_run_settings(
         self, project_id: int, enabled: bool, editor_path_override: str | None = None

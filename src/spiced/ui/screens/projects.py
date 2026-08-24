@@ -1,4 +1,4 @@
-"""Projects screen: create projects, pick one as active, connect a Unity folder.
+"""Projects screen: create projects, pick one as active, connect its project folder.
 
 Master-detail layout (Frutiger Aqua redesign): a left-hand project picker
 (create form + a scrollable list of glass-card rows, active one aqua-
@@ -56,7 +56,7 @@ _HHMM_PLACEHOLDER = "HH:MM, 24h (e.g. 02:00)"
 
 
 class ProjectsScreen(QWidget):
-    """Create projects, select the active one, and connect a Unity folder."""
+    """Create projects, select the active one, and connect its project folder."""
 
     projects_changed = Signal()
 
@@ -76,7 +76,7 @@ class ProjectsScreen(QWidget):
 
         intro = QLabel(
             "Add a game project to keep Spiced's help organized. Pick one as active, then "
-            "connect its Unity folder. Nothing here leaves your machine."
+            "connect its project folder. Nothing here leaves your machine."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
@@ -169,7 +169,7 @@ class ProjectsScreen(QWidget):
         header_layout.addWidget(self._detail)
         controls = QHBoxLayout()
         controls.setSpacing(8)
-        self._folder_btn = PillButton("Choose Unity Folder…")
+        self._folder_btn = PillButton("Choose Project Folder…")
         self._folder_btn.clicked.connect(self._choose_folder)
         controls.addWidget(self._folder_btn)
         controls.addStretch(1)
@@ -544,7 +544,7 @@ class ProjectsScreen(QWidget):
         if not has_project:
             self._precommit_status.setText("")
         elif not project.path:
-            self._precommit_status.setText("Connect a Unity folder above first.")
+            self._precommit_status.setText("Connect a project folder above first.")
         elif not enabled:
             self._precommit_status.setText("Not enabled. Check the box above, then Install hook.")
         else:
@@ -766,7 +766,7 @@ class ProjectsScreen(QWidget):
             self._git_status_label.setText("")
             return
         if not project.path:
-            self._git_status_label.setText("Connect a Unity folder above first.")
+            self._git_status_label.setText("Connect a project folder above first.")
             return
         if not enabled:
             self._git_status_label.setText("Not enabled. Check the box above to turn it on.")
@@ -1065,15 +1065,16 @@ class ProjectsScreen(QWidget):
                 self, "Pick a project first", "Select a project above, then choose its folder."
             )
             return
-        folder = QFileDialog.getExistingDirectory(self, "Choose your Unity project folder")
+        engine = project.engine
+        folder = QFileDialog.getExistingDirectory(self, f"Choose your {engine} project folder")
         if not folder:
             return
-        _updated, detection = self._projects.attach_unity_folder(project.id, folder)
+        _updated, detection = self._projects.attach_engine_folder(project.id, folder)
         if detection.is_valid:
             QMessageBox.information(
                 self,
-                "Unity project connected",
-                f"That looks like a valid Unity project ({detection.project_name}).",
+                f"{engine} project connected",
+                f"That looks like a valid {engine} project ({detection.project_name}).",
             )
         else:
             warnings = (
@@ -1081,9 +1082,9 @@ class ProjectsScreen(QWidget):
             )
             QMessageBox.warning(
                 self,
-                "That doesn't look like a Unity project",
-                "I saved the path, but it's missing some things a Unity project usually has:\n\n"
-                f"{warnings}\n\nYou can pick a different folder any time.",
+                f"That doesn't look like a {engine} project",
+                f"I saved the path, but it's missing some things a {engine} project usually "
+                f"has:\n\n{warnings}\n\nYou can pick a different folder any time.",
             )
         self.refresh()
         self.projects_changed.emit()
@@ -1118,20 +1119,26 @@ class ProjectsScreen(QWidget):
         self._update_design_doc_sync_status()
         project = self._services.active_project()
         if project is None:
-            self._detail.setText("Select or create a project to connect a Unity folder.")
+            self._detail.setText("Select or create a project to connect its folder.")
             self._folder_btn.setEnabled(False)
             return
         self._folder_btn.setEnabled(True)
+        self._folder_btn.setText(f"Choose {project.engine} Folder…")
         if not project.path:
             self._detail.setText(
-                f"Active: {project.name}. No Unity folder connected yet — "
-                "click “Choose Unity Folder”."
+                f"Active: {project.name}. No {project.engine} folder connected yet — "
+                f"click “Choose {project.engine} Folder”."
             )
             return
         meta = project.engine_metadata
-        version = meta.get("unity_version")
-        status = "valid Unity project" if project.is_valid_unity else "not recognized as Unity"
-        version_note = f" · Unity {version}" if version else ""
+        version_key = "godot_version" if project.engine == "Godot" else "unity_version"
+        version = meta.get(version_key)
+        status = (
+            f"valid {project.engine} project"
+            if project.is_valid_unity
+            else f"not recognized as {project.engine}"
+        )
+        version_note = f" · {project.engine} {version}" if version else ""
         self._detail.setText(f"Active: {project.name}\n{project.path}\n({status}{version_note})")
 
 
@@ -1159,7 +1166,7 @@ class _ProjectCard(QFrame):
         name = QLabel(project.name)
         name.setObjectName("CardTitle")
         layout.addWidget(name)
-        marker = "✓ Unity" if project.is_valid_unity else project.engine
+        marker = f"✓ {project.engine}" if project.is_valid_unity else project.engine
         meta = QLabel(f"{marker}  ·  {project.created_at}")
         meta.setObjectName("Muted")
         layout.addWidget(meta)

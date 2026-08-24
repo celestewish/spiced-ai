@@ -57,7 +57,7 @@ from spiced.core.design_doc_sync import (
 )
 from spiced.core.design_doc_sync import ProviderNotReadyError as DesignDocSyncNotReadyError
 from spiced.core.dev_docs import DevDocsResult
-from spiced.core.dev_docs import NoUnityFolderError as DevDocsNoUnityFolderError
+from spiced.core.dev_docs import NoProjectFolderError as DevDocsNoUnityFolderError
 from spiced.core.dev_docs import ProviderNotReadyError as DevDocsNotReadyError
 from spiced.core.draft_translation import DRAFT_NOT_SHIP_READY_NOTICE, DraftTranslationResult
 from spiced.core.draft_translation import NoDialogueError as DraftTranslationNoDialogueError
