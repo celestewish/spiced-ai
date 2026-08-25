@@ -652,6 +652,23 @@ CREATE TABLE IF NOT EXISTS palette_reference_colors (
     hex_color     TEXT NOT NULL,
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap, Phase 4).
+-- The local-only half of the "queue_changelog_note" action: never sent
+-- anywhere, purely scratch space Changelog Generation reads from and
+-- clears the next time a draft is generated (see core.changelog_draft's
+-- module docstring on why this feature is entirely local, same as its
+-- git-log source). consumed_at is NULL until a draft incorporates the
+-- note; nothing ever deletes a row outright, so a project's full
+-- queue-and-consume history stays inspectable.
+CREATE TABLE IF NOT EXISTS pending_changelog_notes (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id         INTEGER NOT NULL,
+    note_text          TEXT NOT NULL,
+    source_event_kind  TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    consumed_at        TEXT
+);
 """
 
 # Columns added after Phase 0. Applied idempotently so existing databases and

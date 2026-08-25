@@ -41,6 +41,30 @@ DEFAULT_EVENT_KIND_DISCIPLINES: dict[str, list[str]] = {
     # routes to "programmer" (see TeamService._notify_comment) -- an empty
     # default here is intentional.
     "comment_posted": [],
+    # Market-Viability Roadmap, Phase 4: each of the 13 automation.Finding-
+    # shaped features' own feature_id IS its rules-engine event kind (see
+    # core.rules_engine's module docstring) -- these give the "notify"
+    # action a sensible default discipline to route to for every one of
+    # them, before any team configures a custom TriggerRule. Grounded in
+    # each feature_id's own namespace prefix (audio./art./vfx./animation.)
+    # mapped onto this app's existing discipline vocabulary (SUGGESTED_
+    # DISCIPLINES in ui.screens.team), not invented per-feature.
+    "audio.loudness_normalize": ["audio"],
+    "audio.localization_content_verification": ["audio"],
+    "audio.mix_technical_qa": ["audio"],
+    "art.palette_drift": ["artist"],
+    "art.uv_unwrapping_lod_generation": ["artist"],
+    "art.asset_technical_qa": ["artist"],
+    "art.retopology_assist": ["artist"],
+    # Shader-related vfx.* kinds route to both, same precedent as
+    # shader_performance_flag above (a shader issue is often as much a
+    # programmer's concern as an artist's).
+    "vfx.shader_variant_analysis": ["programmer", "artist"],
+    "vfx.gpu_shader_profiling": ["programmer", "artist"],
+    "vfx.visual_regression": ["artist"],
+    "animation.state_machine_retarget_validation": ["animation"],
+    "animation.live_playtest_bug_detection": ["animation"],
+    "animation.mocap_cleanup_assist": ["animation"],
 }
 
 KNOWN_EVENT_KINDS: list[str] = sorted(DEFAULT_EVENT_KIND_DISCIPLINES)

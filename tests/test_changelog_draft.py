@@ -21,6 +21,7 @@ from spiced.core.regression import RegressionService
 from spiced.storage.changelog_drafts import ChangelogDraftRepository
 from spiced.storage.database import Database
 from spiced.storage.known_issues import SOURCE_TEST, KnownIssueRepository
+from spiced.storage.pending_changelog_notes import PendingChangelogNoteRepository
 from spiced.storage.projects import ProjectRepository
 
 CANNED = "Here's a draft changelog from your recent history.\n\nHighlights:\n- Added dash."
@@ -52,6 +53,21 @@ def _service():
     regression = RegressionService(KnownIssueRepository(db))
     service = ChangelogService(ChangelogDraftRepository(db), regression)
     return service, project, regression, projects_repo
+
+
+def _service_with_notes():
+    """Same as _service(), plus a real PendingChangelogNoteRepository --
+    Market-Viability Roadmap, Phase 4's queue_changelog_note action.
+    _service() above deliberately omits it, proving queue_note/
+    pending_notes stay safe no-ops for a ChangelogService built the older
+    way (backward compatible for any existing caller)."""
+    db = Database(":memory:")
+    projects_repo = ProjectRepository(db)
+    project = projects_repo.create("Moonlit Depths", engine="Unity")
+    regression = RegressionService(KnownIssueRepository(db))
+    notes = PendingChangelogNoteRepository(db)
+    service = ChangelogService(ChangelogDraftRepository(db), regression, notes)
+    return service, project, notes, projects_repo
 
 
 def _with_path(projects_repo: ProjectRepository, project, path):
@@ -189,6 +205,71 @@ def test_save_edit_updates_display_text():
 
 
 # --- prompt content -------------------------------------------------------------
+
+
+# --- pending notes (Market-Viability Roadmap, Phase 4's
+# queue_changelog_note rules-engine action) ---------------------------------
+
+
+def test_queue_note_and_pending_notes_without_repository_is_a_safe_no_op():
+    service, _project, _regression, _repo = _service()
+    assert service.queue_note(1, "some note") is None
+    assert service.pending_notes(1) == []
+
+
+def test_queue_note_and_pending_notes_round_trip():
+    service, project, notes, _repo = _service_with_notes()
+    service.queue_note(project.id, "flagged by Palette Drift Detection", "art.palette_drift")
+
+    pending = service.pending_notes(project.id)
+
+    assert [n.note_text for n in pending] == ["flagged by Palette Drift Detection"]
+    assert notes.list_pending(project.id) == pending
+
+
+def test_draft_incorporates_and_consumes_pending_notes(monkeypatch, tmp_path):
+    service, project, notes, projects_repo = _service_with_notes()
+    project = _with_path(projects_repo, project, tmp_path)
+    _mock_git(monkeypatch, "abc123 2026-01-01 Fix jump bug\n")
+    note = service.queue_note(
+        project.id, "flagged by Palette Drift Detection", "art.palette_drift"
+    )
+
+    captured_prompts = []
+    real_build = build_changelog_prompt
+
+    def _spy_build(**kwargs):
+        prompt = real_build(**kwargs)
+        captured_prompts.append(prompt)
+        return prompt
+
+    monkeypatch.setattr("spiced.core.changelog_draft.build_changelog_prompt", _spy_build)
+
+    service.draft(FakeProvider(), project)
+
+    assert "flagged by Palette Drift Detection" in captured_prompts[0]
+    # The note is consumed once a draft incorporates it -- not still pending.
+    assert service.pending_notes(project.id) == []
+    assert notes.get(note.id).consumed_at is not None
+
+
+def test_draft_with_no_pending_notes_omits_the_notes_section(monkeypatch, tmp_path):
+    service, project, _notes, projects_repo = _service_with_notes()
+    project = _with_path(projects_repo, project, tmp_path)
+    _mock_git(monkeypatch, "abc123 2026-01-01 Fix jump bug\n")
+
+    captured_prompts = []
+    real_build = build_changelog_prompt
+
+    def _spy_build(**kwargs):
+        prompt = real_build(**kwargs)
+        captured_prompts.append(prompt)
+        return prompt
+
+    monkeypatch.setattr("spiced.core.changelog_draft.build_changelog_prompt", _spy_build)
+    service.draft(FakeProvider(), project)
+
+    assert "Other things Spiced flagged" not in captured_prompts[0]
 
 
 def test_changelog_prompt_includes_rules_and_evidence():

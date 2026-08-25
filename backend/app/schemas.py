@@ -232,6 +232,27 @@ class EventRoutingRuleOut(BaseModel):
     created_at: datetime
 
 
+class TriggerRuleCreate(BaseModel):
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str = "{}"
+    enabled: bool = True
+
+
+class TriggerRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str
+    enabled: bool
+    created_at: datetime
+
+
 class NotificationPreferenceUpdate(BaseModel):
     event_kind: str
     enabled: bool = True

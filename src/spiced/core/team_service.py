@@ -21,6 +21,7 @@ from spiced.backend_client.api_client import (
     TeamProject,
     TeamSessionSummary,
     TeamTask,
+    TriggerRule,
 )
 from spiced.core.auth_service import AuthService
 from spiced.core.notification_routing import relevant_members_for_event
@@ -325,6 +326,37 @@ class TeamService:
 
     def delete_routing_rule(self, team_id: str, rule_id: str) -> None:
         self._synced_client().delete_routing_rule(team_id, rule_id)
+
+    # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap,
+    # Phase 4) -----------------------------------------------------------
+    # Rule *configuration* only, same thin pass-through shape as the
+    # routing-rules calls above -- core.rules_engine.evaluate_rules is what
+    # actually reads these and decides what to do.
+
+    def list_trigger_rules(self, team_id: str) -> list[TriggerRule]:
+        return self._synced_client().list_trigger_rules(team_id)
+
+    def add_trigger_rule(
+        self,
+        team_id: str,
+        event_kind: str,
+        min_severity: str,
+        action: str,
+        *,
+        action_params_json: str = "{}",
+        enabled: bool = True,
+    ) -> TriggerRule:
+        return self._synced_client().add_trigger_rule(
+            team_id,
+            event_kind,
+            min_severity,
+            action,
+            action_params_json=action_params_json,
+            enabled=enabled,
+        )
+
+    def delete_trigger_rule(self, team_id: str, rule_id: str) -> None:
+        self._synced_client().delete_trigger_rule(team_id, rule_id)
 
     def list_notification_preferences(self, team_id: str) -> list[NotificationPreference]:
         return self._synced_client().list_notification_preferences(team_id)

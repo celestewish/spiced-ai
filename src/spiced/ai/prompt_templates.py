@@ -965,12 +965,18 @@ def build_changelog_prompt(
     commit_range: str,
     resolved_issue_titles: list[str],
     project_name: str | None = None,
+    pending_note_texts: list[str] | None = None,
 ) -> str:
     """Assemble the changelog-draft prompt from the game project's own git log.
 
     Only a trimmed, already-local ``git log`` excerpt and known-issue titles
     are included — never source diffs or file contents, and never anything
-    from Spiced's own repository.
+    from Spiced's own repository. ``pending_note_texts`` (Market-Viability
+    Roadmap, Phase 4's ``queue_changelog_note`` rules-engine action) are
+    short, locally-queued notes from other Spiced features (e.g. "flagged
+    by Palette Drift Detection") worth folding into this same draft --
+    optional and empty by default, so every existing caller keeps working
+    unchanged.
     """
     project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
     issues_block = (
@@ -979,6 +985,14 @@ def build_changelog_prompt(
         else "- (none resolved in this window)"
     )
     log_block = git_log_excerpt.strip() or "(no commits found in this window)"
+    notes_section = ""
+    if pending_note_texts:
+        notes_block = "\n".join(f"- {text}" for text in pending_note_texts)
+        notes_section = (
+            "Other things Spiced flagged since the last changelog, worth a mention if "
+            "relevant:\n"
+            f"{notes_block}\n\n"
+        )
 
     return (
         "You are Spiced, a calm companion drafting patch notes for an indie Unity developer "
@@ -995,6 +1009,7 @@ def build_changelog_prompt(
         "```\n\n"
         "Known issues Spiced has tracked as resolved in this window (deterministic, local):\n"
         f"{issues_block}\n\n"
+        f"{notes_section}"
         f"{CHANGELOG_RESPONSE_FORMAT}\n"
     )
 

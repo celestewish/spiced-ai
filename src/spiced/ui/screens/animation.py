@@ -50,15 +50,21 @@ class _AnimationBugWorker(QObject):
     done = Signal(object)  # AnimationBugScanResult
     failed = Signal(str)
 
-    def __init__(self, services: Services, project_path: str) -> None:
+    def __init__(self, services: Services, project_id: int, project_path: str) -> None:
         super().__init__()
         self._services = services
+        self._project_id = project_id
         self._project_path = project_path
 
     def run(self) -> None:
         try:
             result = detect_animation_bugs(self._project_path)
             self._services.record_telemetry_event("animation.bug_detection_run")
+            # Market-Viability Roadmap, Phase 4: the one confirmed legacy
+            # (pre-Finding-schema) analyzer this phase wires into the
+            # Cross-Feature Rules Engine -- see core.rules_engine's module
+            # docstring and Services.record_animation_bug_finding.
+            self._services.record_animation_bug_finding(self._project_id, result)
             self.done.emit(result)
         except Exception as exc:  # surfaced calmly to the user
             self.failed.emit(f"Something went wrong while scanning: {exc}")
@@ -412,7 +418,7 @@ class AnimationScreen(QWidget):
         self._bug_run_btn.setText("Scanning…")
         self._bug_result.setPlainText("Scanning Animator Controller files…")
 
-        worker = _AnimationBugWorker(self._services, project.path)
+        worker = _AnimationBugWorker(self._services, project.id, project.path)
         thread = launch_worker(self, worker)
         thread.started.connect(worker.run)
         worker.done.connect(self._on_bug_scan_done)

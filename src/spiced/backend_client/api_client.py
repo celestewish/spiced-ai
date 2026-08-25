@@ -157,6 +157,24 @@ class EventRoutingRule:
 
 
 @dataclass(frozen=True)
+class TriggerRule:
+    """One team's saved Cross-Feature Rules/Trigger Engine rule
+    (Market-Viability Roadmap, Phase 4) -- distinct from
+    ``EventRoutingRule``, which decides *who* gets notified; this decides
+    *what happens* (see ``app.models.TriggerRule``'s docstring on the
+    backend, and ``core.rules_engine`` on the desktop side)."""
+
+    id: str
+    team_id: str
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str
+    enabled: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
 class NotificationPreference:
     """One member's explicit per-event-kind opt-in/opt-out override
     (Phase J, Relevance-Based Notifications routing layer)."""
@@ -408,6 +426,43 @@ class BackendClient:
     def delete_routing_rule(self, team_id: str, rule_id: str) -> None:
         self._request("DELETE", f"/teams/{team_id}/routing-rules/{rule_id}")
 
+    # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap,
+    # Phase 4) -----------------------------------------------------------
+    # Pure CRUD, same shape as the routing-rules calls above -- evaluating a
+    # rule against an incoming event (core.rules_engine.evaluate_rules)
+    # happens entirely on the desktop side; this client only reads/writes
+    # rule configuration.
+
+    def list_trigger_rules(self, team_id: str) -> list[TriggerRule]:
+        payload = self._request("GET", f"/teams/{team_id}/trigger-rules")
+        return [_trigger_rule(row) for row in payload]
+
+    def add_trigger_rule(
+        self,
+        team_id: str,
+        event_kind: str,
+        min_severity: str,
+        action: str,
+        *,
+        action_params_json: str = "{}",
+        enabled: bool = True,
+    ) -> TriggerRule:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/trigger-rules",
+            json={
+                "event_kind": event_kind,
+                "min_severity": min_severity,
+                "action": action,
+                "action_params_json": action_params_json,
+                "enabled": enabled,
+            },
+        )
+        return _trigger_rule(payload)
+
+    def delete_trigger_rule(self, team_id: str, rule_id: str) -> None:
+        self._request("DELETE", f"/teams/{team_id}/trigger-rules/{rule_id}")
+
     def list_notification_preferences(self, team_id: str) -> list[NotificationPreference]:
         payload = self._request("GET", f"/teams/{team_id}/notification-preferences")
         return [_notification_preference(row) for row in payload]
@@ -612,6 +667,19 @@ def _routing_rule(row: dict) -> EventRoutingRule:
         team_id=row["team_id"],
         event_kind=row["event_kind"],
         discipline=row["discipline"],
+        created_at=row["created_at"],
+    )
+
+
+def _trigger_rule(row: dict) -> TriggerRule:
+    return TriggerRule(
+        id=row["id"],
+        team_id=row["team_id"],
+        event_kind=row["event_kind"],
+        min_severity=row["min_severity"],
+        action=row["action"],
+        action_params_json=row["action_params_json"],
+        enabled=row["enabled"],
         created_at=row["created_at"],
     )
 

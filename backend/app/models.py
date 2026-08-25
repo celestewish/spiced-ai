@@ -313,6 +313,39 @@ class EventRoutingRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class TriggerRule(Base):
+    """Cross-Feature Rules/Trigger Engine: one team's saved automation rule
+    (Market-Viability Roadmap, Phase 4).
+
+    Distinct from ``EventRoutingRule`` above: that table decides *who* gets
+    notified about an event kind. This table decides *what happens* --
+    ``core.rules_engine.evaluate_rules`` loads a team's rows for an incoming
+    ``event_kind`` and, for each whose ``min_severity`` the event's own
+    severity meets or exceeds, runs ``action`` (one of the fixed small set
+    in ``core.rules_engine`` -- deliberately not a scripting DSL, see that
+    module's docstring). ``action_params_json`` carries the few
+    action-specific extras a rule needs (e.g. ``create_task``'s
+    ``assigned_discipline``) -- kept as a JSON blob rather than dedicated
+    columns since it varies per action and this table doesn't need to query
+    on it.
+
+    No ``discipline`` column here (unlike ``EventRoutingRule``): the
+    ``notify`` action reuses ``EventRoutingRule``'s own routing data
+    directly rather than duplicating a second discipline mapping.
+    """
+
+    __tablename__ = "trigger_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    event_kind: Mapped[str] = mapped_column(String(100))
+    min_severity: Mapped[str] = mapped_column(String(20))
+    action: Mapped[str] = mapped_column(String(50))
+    action_params_json: Mapped[str] = mapped_column(Text, default="{}")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class NotificationPreference(Base):
     """Relevance-Based Notifications: one member's explicit override (Phase J).
 

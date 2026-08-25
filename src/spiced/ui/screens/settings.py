@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
+from spiced.automation.finding import SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_WARNING
 from spiced.core.keyboard_shortcuts import (
     ACTIONS as SHORTCUT_ACTIONS,
 )
@@ -36,6 +37,11 @@ from spiced.core.notification_routing import (
     disciplines_for_event,
 )
 from spiced.core.plans import PLANS
+from spiced.core.rules_engine import (
+    ACTION_CREATE_TASK,
+    ACTION_NOTIFY,
+    ACTION_QUEUE_CHANGELOG_NOTE,
+)
 from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.screens.team import SUGGESTED_DISCIPLINES
 from spiced.ui.theme import TEXT_SIZES, build_stylesheet
@@ -115,6 +121,32 @@ class _PreferencesLoadWorker(QObject):
             self.done.emit(team.id, mine)
         except Exception as exc:  # surfaced calmly to the user
             self.failed.emit(f"Couldn't load notification preferences: {exc}")
+
+
+class _TriggerRulesLoadWorker(QObject):
+    """Loads the active project's team's Cross-Feature Rules Engine rules
+    (Market-Viability Roadmap, Phase 4) -- mirrors ``_RoutingLoadWorker``
+    exactly; ``_RoutingMutateWorker`` below is reused as-is for add/delete,
+    since it just runs whatever callable it's given."""
+
+    done = Signal(object, list)  # team_id | None, list[TriggerRule]
+    failed = Signal(str)
+
+    def __init__(self, services: Services, project_uuid: str) -> None:
+        super().__init__()
+        self._services = services
+        self._project_uuid = project_uuid
+
+    def run(self) -> None:
+        try:
+            team = self._services.teams.find_team_for_project(self._project_uuid)
+            if team is None:
+                self.done.emit(None, [])
+                return
+            rules = self._services.teams.list_trigger_rules(team.id)
+            self.done.emit(team.id, rules)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't load automation rules: {exc}")
 
 
 class SettingsScreen(QWidget):
@@ -285,6 +317,7 @@ class SettingsScreen(QWidget):
         self._build_keyboard_shortcuts_section(layout)
         self._build_notification_routing_section(layout)
         self._build_notification_preferences_section(layout)
+        self._build_automation_rules_section(layout)
 
         # Connection test for the selected provider
         layout.addWidget(_hairline())
@@ -318,6 +351,7 @@ class SettingsScreen(QWidget):
 
         self._routing_team_id: str | None = None
         self._pref_team_id: str | None = None
+        self._trigger_rules_team_id: str | None = None
         self.refresh()
 
     def _on_provider_changed(self, name: str) -> None:
@@ -656,6 +690,62 @@ class SettingsScreen(QWidget):
         row.addWidget(self._pref_save_btn)
         layout.addLayout(row)
 
+    # --- Automation Rules: Cross-Feature Rules/Trigger Engine
+    # (Market-Viability Roadmap, Phase 4) ------------------------------------
+    #
+    # Mirrors the routing panel's own list/add-rule/combo-box pattern above,
+    # but decides WHAT HAPPENS for an event kind (create a task, notify,
+    # queue a changelog note) rather than WHO gets notified -- see
+    # core.rules_engine's module docstring. Only usable for a team-linked
+    # active project, same restriction as routing rules, since rules are
+    # saved per-team.
+
+    def _build_automation_rules_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
+        heading = QLabel("Automation rules")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "What happens when a Spiced feature flags something on this project's team: "
+            "create a task, notify the relevant discipline, or queue a note for the next "
+            "changelog draft. Without a rule here, every event kind quietly queues a "
+            "changelog note by default -- create_task and notify only ever fire from an "
+            "explicit rule below, since they need somewhere (a team) to go."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._trigger_rules_status = QLabel("")
+        self._trigger_rules_status.setObjectName("Muted")
+        self._trigger_rules_status.setWordWrap(True)
+        layout.addWidget(self._trigger_rules_status)
+
+        self._trigger_rules_list = QTextEdit()
+        self._trigger_rules_list.setReadOnly(True)
+        self._trigger_rules_list.setFixedHeight(120)
+        layout.addWidget(self._trigger_rules_list)
+
+        row = QHBoxLayout()
+        self._trigger_event_box = ScrollSafeComboBox()
+        self._trigger_event_box.addItems(KNOWN_EVENT_KINDS)
+        row.addWidget(self._trigger_event_box, 1)
+        self._trigger_severity_box = ScrollSafeComboBox()
+        self._trigger_severity_box.addItems([SEVERITY_INFO, SEVERITY_WARNING, SEVERITY_ERROR])
+        self._trigger_severity_box.setCurrentText(SEVERITY_WARNING)
+        row.addWidget(self._trigger_severity_box, 1)
+        self._trigger_action_box = ScrollSafeComboBox()
+        self._trigger_action_box.addItems(
+            [ACTION_CREATE_TASK, ACTION_NOTIFY, ACTION_QUEUE_CHANGELOG_NOTE]
+        )
+        row.addWidget(self._trigger_action_box, 1)
+        self._trigger_add_btn = PillButton("Add rule")
+        self._trigger_add_btn.clicked.connect(self._on_add_trigger_rule)
+        row.addWidget(self._trigger_add_btn)
+        layout.addLayout(row)
+
     def refresh(self) -> None:
         """Reload the notification routing + preferences panels for the
         active project's team, if any. Safe to call whenever the active
@@ -676,6 +766,14 @@ class SettingsScreen(QWidget):
             )
             self._pref_list.setPlainText("")
             self._pref_save_btn.setEnabled(False)
+
+            self._trigger_rules_team_id = None
+            self._trigger_rules_status.setText(
+                "Only available for a team-linked project you're signed in for -- select one on "
+                "the Projects screen."
+            )
+            self._trigger_rules_list.setPlainText("")
+            self._trigger_add_btn.setEnabled(False)
             return
 
         self._routing_add_btn.setEnabled(True)
@@ -699,6 +797,17 @@ class SettingsScreen(QWidget):
         pref_worker.done.connect(pref_thread.quit)
         pref_worker.failed.connect(pref_thread.quit)
         pref_thread.start()
+
+        self._trigger_add_btn.setEnabled(True)
+        self._trigger_rules_status.setText("Loading…")
+        trigger_worker = _TriggerRulesLoadWorker(self._services, project.project_uuid)
+        trigger_thread = launch_worker(self, trigger_worker)
+        trigger_thread.started.connect(trigger_worker.run)
+        trigger_worker.done.connect(self._on_trigger_rules_loaded)
+        trigger_worker.failed.connect(self._on_trigger_rules_load_failed)
+        trigger_worker.done.connect(trigger_thread.quit)
+        trigger_worker.failed.connect(trigger_thread.quit)
+        trigger_thread.start()
 
     def _on_routing_loaded(self, team_id: str | None, rules) -> None:
         self._routing_team_id = team_id
@@ -783,6 +892,53 @@ class SettingsScreen(QWidget):
         thread.started.connect(worker.run)
         worker.done.connect(self.refresh)
         worker.failed.connect(self._on_preferences_load_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_trigger_rules_loaded(self, team_id: str | None, rules) -> None:
+        self._trigger_rules_team_id = team_id
+        if team_id is None:
+            self._trigger_rules_status.setText(
+                "This project isn't linked to a team yet -- link it on the Projects screen."
+            )
+            self._trigger_rules_list.setPlainText("")
+            self._trigger_add_btn.setEnabled(False)
+            return
+        self._trigger_rules_status.setText("")
+        if not rules:
+            self._trigger_rules_list.setPlainText(
+                "No rules yet -- every event kind queues a changelog note by default."
+            )
+            return
+        lines = [
+            f"{r.event_kind}: {r.action} at {r.min_severity}+"
+            f"{'' if r.enabled else ' (disabled)'}"
+            for r in sorted(rules, key=lambda r: r.event_kind)
+        ]
+        self._trigger_rules_list.setPlainText("\n".join(lines))
+
+    def _on_trigger_rules_load_failed(self, message: str) -> None:
+        self._trigger_rules_status.setText(message)
+
+    def _on_add_trigger_rule(self) -> None:
+        if self._trigger_rules_team_id is None:
+            return
+        event_kind = self._trigger_event_box.currentText()
+        min_severity = self._trigger_severity_box.currentText()
+        action = self._trigger_action_box.currentText()
+        team_id = self._trigger_rules_team_id
+        self._trigger_add_btn.setEnabled(False)
+
+        worker = _RoutingMutateWorker(
+            lambda: self._services.teams.add_trigger_rule(
+                team_id, event_kind, min_severity, action
+            )
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self.refresh)
+        worker.failed.connect(self._on_trigger_rules_load_failed)
         worker.done.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.start()
