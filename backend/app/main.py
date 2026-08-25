@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     automation_rules,
+    billing,
     comments,
     mobile,
     notifications,
@@ -40,6 +41,7 @@ app.include_router(team_tasks.router)
 app.include_router(comments.router)
 app.include_router(notifications.router)
 app.include_router(automation_rules.router)
+app.include_router(billing.router)
 app.include_router(mobile.router)
 
 

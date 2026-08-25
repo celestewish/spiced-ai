@@ -23,6 +23,34 @@ class NotAuthenticatedError(BackendAPIError):
 
 
 @dataclass(frozen=True)
+class Subscription:
+    """One Stripe subscription, mirrored locally (Market-Viability Roadmap,
+    Phase 5) -- see ``app.models.Subscription``'s docstring on the backend
+    for why ``user_id`` is always set while ``team_id``/
+    ``stripe_subscription_id`` are optional. ``status`` is Stripe's own
+    subscription status string verbatim (``active``, ``trialing``,
+    ``past_due``, ``canceled``, ...)."""
+
+    id: str
+    user_id: str
+    team_id: str | None
+    plan_key: str
+    stripe_customer_id: str
+    stripe_subscription_id: str | None
+    status: str
+    current_period_end: str | None
+    created_at: str
+
+    @property
+    def is_usable(self) -> bool:
+        """True for a subscription whose plan should currently apply --
+        Stripe's own "still has access" statuses, not just "active"
+        (a subscription mid-trial or briefly past due still grants its
+        plan; canceled/unpaid/incomplete do not)."""
+        return self.status in ("active", "trialing", "past_due")
+
+
+@dataclass(frozen=True)
 class Team:
     id: str
     name: str
@@ -302,6 +330,29 @@ class BackendClient:
     def unvote_suggestion(self, suggestion_id: str) -> None:
         self._request("DELETE", f"/roadmap/suggestions/{suggestion_id}/vote")
 
+    # --- Billing Foundation (Market-Viability Roadmap, Phase 5) --------------
+    # User-scoped, not team-scoped -- a subscription belongs to whoever pays
+    # for it (see app.models.Subscription's docstring), even when it's meant
+    # to cover a team. The desktop app never touches a card number: both
+    # session-creation calls return a Stripe-hosted URL to open in the
+    # user's own browser (see core.billing_service).
+
+    def create_checkout_session(self, plan_key: str, *, team_id: str | None = None) -> str:
+        payload = self._request(
+            "POST",
+            "/billing/checkout-session",
+            json={"plan_key": plan_key, "team_id": team_id},
+        )
+        return payload["checkout_url"]
+
+    def create_portal_session(self) -> str:
+        payload = self._request("POST", "/billing/portal-session")
+        return payload["portal_url"]
+
+    def get_subscription(self) -> Subscription | None:
+        payload = self._request("GET", "/billing/subscription")
+        return _subscription(payload) if payload else None
+
     # --- Player Crash & Error Reporting (Phase G) ----------------------------
     # Reading requires auth + team membership, same as every other team-
     # visible resource. Submission is never done from this client — it's the
@@ -549,6 +600,20 @@ def _error_message(response: httpx.Response) -> str:
     if detail:
         return str(detail)
     return f"Spiced backend request failed (HTTP {response.status_code})."
+
+
+def _subscription(row: dict) -> Subscription:
+    return Subscription(
+        id=row["id"],
+        user_id=row["user_id"],
+        team_id=row["team_id"],
+        plan_key=row["plan_key"],
+        stripe_customer_id=row["stripe_customer_id"],
+        stripe_subscription_id=row["stripe_subscription_id"],
+        status=row["status"],
+        current_period_end=row["current_period_end"],
+        created_at=row["created_at"],
+    )
 
 
 def _team(row: dict) -> Team:

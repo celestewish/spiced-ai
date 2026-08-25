@@ -36,6 +36,7 @@ from spiced.core.asset_review_queue import AssetReviewQueueService
 from spiced.core.asset_scan import AssetScanService
 from spiced.core.audio_implementation_checklist import AudioImplementationChecklistService
 from spiced.core.auth_service import AuthService
+from spiced.core.billing_service import BillingService
 from spiced.core.budget_tracker import BudgetTrackerService
 from spiced.core.build_pipeline import run_build_pipeline
 from spiced.core.changelog_draft import ChangelogService
@@ -186,7 +187,15 @@ class Services:
         self.db = Database(db_path)
         self.projects = ProjectsService(ProjectRepository(self.db))
         self._settings = SettingsRepository(self.db)
-        self.usage = UsageCounter(UsageRepository(self.db), self._settings)
+        # Small-Team Mode auth is constructed here (rather than down with the
+        # rest of the Small-Team Mode wiring below) because Billing
+        # Foundation's UsageCounter needs a BillingService, which itself
+        # needs AuthService -- see core.usage_counter.UsageCounter.
+        # current_plan for why (real plan from Stripe once signed in, the
+        # local mock setting otherwise).
+        self.auth = AuthService(self._settings)
+        self.billing = BillingService(self.auth)
+        self.usage = UsageCounter(UsageRepository(self.db), self._settings, self.billing)
         self.regression = RegressionService(KnownIssueRepository(self.db))
         self.debugging = DebuggingService(DebugSessionRepository(self.db), self.regression)
         self.testing = TestingService(
@@ -211,9 +220,9 @@ class Services:
         )
         self.asset_scan = AssetScanService(AssetScanReportRepository(self.db))
 
-        # Small-Team Mode (opt-in): auth + team/project-linking against the
-        # new backend. Solo-Dev Mode never touches these.
-        self.auth = AuthService(self._settings)
+        # Small-Team Mode (opt-in): team/project-linking against the new
+        # backend, on top of the AuthService constructed above. Solo-Dev
+        # Mode never touches these.
         self.teams = TeamService(self.auth, self.projects)
         # Open Roadmap & Feedback Loop (Phase C): viewing needs no login;
         # submitting/voting reuses this same AuthService/account system.

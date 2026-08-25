@@ -17,6 +17,33 @@ class UserOut(BaseModel):
     created_at: datetime
 
 
+class SubscriptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: str
+    team_id: str | None
+    plan_key: str
+    stripe_customer_id: str
+    stripe_subscription_id: str | None
+    status: str
+    current_period_end: datetime | None
+    created_at: datetime
+
+
+class CheckoutSessionCreate(BaseModel):
+    plan_key: Literal["indie", "studio"]
+    team_id: str | None = None
+
+
+class CheckoutSessionOut(BaseModel):
+    checkout_url: str
+
+
+class PortalSessionOut(BaseModel):
+    portal_url: str
+
+
 class TeamCreate(BaseModel):
     name: str
 

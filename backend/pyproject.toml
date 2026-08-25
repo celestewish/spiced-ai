@@ -21,6 +21,10 @@ dependencies = [
     "pydantic[email]>=2.6",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
+    # Billing Foundation (Market-Viability Roadmap, Phase 5): Stripe
+    # Checkout/Billing Portal + webhook signature verification. Test/sandbox
+    # keys only -- see app.config.Settings' stripe_* fields.
+    "stripe>=9.0",
 ]
 
 [project.optional-dependencies]

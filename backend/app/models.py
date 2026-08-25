@@ -35,6 +35,47 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class Subscription(Base):
+    """Billing Foundation (Market-Viability Roadmap, Phase 5): one Stripe
+    subscription, mirrored locally so plan-gating never has to call Stripe
+    on every request.
+
+    ``user_id`` is never nullable -- a Stripe customer is always a specific
+    person's payment method, even when the plan is meant to cover a team's
+    shared usage. ``team_id`` is the optional "this plan covers this team"
+    tag on top of that, not a second, mutually-exclusive owner axis; a
+    purely individual subscription simply leaves it unset. Rows are
+    upserted by ``stripe_subscription_id`` from the webhook handler
+    (``routers.billing.handle_webhook``) as Stripe's own source of truth
+    changes -- this table is a mirror, never written to independently of a
+    real Stripe event (except the temporary ``status="incomplete"`` row a
+    checkout session creation may pre-create, see that endpoint).
+
+    ``status`` stores Stripe's own subscription status string verbatim
+    (``active``, ``trialing``, ``past_due``, ``canceled``, ...) rather than
+    a narrower app-invented enum, so this table never falls out of sync
+    with what Stripe itself considers valid.
+    """
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    team_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("teams.id"), nullable=True, index=True
+    )
+    plan_key: Mapped[str] = mapped_column(String(20))
+    stripe_customer_id: Mapped[str] = mapped_column(String(255), index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(30))
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Team(Base):
     __tablename__ = "teams"
 

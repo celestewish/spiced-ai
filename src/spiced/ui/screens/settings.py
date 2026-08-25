@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -149,6 +149,45 @@ class _TriggerRulesLoadWorker(QObject):
             self.failed.emit(f"Couldn't load automation rules: {exc}")
 
 
+class _SubscriptionLoadWorker(QObject):
+    """Loads the signed-in user's real Stripe subscription (Market-
+    Viability Roadmap, Phase 5) -- BillingService.current_subscription is
+    already a safe no-op returning None for a solo/offline user, so this
+    worker never needs a "not signed in" branch of its own."""
+
+    done = Signal(object)  # Subscription | None
+    failed = Signal(str)
+
+    def __init__(self, services: Services) -> None:
+        super().__init__()
+        self._services = services
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._services.billing.current_subscription())
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't load subscription status: {exc}")
+
+
+class _BillingActionWorker(QObject):
+    """Runs one billing action (start a checkout, open the portal) and
+    hands back the Stripe-hosted URL to open in the system browser --
+    mirrors _RoutingMutateWorker's "just run whatever callable" shape."""
+
+    done = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, action) -> None:
+        super().__init__()
+        self._action = action
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._action())
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"That didn't go through: {exc}")
+
+
 class SettingsScreen(QWidget):
     settings_changed = Signal()
 
@@ -184,7 +223,9 @@ class SettingsScreen(QWidget):
         self._provider_box.currentTextChanged.connect(self._on_provider_changed)
         form.addRow("AI provider", self._provider_box)
 
-        # Mock plan
+        # Preview plan, solo/offline only -- see the Billing section below
+        # for the real plan a signed-in user gets from their own Stripe
+        # subscription (Market-Viability Roadmap, Phase 5).
         self._plan_box = ScrollSafeComboBox()
         for plan in PLANS.values():
             self._plan_box.addItem(plan.label, plan.key)
@@ -193,17 +234,21 @@ class SettingsScreen(QWidget):
         if idx >= 0:
             self._plan_box.setCurrentIndex(idx)
         self._plan_box.currentIndexChanged.connect(self._on_plan_changed)
-        form.addRow("Plan (mock)", self._plan_box)
+        form.addRow("Preview plan (solo)", self._plan_box)
 
         layout.addLayout(form)
 
         note = QLabel(
-            "Plans are a preview of a future offering. Spiced does not process payments "
-            "or create accounts, and no usage information leaves your machine."
+            "This preview plan is for exploring the tiers while working solo/offline -- pick "
+            "any of them for free, no payment or account involved. Once signed in to "
+            "Small-Team Mode, your real plan (below) takes over and this preview no longer "
+            "applies."
         )
         note.setObjectName("Muted")
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        self._build_billing_section(layout)
 
         # Solo-Dev Mode vs. Small-Team Mode (off/solo by default)
         layout.addWidget(_hairline())
@@ -352,6 +397,7 @@ class SettingsScreen(QWidget):
         self._routing_team_id: str | None = None
         self._pref_team_id: str | None = None
         self._trigger_rules_team_id: str | None = None
+        self._billing_subscription = None
         self.refresh()
 
     def _on_provider_changed(self, name: str) -> None:
@@ -410,6 +456,128 @@ class SettingsScreen(QWidget):
     # splash so far; tab-fade transitions and the background scene are
     # landing in later PRs) checks it before starting and skips straight to
     # its end state when it's on.
+
+    # --- Billing: real Stripe subscription (Market-Viability Roadmap, Phase
+    # 5) ----------------------------------------------------------------
+    #
+    # The desktop app never touches a card number -- "Subscribe"/"Manage
+    # subscription" both open a Stripe-hosted page in the system browser
+    # (QDesktopServices.openUrl) and this screen finds out what happened by
+    # re-fetching status afterward, not via any callback into the app.
+
+    def _build_billing_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
+        heading = QLabel("Billing")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "Your real plan once signed in to Small-Team Mode, backed by an actual Stripe "
+            "subscription (test mode only -- no real card is ever charged in this build). "
+            "Spiced never sees or stores your card details; Subscribe and Manage subscription "
+            "both open Stripe's own secure page in your browser."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._billing_status = QLabel("")
+        self._billing_status.setObjectName("Muted")
+        self._billing_status.setWordWrap(True)
+        layout.addWidget(self._billing_status)
+
+        row = QHBoxLayout()
+        self._billing_plan_box = ScrollSafeComboBox()
+        for plan in PLANS.values():
+            if plan.key != "free":  # nothing to check out for the free tier
+                self._billing_plan_box.addItem(plan.label, plan.key)
+        row.addWidget(self._billing_plan_box, 1)
+        self._billing_subscribe_btn = PillButton("Subscribe")
+        self._billing_subscribe_btn.clicked.connect(self._on_subscribe)
+        row.addWidget(self._billing_subscribe_btn)
+        self._billing_manage_btn = PillButton("Manage subscription", ghost=True)
+        self._billing_manage_btn.clicked.connect(self._on_manage_subscription)
+        row.addWidget(self._billing_manage_btn)
+        self._billing_refresh_btn = PillButton("Refresh status", ghost=True)
+        self._billing_refresh_btn.clicked.connect(self._refresh_billing)
+        row.addWidget(self._billing_refresh_btn)
+        layout.addLayout(row)
+
+    def _refresh_billing(self) -> None:
+        if not self._services.auth.is_logged_in():
+            self._billing_subscription = None
+            self._billing_status.setText(
+                "Sign in to Small-Team Mode (below) to see and manage a real subscription."
+            )
+            self._billing_subscribe_btn.setEnabled(False)
+            self._billing_manage_btn.setEnabled(False)
+            return
+
+        self._billing_status.setText("Loading…")
+        self._billing_subscribe_btn.setEnabled(False)
+        self._billing_manage_btn.setEnabled(False)
+        worker = _SubscriptionLoadWorker(self._services)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_billing_loaded)
+        worker.failed.connect(self._on_billing_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_billing_loaded(self, subscription) -> None:
+        self._billing_subscription = subscription
+        self._billing_manage_btn.setEnabled(subscription is not None)
+        self._billing_subscribe_btn.setEnabled(True)
+        if subscription is None:
+            self._billing_status.setText("No subscription yet -- pick a plan and Subscribe.")
+        elif subscription.is_usable:
+            plan = PLANS.get(subscription.plan_key)
+            label = plan.label if plan else subscription.plan_key
+            self._billing_status.setText(f"{label} plan -- {subscription.status}.")
+        else:
+            self._billing_status.setText(
+                f"Subscription {subscription.status} -- Manage subscription to resolve it, "
+                "or Subscribe to start a new one."
+            )
+
+    def _on_billing_failed(self, message: str) -> None:
+        self._billing_status.setText(message)
+        self._billing_subscribe_btn.setEnabled(True)
+
+    def _on_subscribe(self) -> None:
+        plan_key = self._billing_plan_box.currentData()
+        if not plan_key:
+            return
+        self._billing_subscribe_btn.setEnabled(False)
+        worker = _BillingActionWorker(lambda: self._services.billing.start_checkout(plan_key))
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_billing_url_ready)
+        worker.failed.connect(self._on_billing_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_manage_subscription(self) -> None:
+        self._billing_manage_btn.setEnabled(False)
+        worker = _BillingActionWorker(self._services.billing.open_billing_portal)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_billing_url_ready)
+        worker.failed.connect(self._on_billing_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_billing_url_ready(self, url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
+        self._billing_status.setText(
+            "Opened in your browser. Come back here and click Refresh status once you're done."
+        )
+        self._billing_subscribe_btn.setEnabled(True)
+        self._billing_manage_btn.setEnabled(self._billing_subscription is not None)
 
     def _build_accessibility_section(self, layout: QVBoxLayout) -> None:
         heading = QLabel("Accessibility")
@@ -750,6 +918,7 @@ class SettingsScreen(QWidget):
         """Reload the notification routing + preferences panels for the
         active project's team, if any. Safe to call whenever the active
         project changes."""
+        self._refresh_billing()  # user-scoped, not project-scoped -- always safe to reload
         project = self._services.active_project()
         if project is None or not project.project_uuid or not self._services.auth.is_logged_in():
             self._routing_team_id = None
