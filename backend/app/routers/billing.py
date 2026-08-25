@@ -35,7 +35,8 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.config import get_settings
 from app.db import get_db
-from app.models import Subscription, User
+from app.models import ROLE_ADMIN, Subscription, User
+from app.routers.teams import require_role
 from app.schemas import (
     CheckoutSessionCreate,
     CheckoutSessionOut,
@@ -78,6 +79,14 @@ def create_checkout_session(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> CheckoutSessionOut:
+    # Role-Based Permissions (Market-Viability Roadmap, Phase 6): checking
+    # out your *own* subscription needs no team role at all -- it's your
+    # own money. Tagging a team_id (this plan is meant to cover that team)
+    # is the part that needs a gate, since it's a team-wide commitment any
+    # member shouldn't be able to make unilaterally.
+    if body.team_id:
+        require_role(db, body.team_id, user, ROLE_ADMIN)
+
     settings = get_settings()
     price_id = getattr(settings, _PRICE_ID_ENV_ATTR[body.plan_key])
     if not price_id:

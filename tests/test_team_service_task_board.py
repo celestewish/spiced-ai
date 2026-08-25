@@ -71,6 +71,9 @@ class _FakeBackendClient:
     def list_members(self, team_id: str) -> list[TeamMember]:
         return self.members
 
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        self.members = [m for m in self.members if m.id != member_id]
+
     def set_my_discipline(self, team_id, discipline):
         self.members[0] = TeamMember(
             id="m1", team_id=team_id, user_id="u1", invited_email=None, role="owner",
@@ -416,6 +419,51 @@ def test_notify_relevant_members_excludes_members_with_no_user_id():
         PROJECT_UUID, "build_failed", "title", "body"
     )
     assert created == []
+
+
+# --- Role-Based Permissions (Market-Viability Roadmap, Phase 6) ------------
+
+
+def test_remove_member_delegates_to_backend():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline=None, joined_at="2026-08-25T00:00:00Z", created_at="2026-08-25T00:00:00Z",
+        )
+    )
+
+    teams.remove_member("team-1", "m2")
+
+    assert [m.id for m in backend.members] == ["m1"]
+
+
+def test_my_role_returns_the_signed_in_users_own_role():
+    teams, _backend = _setup()  # backend.members[0] is user_id="u1", role="owner"
+    assert teams.my_role("team-1") == "owner"
+
+
+def test_my_role_none_when_not_a_member():
+    teams, backend = _setup()
+    backend.members = [
+        TeamMember(
+            id="m9", team_id="team-1", user_id="someone-else", invited_email=None,
+            role="member", discipline=None, joined_at="2026-08-25T00:00:00Z",
+            created_at="2026-08-25T00:00:00Z",
+        )
+    ]
+    assert teams.my_role("team-1") is None
+
+
+def test_my_role_none_when_not_logged_in():
+    db = Database(":memory:")
+    settings = SettingsRepository(db)
+    auth = AuthService(settings, _FakeAuthClient())
+    projects = ProjectsService(ProjectRepository(db))
+    backend = _FakeBackendClient()
+    teams = TeamService(auth, projects, backend)
+    # Deliberately no auth.log_in() call this time.
+    assert teams.my_role("team-1") is None
 
 
 # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap, Phase 4) -

@@ -92,6 +92,18 @@ class Team(Base):
     )
 
 
+# Role-Based Permissions (Market-Viability Roadmap, Phase 6). A small,
+# explicit 3-tier set -- resisted the urge to design a fuller permissions
+# matrix beyond the report's actual cited need ("control who sees budget/
+# contract data vs. own role's task board"). ROLE_RANK backs
+# routers.teams.require_role's "at least this senior" check.
+ROLE_OWNER = "owner"
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
+VALID_ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER)
+ROLE_RANK = {ROLE_MEMBER: 0, ROLE_ADMIN: 1, ROLE_OWNER: 2}
+
+
 class TeamMember(Base):
     """A team membership row.
 
@@ -100,6 +112,11 @@ class TeamMember(Base):
     ``invited_email`` records the address. The next time any user
     authenticates (see ``app.auth.get_current_user``), pending rows matching
     their verified email are attached to their user id and marked joined.
+
+    ``role`` (Phase 6): ``owner`` (the team creator, exactly one per team,
+    never assignable via invite), ``admin``, or ``member`` -- see
+    ``routers.teams.require_role``, the dependency that makes this
+    load-bearing rather than the vestigial field it was before Phase 6.
     """
 
     __tablename__ = "team_members"
@@ -140,6 +157,41 @@ class TeamMember(Base):
         to show teammates by name/email rather than a bare user id.
         """
         return self.invited_email or (self.user.email if self.user else None)
+
+
+class AuditLogEntry(Base):
+    """One recorded team-scoped mutation (Market-Viability Roadmap, Phase
+    6). Additive only -- see ``app.audit.record_audit_event``, which is
+    called from the same database session as the mutation it's logging
+    (added to the session before that endpoint's own ``db.commit()``, not
+    committed separately), so an audit row and the change it describes are
+    always persisted atomically together, never one without the other.
+
+    ``action`` is a short, stable verb-noun string (e.g.
+    ``"member.invited"``, ``"member.removed"``, ``"team.created"``) rather
+    than a free-text description -- keeps this table filterable/groupable
+    without parsing prose. ``target_type``/``target_id`` mirror ``Comment``/
+    ``Notification``'s existing subject_type/subject_id shape;
+    ``metadata_json`` carries the few action-specific extras worth keeping
+    (e.g. the invited email, the role that changed) as a JSON blob, same
+    reasoning as ``TriggerRule.action_params_json``.
+
+    Landing incrementally per-router (this phase wires ``routers.teams``'
+    seven mutating endpoints; other team-scoped routers are real, named
+    follow-up -- see the roadmap document) rather than a single big-bang
+    sweep, per the roadmap's own explicit scope note for this table.
+    """
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(100))
+    target_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class TeamProject(Base):

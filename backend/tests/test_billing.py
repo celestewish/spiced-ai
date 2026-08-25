@@ -102,6 +102,41 @@ def test_create_checkout_session_requires_auth(client, monkeypatch):
     assert response.status_code == 401
 
 
+def test_create_checkout_session_with_team_id_requires_admin_role(client, login_as, monkeypatch):
+    """Role-Based Permissions (Phase 6): checking out your own plan needs no
+    team role, but tagging a team_id (a team-wide billing commitment) does."""
+    _patch_settings(monkeypatch)
+    member_id = login_as(email="member@example.com")
+    client.get("/teams")
+    login_as(email="owner@example.com")
+    team = client.post("/teams", json={"name": "Crew"}).json()
+    client.post(f"/teams/{team['id']}/invite", json={"email": "member@example.com"})
+
+    login_as(user_id=member_id, email="member@example.com")
+    response = client.post(
+        "/billing/checkout-session", json={"plan_key": "indie", "team_id": team["id"]}
+    )
+
+    assert response.status_code == 403
+
+
+def test_create_checkout_session_with_team_id_allowed_for_admin(client, login_as, monkeypatch):
+    _patch_settings(monkeypatch)
+    login_as(email="owner@example.com")
+    team = client.post("/teams", json={"name": "Crew"}).json()
+
+    def fake_create(**kwargs):
+        return _FakeCheckoutSession()
+
+    monkeypatch.setattr(billing_module.stripe.checkout.Session, "create", fake_create)
+
+    response = client.post(
+        "/billing/checkout-session", json={"plan_key": "indie", "team_id": team["id"]}
+    )
+
+    assert response.status_code == 201
+
+
 def test_get_my_subscription_none_when_no_subscription(client, login_as, monkeypatch):
     _patch_settings(monkeypatch)
     login_as(email="dev@example.com")

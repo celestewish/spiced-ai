@@ -88,6 +88,19 @@ class MemberDisciplineUpdate(BaseModel):
     discipline: str | None = None
 
 
+class AuditLogEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    actor_user_id: str
+    action: str
+    target_type: str | None
+    target_id: str | None
+    metadata_json: str
+    created_at: datetime
+
+
 class TeamProjectCreate(BaseModel):
     project_uuid: str
     name: str

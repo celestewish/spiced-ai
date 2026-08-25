@@ -276,6 +276,11 @@ class BackendClient:
         payload = self._request("GET", f"/teams/{team_id}/members")
         return [_member(row) for row in payload]
 
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        """Admin+ only on the backend (Market-Viability Roadmap, Phase 6) --
+        see ``app.routers.teams.remove_member``."""
+        self._request("DELETE", f"/teams/{team_id}/members/{member_id}")
+
     def link_project(self, team_id: str, project_uuid: str, name: str) -> TeamProject:
         payload = self._request(
             "POST",

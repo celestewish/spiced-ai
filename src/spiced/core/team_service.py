@@ -55,6 +55,26 @@ class TeamService:
     def list_members(self, team_id: str) -> list[TeamMember]:
         return self._synced_client().list_members(team_id)
 
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        self._synced_client().remove_member(team_id, member_id)
+
+    def my_role(self, team_id: str) -> str | None:
+        """The signed-in user's own role on this team, or ``None`` if they
+        aren't a member (or the lookup fails) -- Role-Based Permissions
+        (Market-Viability Roadmap, Phase 6), used by the desktop UI to hide
+        admin-only actions from non-admins. UI-level hiding only: the real
+        boundary is the backend's own require_role check, which enforces
+        this regardless of what the UI shows."""
+        user = self._auth.current_user()
+        if user is None:
+            return None
+        try:
+            members = self.list_members(team_id)
+        except (BackendAPIError, NotAuthenticatedError):
+            return None
+        member = next((m for m in members if m.user_id == user.id), None)
+        return member.role if member else None
+
     def link_active_project(self, team_id: str, project_id: int, name: str) -> TeamProject:
         project_uuid = self._projects.ensure_project_uuid(project_id)
         return self._synced_client().link_project(team_id, project_uuid, name)
