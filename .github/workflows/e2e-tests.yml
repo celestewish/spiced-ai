@@ -1,0 +1,64 @@
+name: E2E Tests (Claude Code)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # There is no requirements.txt in this repo -- pyproject.toml is the
+        # single source of dependencies. The "dev" extra pulls in pytest
+        # itself; pytest-asyncio is intentionally not installed here (no
+        # async code exists anywhere in src/spiced as of this workflow).
+        run: pip install --break-system-packages -e ".[dev]"
+
+      - name: Run existing unit/integration tests
+        # tests/ is flat (no tests/unit or tests/integration subdirectories)
+        # -- --ignore=tests/e2e keeps this step to the pre-existing
+        # unit/integration coverage, mirroring what the next two steps do
+        # for the E2E suite specifically.
+        run: pytest tests --ignore=tests/e2e -q
+
+      - name: Run Claude Code E2E generation/verification
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: >
+            Read CLAUDE.md and E2E_TEST_PLAN.md. Run the existing tests/e2e suite.
+            If any section from the plan is missing tests, generate them per the
+            rules in CLAUDE.md, then run the full tests/e2e suite. Do not modify
+            feature code without stating why the bug is in the code rather than
+            the test expectation.
+
+      - name: Run full E2E suite
+        run: pytest tests/e2e -q
+
+      - name: Comment results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: "E2E test run complete — see job logs for section-by-section results."
+            });
