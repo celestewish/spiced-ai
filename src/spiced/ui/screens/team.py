@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -36,6 +38,13 @@ from spiced.ui.widgets.scroll_safe_combo_box import ScrollSafeComboBox
 # A small suggested set, not a rigid enum -- indie teams don't fit neat
 # boxes, so the combo box below stays editable (a free-ish string).
 SUGGESTED_DISCIPLINES = ["programmer", "artist", "audio", "animation", "design"]
+
+# Role-Based Permissions (Market-Viability Roadmap, Phase 6). Membership
+# roles (owner/admin/member) are a small, fixed set -- unlike SUGGESTED_
+# DISCIPLINES above, which is intentionally just a suggestion list for a
+# free-text field. Mirrors app.models.ROLE_RANK on the backend, the actual
+# security boundary; this is UI-level hiding only.
+ADMIN_ROLES = frozenset({"owner", "admin"})
 
 
 class _TeamLinkWorker(QObject):
@@ -95,6 +104,29 @@ class _DisciplineLoadWorker(QObject):
             self.failed.emit(f"Couldn't load your discipline: {exc}")
 
 
+class _MembersLoadWorker(QObject):
+    """Loads the team's member list plus the signed-in user's own role on
+    it (Market-Viability Roadmap, Phase 6) -- the role is what the UI uses
+    to decide whether to show Invite/Remove at all; the backend's own
+    require_role check is the actual boundary regardless."""
+
+    done = Signal(list, object)  # list[TeamMember], my_role: str | None
+    failed = Signal(str)
+
+    def __init__(self, services: Services, team_id: str) -> None:
+        super().__init__()
+        self._services = services
+        self._team_id = team_id
+
+    def run(self) -> None:
+        try:
+            members = self._services.teams.list_members(self._team_id)
+            my_role = self._services.teams.my_role(self._team_id)
+            self.done.emit(members, my_role)
+        except Exception as exc:  # surfaced calmly to the user
+            self.failed.emit(f"Couldn't load team members: {exc}")
+
+
 def _card() -> QFrame:
     frame = QFrame()
     frame.setObjectName("Card")
@@ -116,6 +148,7 @@ class TeamScreen(QWidget):
         super().__init__()
         self._services = services
         self._team_id: str | None = None
+        self._my_role: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -155,6 +188,11 @@ class TeamScreen(QWidget):
         self._build_mobile_link_section(mobile_card.layout())
         two_up.addWidget(mobile_card, 1)
         layout.addLayout(two_up)
+
+        members_card = _card()
+        self._build_members_section(members_card.layout())
+        layout.addWidget(members_card)
+
         layout.addStretch(1)
 
         self.refresh()
@@ -296,6 +334,162 @@ class TeamScreen(QWidget):
     def _on_discipline_loaded(self, discipline: str | None) -> None:
         self._discipline_input.setCurrentText(discipline or "")
 
+    # --- Team members (Role-Based Permissions, Market-Viability Roadmap,
+    # Phase 6) ---------------------------------------------------------------
+    #
+    # Invite/Remove are only ever shown to an admin+ member -- UI-level
+    # hiding, not the real boundary (the backend's own require_role check
+    # enforces this regardless of what this screen shows; see
+    # app.routers.teams.require_role on the backend).
+
+    def _build_members_section(self, layout: QVBoxLayout) -> None:
+        heading = QLabel("Team members")
+        heading.setObjectName("CardTitle")
+        layout.addWidget(heading)
+
+        self._members_status = QLabel("")
+        self._members_status.setObjectName("Muted")
+        self._members_status.setWordWrap(True)
+        layout.addWidget(self._members_status)
+
+        self._members_list_layout = QVBoxLayout()
+        self._members_list_layout.setSpacing(6)
+        layout.addLayout(self._members_list_layout)
+
+        self._invite_row = QHBoxLayout()
+        self._invite_email_input = QLineEdit()
+        self._invite_email_input.setPlaceholderText("teammate@example.com")
+        self._invite_row.addWidget(self._invite_email_input, 2)
+        self._invite_role_box = ScrollSafeComboBox()
+        self._invite_role_box.addItems(["member", "admin"])
+        self._invite_row.addWidget(self._invite_role_box, 1)
+        self._invite_btn = PillButton("Invite")
+        self._invite_btn.clicked.connect(self._on_invite_member)
+        self._invite_row.addWidget(self._invite_btn)
+        layout.addLayout(self._invite_row)
+
+    def _set_invite_row_visible(self, visible: bool) -> None:
+        self._invite_email_input.setVisible(visible)
+        self._invite_role_box.setVisible(visible)
+        self._invite_btn.setVisible(visible)
+
+    def _clear_members_list(self) -> None:
+        while self._members_list_layout.count():
+            item = self._members_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _render_members(self, members, my_role: str | None) -> None:
+        self._clear_members_list()
+        is_admin = my_role in ADMIN_ROLES
+        me = self._services.auth.current_user()
+        my_user_id = me.id if me else None
+
+        for member in members:
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            label_text = member.email or member.invited_email or "(pending)"
+            if member.user_id == my_user_id:
+                label_text += " (you)"
+            name_label = QLabel(label_text)
+            row.addWidget(name_label, 2)
+            role_label = QLabel(member.role)
+            role_label.setObjectName("Muted")
+            row.addWidget(role_label, 1)
+            row.addStretch(1)
+            if is_admin and member.role != "owner" and member.user_id != my_user_id:
+                remove_btn = PillButton("Remove", ghost=True)
+                remove_btn.clicked.connect(
+                    lambda _checked=False, m=member: self._on_remove_member(m)
+                )
+                row.addWidget(remove_btn)
+            self._members_list_layout.addWidget(row_widget)
+
+    def _refresh_members(self) -> None:
+        if self._team_id is None:
+            self._members_status.setText("Link this project to a team to see its members.")
+            self._clear_members_list()
+            self._set_invite_row_visible(False)
+            return
+        self._members_status.setText("Loading…")
+        worker = _MembersLoadWorker(self._services, self._team_id)
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_members_loaded)
+        worker.failed.connect(self._on_members_load_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_members_loaded(self, members, my_role: str | None) -> None:
+        self._my_role = my_role
+        self._members_status.setText("")
+        self._render_members(members, my_role)
+        self._set_invite_row_visible(my_role in ADMIN_ROLES)
+
+    def _on_members_load_failed(self, message: str) -> None:
+        self._members_status.setText(message)
+
+    def _on_invite_member(self) -> None:
+        if self._team_id is None:
+            return
+        email = self._invite_email_input.text().strip()
+        if not email:
+            QMessageBox.information(self, "Email needed", "Enter the teammate's email first.")
+            return
+        role = self._invite_role_box.currentText()
+        team_id = self._team_id
+        self._invite_btn.setEnabled(False)
+
+        worker = _TaskMutateWorker(
+            lambda: self._services.teams.invite_member(team_id, email, role)
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._on_invite_done)
+        worker.failed.connect(self._on_invite_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_invite_done(self) -> None:
+        self._invite_btn.setEnabled(True)
+        self._invite_email_input.clear()
+        self._refresh_members()
+
+    def _on_invite_failed(self, message: str) -> None:
+        self._invite_btn.setEnabled(True)
+        QMessageBox.warning(self, "Couldn't invite", message)
+
+    def _on_remove_member(self, member) -> None:
+        if self._team_id is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Remove member?",
+            f"Remove {member.email or member.invited_email} from this team?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        team_id = self._team_id
+        worker = _TaskMutateWorker(
+            lambda: self._services.teams.remove_member(team_id, member.id)
+        )
+        thread = launch_worker(self, worker)
+        thread.started.connect(worker.run)
+        worker.done.connect(self._refresh_members)
+        worker.failed.connect(self._on_remove_failed)
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.start()
+
+    def _on_remove_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Couldn't remove", message)
+
     # --- Refresh -----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -308,6 +502,7 @@ class TeamScreen(QWidget):
                 "No active project selected. Choose one on the Projects screen."
             )
             self._team_id = None
+            self._refresh_members()
             return
         if not project.project_uuid:
             self._context_label.setText(
@@ -315,6 +510,7 @@ class TeamScreen(QWidget):
                 "team-linked projects -- link this project to a team on the Projects screen."
             )
             self._team_id = None
+            self._refresh_members()
             return
 
         self._context_label.setText(f"Active project: {project.name} (team-linked).")
@@ -333,6 +529,7 @@ class TeamScreen(QWidget):
 
     def _on_team_link_loaded(self, team_id: str | None) -> None:
         self._team_id = team_id
+        self._refresh_members()
 
     def _on_team_link_failed(self, message: str) -> None:
         self._mobile_link_status.setText(message)

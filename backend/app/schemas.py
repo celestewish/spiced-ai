@@ -17,6 +17,33 @@ class UserOut(BaseModel):
     created_at: datetime
 
 
+class SubscriptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: str
+    team_id: str | None
+    plan_key: str
+    stripe_customer_id: str
+    stripe_subscription_id: str | None
+    status: str
+    current_period_end: datetime | None
+    created_at: datetime
+
+
+class CheckoutSessionCreate(BaseModel):
+    plan_key: Literal["indie", "studio"]
+    team_id: str | None = None
+
+
+class CheckoutSessionOut(BaseModel):
+    checkout_url: str
+
+
+class PortalSessionOut(BaseModel):
+    portal_url: str
+
+
 class TeamCreate(BaseModel):
     name: str
 
@@ -59,6 +86,19 @@ class TeamInviteRequest(BaseModel):
 
 class MemberDisciplineUpdate(BaseModel):
     discipline: str | None = None
+
+
+class AuditLogEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    actor_user_id: str
+    action: str
+    target_type: str | None
+    target_id: str | None
+    metadata_json: str
+    created_at: datetime
 
 
 class TeamProjectCreate(BaseModel):
@@ -229,6 +269,27 @@ class EventRoutingRuleOut(BaseModel):
     team_id: str
     event_kind: str
     discipline: str
+    created_at: datetime
+
+
+class TriggerRuleCreate(BaseModel):
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str = "{}"
+    enabled: bool = True
+
+
+class TriggerRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    team_id: str
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str
+    enabled: bool
     created_at: datetime
 
 

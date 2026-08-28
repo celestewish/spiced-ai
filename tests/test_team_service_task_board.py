@@ -13,6 +13,7 @@ from spiced.backend_client.api_client import (
     TeamMember,
     TeamProject,
     TeamTask,
+    TriggerRule,
 )
 from spiced.backend_client.auth_client import AuthSession
 from spiced.core.auth_service import AuthService
@@ -42,6 +43,7 @@ class _FakeBackendClient:
         self.tasks: list[TeamTask] = []
         self.comments: list[Comment] = []
         self.routing_rules: list[EventRoutingRule] = []
+        self.trigger_rules: list[TriggerRule] = []
         self.preferences: list[NotificationPreference] = []
         self.notifications: list[Notification] = []
         self.members: list[TeamMember] = [
@@ -68,6 +70,9 @@ class _FakeBackendClient:
 
     def list_members(self, team_id: str) -> list[TeamMember]:
         return self.members
+
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        self.members = [m for m in self.members if m.id != member_id]
 
     def set_my_discipline(self, team_id, discipline):
         self.members[0] = TeamMember(
@@ -144,6 +149,22 @@ class _FakeBackendClient:
 
     def delete_routing_rule(self, team_id, rule_id):
         self.routing_rules = [r for r in self.routing_rules if r.id != rule_id]
+
+    def list_trigger_rules(self, team_id):
+        return [r for r in self.trigger_rules if r.team_id == team_id]
+
+    def add_trigger_rule(self, team_id, event_kind, min_severity, action, *,
+                          action_params_json="{}", enabled=True):
+        rule = TriggerRule(
+            id=f"tr{len(self.trigger_rules) + 1}", team_id=team_id, event_kind=event_kind,
+            min_severity=min_severity, action=action, action_params_json=action_params_json,
+            enabled=enabled, created_at="2026-08-04T00:00:00Z",
+        )
+        self.trigger_rules.append(rule)
+        return rule
+
+    def delete_trigger_rule(self, team_id, rule_id):
+        self.trigger_rules = [r for r in self.trigger_rules if r.id != rule_id]
 
     def list_notification_preferences(self, team_id):
         return [p for p in self.preferences if p.team_id == team_id]
@@ -398,3 +419,65 @@ def test_notify_relevant_members_excludes_members_with_no_user_id():
         PROJECT_UUID, "build_failed", "title", "body"
     )
     assert created == []
+
+
+# --- Role-Based Permissions (Market-Viability Roadmap, Phase 6) ------------
+
+
+def test_remove_member_delegates_to_backend():
+    teams, backend = _setup()
+    backend.members.append(
+        TeamMember(
+            id="m2", team_id="team-1", user_id="u2", invited_email=None, role="member",
+            discipline=None, joined_at="2026-08-25T00:00:00Z", created_at="2026-08-25T00:00:00Z",
+        )
+    )
+
+    teams.remove_member("team-1", "m2")
+
+    assert [m.id for m in backend.members] == ["m1"]
+
+
+def test_my_role_returns_the_signed_in_users_own_role():
+    teams, _backend = _setup()  # backend.members[0] is user_id="u1", role="owner"
+    assert teams.my_role("team-1") == "owner"
+
+
+def test_my_role_none_when_not_a_member():
+    teams, backend = _setup()
+    backend.members = [
+        TeamMember(
+            id="m9", team_id="team-1", user_id="someone-else", invited_email=None,
+            role="member", discipline=None, joined_at="2026-08-25T00:00:00Z",
+            created_at="2026-08-25T00:00:00Z",
+        )
+    ]
+    assert teams.my_role("team-1") is None
+
+
+def test_my_role_none_when_not_logged_in():
+    db = Database(":memory:")
+    settings = SettingsRepository(db)
+    auth = AuthService(settings, _FakeAuthClient())
+    projects = ProjectsService(ProjectRepository(db))
+    backend = _FakeBackendClient()
+    teams = TeamService(auth, projects, backend)
+    # Deliberately no auth.log_in() call this time.
+    assert teams.my_role("team-1") is None
+
+
+# --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap, Phase 4) -
+
+
+def test_add_list_and_delete_trigger_rule():
+    teams, backend = _setup()
+    rule = teams.add_trigger_rule("team-1", "art.palette_drift", "warning", "notify")
+    assert rule.event_kind == "art.palette_drift"
+    assert rule.min_severity == "warning"
+    assert rule.action == "notify"
+
+    assert [r.id for r in teams.list_trigger_rules("team-1")] == [rule.id]
+
+    teams.delete_trigger_rule("team-1", rule.id)
+    assert teams.list_trigger_rules("team-1") == []
+    assert backend.trigger_rules == []

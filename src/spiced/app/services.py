@@ -28,12 +28,15 @@ from spiced.automation.visual_regression_capture import VisualRegressionCaptureS
 from spiced.backend_client import telemetry_client
 from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedError
 from spiced.core import community as community_module
+from spiced.core import git_integration
 from spiced.core.accessibility import AccessibilityService
+from spiced.core.animation_bug_detection import AnimationBugScanResult
 from spiced.core.animation_state_machine_check import AnimationStateMachineCheckService
 from spiced.core.asset_review_queue import AssetReviewQueueService
 from spiced.core.asset_scan import AssetScanService
 from spiced.core.audio_implementation_checklist import AudioImplementationChecklistService
 from spiced.core.auth_service import AuthService
+from spiced.core.billing_service import BillingService
 from spiced.core.budget_tracker import BudgetTrackerService
 from spiced.core.build_pipeline import run_build_pipeline
 from spiced.core.changelog_draft import ChangelogService
@@ -61,6 +64,7 @@ from spiced.core.precommit_hook import HookInstallResult, install_hook, uninstal
 from spiced.core.projects_service import ProjectsService
 from spiced.core.regression import RegressionService
 from spiced.core.roadmap_service import RoadmapService
+from spiced.core.rules_engine import RuleAwareFindingRepository, animation_bug_event, evaluate_rules
 from spiced.core.save_load_tester import SaveLoadTesterService
 from spiced.core.session_summary import SessionSummaryService, now_sqlite
 from spiced.core.shader_performance_profiling import ShaderPerformanceProfilingService
@@ -101,6 +105,7 @@ from spiced.storage.known_issues import KnownIssueRepository
 from spiced.storage.localization_readiness_reports import LocalizationReadinessReportRepository
 from spiced.storage.mix_qa_reports import MixQaReportRepository
 from spiced.storage.palette_reference_colors import PaletteReferenceColorRepository
+from spiced.storage.pending_changelog_notes import PendingChangelogNoteRepository
 from spiced.storage.performance_reports import PerformanceReportRepository
 from spiced.storage.player_crash_sync import PlayerCrashSyncRepository
 from spiced.storage.playtester_signups import PlaytesterSignupRepository
@@ -182,7 +187,15 @@ class Services:
         self.db = Database(db_path)
         self.projects = ProjectsService(ProjectRepository(self.db))
         self._settings = SettingsRepository(self.db)
-        self.usage = UsageCounter(UsageRepository(self.db), self._settings)
+        # Small-Team Mode auth is constructed here (rather than down with the
+        # rest of the Small-Team Mode wiring below) because Billing
+        # Foundation's UsageCounter needs a BillingService, which itself
+        # needs AuthService -- see core.usage_counter.UsageCounter.
+        # current_plan for why (real plan from Stripe once signed in, the
+        # local mock setting otherwise).
+        self.auth = AuthService(self._settings)
+        self.billing = BillingService(self.auth)
+        self.usage = UsageCounter(UsageRepository(self.db), self._settings, self.billing)
         self.regression = RegressionService(KnownIssueRepository(self.db))
         self.debugging = DebuggingService(DebugSessionRepository(self.db), self.regression)
         self.testing = TestingService(
@@ -200,12 +213,16 @@ class Services:
 
         # Build & Release Automation + Asset Pipeline (Phase D, section 6).
         self.build_reports = BuildReportRepository(self.db)
-        self.changelog = ChangelogService(ChangelogDraftRepository(self.db), self.regression)
+        self.changelog = ChangelogService(
+            ChangelogDraftRepository(self.db),
+            self.regression,
+            PendingChangelogNoteRepository(self.db),
+        )
         self.asset_scan = AssetScanService(AssetScanReportRepository(self.db))
 
-        # Small-Team Mode (opt-in): auth + team/project-linking against the
-        # new backend. Solo-Dev Mode never touches these.
-        self.auth = AuthService(self._settings)
+        # Small-Team Mode (opt-in): team/project-linking against the new
+        # backend, on top of the AuthService constructed above. Solo-Dev
+        # Mode never touches these.
         self.teams = TeamService(self.auth, self.projects)
         # Open Roadmap & Feedback Loop (Phase C): viewing needs no login;
         # submitting/voting reuses this same AuthService/account system.
@@ -310,36 +327,46 @@ class Services:
         # (AutomationFindingRepository) rather than a one-off per-feature
         # report table, since every future Bible feature reuses that same
         # table.
-        self.loudness_normalize = LoudnessNormalizeService(AutomationFindingRepository(self.db))
+        #
+        # Every one of these 13 Bible-track services is handed
+        # self._rule_aware_findings (Market-Viability Roadmap, Phase 4)
+        # rather than a raw AutomationFindingRepository -- same public
+        # interface (create/get/get_by_run_id/list_for_project), so none of
+        # the 13 service classes themselves needed to change; every finding
+        # they persist now also gets evaluated against the Cross-Feature
+        # Rules Engine automatically. See core.rules_engine.
+        # RuleAwareFindingRepository's own docstring.
+        self._rule_aware_findings = RuleAwareFindingRepository(
+            AutomationFindingRepository(self.db), self
+        )
+        self.loudness_normalize = LoudnessNormalizeService(self._rule_aware_findings)
 
         # Asset Technical QA Scan (SPICED_IMPLEMENTATION_BIBLE.md, Feature 3).
         # Third feature on the Bible's track: reuses self.asset_review_queue
         # (below) for its already-built/verified resolution/file-size/format/
         # mipmap checks rather than duplicating them, and adds naming-
         # convention + live-engine pivot checking on top.
-        self.asset_technical_qa = AssetTechnicalQaService(AutomationFindingRepository(self.db))
+        self.asset_technical_qa = AssetTechnicalQaService(self._rule_aware_findings)
 
         # Texture & Palette Drift Detection (SPICED_IMPLEMENTATION_BIBLE.md,
         # Feature 4). Fourth feature on the Bible's track -- needs no
         # external tool or engine connection, unlike Features 1-3.
         self.palette_drift = PaletteDriftService(
-            PaletteReferenceColorRepository(self.db), AutomationFindingRepository(self.db)
+            PaletteReferenceColorRepository(self.db), self._rule_aware_findings
         )
 
         # Mix Technical QA (SPICED_IMPLEMENTATION_BIBLE.md, Feature 5). Fifth
         # feature on the Bible's track -- reuses
         # core.mix_level_qa._read_pcm_channel0 for WAV decoding (see that
         # service, self.mix_level_qa, above) rather than re-deriving it.
-        self.mix_technical_qa = MixTechnicalQaService(AutomationFindingRepository(self.db))
+        self.mix_technical_qa = MixTechnicalQaService(self._rule_aware_findings)
 
         # Shader Variant & Compile Bloat Analysis (SPICED_IMPLEMENTATION_BIBLE.md,
         # Feature 6). Sixth feature on the Bible's track -- shares the "VFX
         # analyzer" territory with self.visual_regression_capture (Feature 2,
         # below) and self.shader_performance_profiling (the existing static
         # scan), but drives a real headless Unity call for variant counts.
-        self.shader_variant_analysis = ShaderVariantAnalysisService(
-            AutomationFindingRepository(self.db)
-        )
+        self.shader_variant_analysis = ShaderVariantAnalysisService(self._rule_aware_findings)
 
         # State Machine & Retarget Validation (SPICED_IMPLEMENTATION_BIBLE.md,
         # Feature 7). Seventh feature on the Bible's track -- reuses
@@ -347,23 +374,21 @@ class Services:
         # state_machine_check for its already-verified unreachable-state and
         # missing-transition-target checks rather than duplicating them, and
         # adds dead-end-state detection plus live-engine retarget validation.
-        self.state_machine_validation = StateMachineValidationService(
-            AutomationFindingRepository(self.db)
-        )
+        self.state_machine_validation = StateMachineValidationService(self._rule_aware_findings)
 
         # UV Unwrapping + LOD Generation (SPICED_IMPLEMENTATION_BIBLE.md,
         # Feature 8). Eighth feature on the Bible's track -- the first that
         # writes real mesh file artifacts, not just a report. No dedicated
         # per-project config table: LOD ratios are a per-run parameter, not
         # a persisted setting.
-        self.uv_lod_generation = UvLodGenerationService(AutomationFindingRepository(self.db))
+        self.uv_lod_generation = UvLodGenerationService(self._rule_aware_findings)
 
         # Shader Performance Profiling (SPICED_IMPLEMENTATION_BIBLE.md,
         # Feature 9). Ninth and final Ship First feature -- analyzes an
         # existing RenderDoc capture (see
         # connectors.renderdoc_analysis's docstring for the significant
         # caveat: unverified against a real RenderDoc install).
-        self.gpu_shader_profiling = GpuShaderProfilingService(AutomationFindingRepository(self.db))
+        self.gpu_shader_profiling = GpuShaderProfilingService(self._rule_aware_findings)
 
         self.animation_state_machine_check = AnimationStateMachineCheckService(
             AnimationStateMachineReportRepository(self.db)
@@ -392,7 +417,7 @@ class Services:
         self.visual_regression_capture = VisualRegressionCaptureService(
             VisualRegressionKeySceneRepository(self.db),
             VisualRegressionCaptureRepository(self.db),
-            AutomationFindingRepository(self.db),
+            self._rule_aware_findings,
         )
 
         # Phase 2 of the Bible's live-engine-integration track (Features
@@ -407,7 +432,7 @@ class Services:
         # a real Unity Play Mode capture, kept side by side with that
         # existing static scan rather than replacing it.
         self.live_animation_bug_detection = LiveAnimationBugDetectionService(
-            AutomationFindingRepository(self.db)
+            self._rule_aware_findings
         )
 
         # Mocap Cleanup Assist (Feature 12): detection-only offline BVH
@@ -415,14 +440,14 @@ class Services:
         # (automation.motion_quality) against forward-kinematics positions
         # computed from the raw mocap file (automation.bvh_mocap) -- no
         # live engine connection needed at all.
-        self.mocap_cleanup_assist = MocapCleanupAssistService(AutomationFindingRepository(self.db))
+        self.mocap_cleanup_assist = MocapCleanupAssistService(self._rule_aware_findings)
 
         # Retopology Assist (Feature 10): headless Blender + QuadriFlow,
         # subprocess-isolated exactly like Feature 8's xatlas worker (a
         # native remesh crash must not take down the app). UNVERIFIED
         # against a real Blender install in this environment -- see
         # automation.retopology_assist's module docstring.
-        self.retopology_assist = RetopologyAssistService(AutomationFindingRepository(self.db))
+        self.retopology_assist = RetopologyAssistService(self._rule_aware_findings)
 
         # Localization Audio Sync Checker, Content Verification (Feature
         # 13): self-hosted faster-whisper, subprocess-isolated, kept side
@@ -431,7 +456,7 @@ class Services:
         # content-verification path that module's docstring says is out of
         # scope for it.
         self.localization_content_verification = LocalizationContentVerificationService(
-            AutomationFindingRepository(self.db)
+            self._rule_aware_findings
         )
 
     def load_demo_project(self, *, fresh: bool = False) -> Project:
@@ -682,6 +707,59 @@ class Services:
 
     def uninstall_precommit_hook(self, project: Project) -> bool:
         return uninstall_hook(project.path)
+
+    # --- Version Control (opt-in per project) -------------------------------
+    #
+    # Thin pass-throughs to core.git_integration, which re-checks
+    # ``project.git_integration_enabled`` itself on every call (the actual
+    # gate) — these exist only so screen code depends on Services, the same
+    # convention every other feature in this class follows.
+
+    def git_repo_status(self, project: Project):
+        return git_integration.repo_status(project)
+
+    def git_file_history(self, project: Project, relative_path: str, limit: int = 20):
+        return git_integration.file_history(project, relative_path, limit)
+
+    def git_diff_for_path(self, project: Project, relative_path: str, *, staged: bool = False):
+        return git_integration.diff_for_path(project, relative_path, staged=staged)
+
+    def git_stage_paths(self, project: Project, relative_paths: list[str]):
+        return git_integration.stage_paths(project, relative_paths)
+
+    def git_commit_staged(
+        self,
+        project: Project,
+        message: str,
+        *,
+        author_name: str | None = None,
+        author_email: str | None = None,
+    ):
+        return git_integration.commit_staged(
+            project, message, author_name=author_name, author_email=author_email
+        )
+
+    def git_discard_unstaged_changes(
+        self, project: Project, relative_paths: list[str], *, confirmed: bool = False
+    ):
+        return git_integration.discard_unstaged_changes(
+            project, relative_paths, confirmed=confirmed
+        )
+
+    # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap,
+    # Phase 4) ----------------------------------------------------------
+    # The 13 Bible-track automation services above all flow through
+    # self._rule_aware_findings automatically. core.animation_bug_detection
+    # is the one confirmed legacy (pre-Finding-schema) module this phase
+    # wires -- it has no service class of its own to hook into (see
+    # core.rules_engine's module docstring), so this is its explicit,
+    # single call site, called from ui.screens.animation's worker right
+    # after a scan completes.
+
+    def record_animation_bug_finding(self, project_id: int, result: AnimationBugScanResult) -> None:
+        event = animation_bug_event(result, project_id, run_id=str(uuid.uuid4()))
+        if event is not None:
+            evaluate_rules(self, event)
 
     def active_project(self) -> Project | None:
         """Return the developer's currently selected project, if still present."""

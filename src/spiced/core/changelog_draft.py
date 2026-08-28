@@ -19,6 +19,10 @@ from spiced.ai.prompt_templates import build_changelog_prompt
 from spiced.core.regression import RegressionService
 from spiced.storage.changelog_drafts import ChangelogDraft, ChangelogDraftRepository
 from spiced.storage.known_issues import STATUS_RESOLVED
+from spiced.storage.pending_changelog_notes import (
+    PendingChangelogNote,
+    PendingChangelogNoteRepository,
+)
 from spiced.storage.projects import Project
 
 DEFAULT_COMMIT_COUNT = 40
@@ -51,10 +55,32 @@ class ChangelogResult:
 
 class ChangelogService:
     def __init__(
-        self, drafts: ChangelogDraftRepository, regression: RegressionService | None = None
+        self,
+        drafts: ChangelogDraftRepository,
+        regression: RegressionService | None = None,
+        pending_notes: PendingChangelogNoteRepository | None = None,
     ) -> None:
         self._drafts = drafts
         self._regression = regression
+        self._pending_notes = pending_notes
+
+    # --- Queued notes (Market-Viability Roadmap, Phase 4's
+    # queue_changelog_note rules-engine action) -----------------------------
+
+    def queue_note(self, project_id: int, note_text: str, source_event_kind: str | None = None):
+        """Queue a note for the next draft to incorporate. A no-op returning
+        None if this service wasn't given a ``PendingChangelogNoteRepository``
+        (older/lighter-weight construction sites, e.g. in tests, that don't
+        need this) -- never raises, matching this feature's "heads-up, never
+        a hard requirement" character."""
+        if self._pending_notes is None:
+            return None
+        return self._pending_notes.queue(project_id, note_text, source_event_kind)
+
+    def pending_notes(self, project_id: int) -> list[PendingChangelogNote]:
+        if self._pending_notes is None:
+            return []
+        return self._pending_notes.list_pending(project_id)
 
     def read_git_log(
         self,
@@ -148,12 +174,14 @@ class ChangelogService:
             project, commit_count=commit_count, since_date=since_date
         )
         resolved_titles = self.resolved_issues_since(project.id, since_date)
+        pending = self.pending_notes(project.id)
 
         prompt = build_changelog_prompt(
             git_log_excerpt=log_excerpt,
             commit_range=commit_range,
             resolved_issue_titles=resolved_titles,
             project_name=project.name,
+            pending_note_texts=[note.note_text for note in pending],
         )
         if on_chunk is not None:
             response = provider.generate_stream(prompt, on_chunk)
@@ -169,6 +197,8 @@ class ChangelogService:
             ai_draft_text=response.text,
             provider=response.provider,
         )
+        if self._pending_notes is not None and pending:
+            self._pending_notes.mark_consumed([note.id for note in pending])
         return ChangelogResult(
             source=ChangelogSource(
                 commit_range=commit_range,

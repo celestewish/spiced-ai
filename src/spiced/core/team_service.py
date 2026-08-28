@@ -21,6 +21,7 @@ from spiced.backend_client.api_client import (
     TeamProject,
     TeamSessionSummary,
     TeamTask,
+    TriggerRule,
 )
 from spiced.core.auth_service import AuthService
 from spiced.core.notification_routing import relevant_members_for_event
@@ -53,6 +54,26 @@ class TeamService:
 
     def list_members(self, team_id: str) -> list[TeamMember]:
         return self._synced_client().list_members(team_id)
+
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        self._synced_client().remove_member(team_id, member_id)
+
+    def my_role(self, team_id: str) -> str | None:
+        """The signed-in user's own role on this team, or ``None`` if they
+        aren't a member (or the lookup fails) -- Role-Based Permissions
+        (Market-Viability Roadmap, Phase 6), used by the desktop UI to hide
+        admin-only actions from non-admins. UI-level hiding only: the real
+        boundary is the backend's own require_role check, which enforces
+        this regardless of what the UI shows."""
+        user = self._auth.current_user()
+        if user is None:
+            return None
+        try:
+            members = self.list_members(team_id)
+        except (BackendAPIError, NotAuthenticatedError):
+            return None
+        member = next((m for m in members if m.user_id == user.id), None)
+        return member.role if member else None
 
     def link_active_project(self, team_id: str, project_id: int, name: str) -> TeamProject:
         project_uuid = self._projects.ensure_project_uuid(project_id)
@@ -325,6 +346,37 @@ class TeamService:
 
     def delete_routing_rule(self, team_id: str, rule_id: str) -> None:
         self._synced_client().delete_routing_rule(team_id, rule_id)
+
+    # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap,
+    # Phase 4) -----------------------------------------------------------
+    # Rule *configuration* only, same thin pass-through shape as the
+    # routing-rules calls above -- core.rules_engine.evaluate_rules is what
+    # actually reads these and decides what to do.
+
+    def list_trigger_rules(self, team_id: str) -> list[TriggerRule]:
+        return self._synced_client().list_trigger_rules(team_id)
+
+    def add_trigger_rule(
+        self,
+        team_id: str,
+        event_kind: str,
+        min_severity: str,
+        action: str,
+        *,
+        action_params_json: str = "{}",
+        enabled: bool = True,
+    ) -> TriggerRule:
+        return self._synced_client().add_trigger_rule(
+            team_id,
+            event_kind,
+            min_severity,
+            action,
+            action_params_json=action_params_json,
+            enabled=enabled,
+        )
+
+    def delete_trigger_rule(self, team_id: str, rule_id: str) -> None:
+        self._synced_client().delete_trigger_rule(team_id, rule_id)
 
     def list_notification_preferences(self, team_id: str) -> list[NotificationPreference]:
         return self._synced_client().list_notification_preferences(team_id)

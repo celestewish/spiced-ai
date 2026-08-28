@@ -946,7 +946,7 @@ class TestingScreen(QWidget):
         self._import_btn.clicked.connect(self._on_import)
         row.addWidget(self._import_btn)
         row.addStretch(1)
-        self._analyze_btn = PillButton("Analyze")
+        self._analyze_btn = PillButton("Analyze", water_fill=True)
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
@@ -1082,7 +1082,7 @@ class TestingScreen(QWidget):
 
         row = QHBoxLayout()
         row.addStretch(1)
-        self._testgen_generate_btn = PillButton("Generate Unity test script")
+        self._testgen_generate_btn = PillButton("Generate Unity test script", water_fill=True)
         self._testgen_generate_btn.setEnabled(False)
         self._testgen_generate_btn.clicked.connect(self._on_generate_test_script)
         row.addWidget(self._testgen_generate_btn)
@@ -1168,7 +1168,7 @@ class TestingScreen(QWidget):
         self._economy_simulate_btn.clicked.connect(self._on_economy_simulate)
         row.addWidget(self._economy_simulate_btn)
         row.addStretch(1)
-        self._economy_ai_btn = PillButton("Get AI summary", ghost=True)
+        self._economy_ai_btn = PillButton("Get AI summary", ghost=True, water_fill=True)
         self._economy_ai_btn.clicked.connect(self._on_economy_ai)
         row.addWidget(self._economy_ai_btn)
         layout.addLayout(row)
@@ -1240,7 +1240,7 @@ class TestingScreen(QWidget):
         self._perf_import_btn.clicked.connect(self._on_perf_import)
         row.addWidget(self._perf_import_btn)
         row.addStretch(1)
-        self._perf_analyze_btn = PillButton("Analyze")
+        self._perf_analyze_btn = PillButton("Analyze", water_fill=True)
         self._perf_analyze_btn.clicked.connect(self._on_perf_analyze)
         row.addWidget(self._perf_analyze_btn)
         layout.addLayout(row)
@@ -1309,7 +1309,7 @@ class TestingScreen(QWidget):
         self._access_import_btn.clicked.connect(self._on_access_import)
         row.addWidget(self._access_import_btn)
         row.addStretch(1)
-        self._access_analyze_btn = PillButton("Analyze")
+        self._access_analyze_btn = PillButton("Analyze", water_fill=True)
         self._access_analyze_btn.clicked.connect(self._on_access_analyze)
         row.addWidget(self._access_analyze_btn)
         layout.addLayout(row)
@@ -1422,7 +1422,7 @@ class TestingScreen(QWidget):
         self._checklist_btn = PillButton("Show checklist")
         self._checklist_btn.clicked.connect(self._on_show_checklist)
         row.addWidget(self._checklist_btn)
-        self._checklist_ai_btn = PillButton("Get AI take", ghost=True)
+        self._checklist_ai_btn = PillButton("Get AI take", ghost=True, water_fill=True)
         self._checklist_ai_btn.clicked.connect(self._on_checklist_ai)
         row.addWidget(self._checklist_ai_btn)
         layout.addLayout(row)
@@ -1834,6 +1834,7 @@ class TestingScreen(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy)
         self._analyze_btn.setText("Analyzing…" if busy else "Analyze")
+        self._analyze_btn.set_loading(busy)
 
     # --- Run Unity tests handlers --------------------------------------------
 
@@ -2041,6 +2042,7 @@ class TestingScreen(QWidget):
         test_case = self._services.testing.get_case(self._selected_case_id)
         self._testgen_generate_btn.setEnabled(False)
         self._testgen_generate_btn.setText("Thinking…")
+        self._testgen_generate_btn.set_loading(True)
         self._testgen_approve_btn.setEnabled(False)
         self._testgen_status.setText("")
         self._testgen_notes.clear()
@@ -2061,6 +2063,7 @@ class TestingScreen(QWidget):
     def _on_test_script_generated(self, result: TestGenerationResult) -> None:
         self._testgen_generate_btn.setEnabled(True)
         self._testgen_generate_btn.setText("Generate Unity test script")
+        self._testgen_generate_btn.set_loading(False)
         self._current_test_script_draft = result
         self._testgen_draft.setPlainText(result.draft.draft_text or "")
         self._testgen_notes.setPlainText(result.response_text)
@@ -2075,6 +2078,7 @@ class TestingScreen(QWidget):
     def _on_test_script_failed(self, message: str) -> None:
         self._testgen_generate_btn.setEnabled(True)
         self._testgen_generate_btn.setText("Generate Unity test script")
+        self._testgen_generate_btn.set_loading(False)
         self._testgen_status.setText(message)
         self._testgen_notes.clear()
 
@@ -2145,6 +2149,7 @@ class TestingScreen(QWidget):
         filename = self._perf_pending_filename
         self._perf_analyze_btn.setEnabled(False)
         self._perf_analyze_btn.setText("Analyzing…")
+        self._perf_analyze_btn.set_loading(True)
         self._perf_result.clear()
 
         worker = _PerformanceWorker(
@@ -2172,6 +2177,7 @@ class TestingScreen(QWidget):
         self._perf_pending_filename = None
         self._perf_analyze_btn.setEnabled(True)
         self._perf_analyze_btn.setText("Analyze")
+        self._perf_analyze_btn.set_loading(False)
         self.usage_changed.emit()
         self._refresh_perf_history()
 
@@ -2198,6 +2204,7 @@ class TestingScreen(QWidget):
         self._perf_source_link.set_source(None, None)
         self._perf_analyze_btn.setEnabled(True)
         self._perf_analyze_btn.setText("Analyze")
+        self._perf_analyze_btn.set_loading(False)
 
     # --- Accessibility handlers ------------------------------------------------
 
@@ -2228,6 +2235,7 @@ class TestingScreen(QWidget):
         filename = self._access_pending_filename
         self._access_analyze_btn.setEnabled(False)
         self._access_analyze_btn.setText("Analyzing…")
+        self._access_analyze_btn.set_loading(True)
         self._access_result.clear()
 
         worker = _AccessibilityWorker(self._services, text, source_type, filename)
@@ -2254,6 +2262,7 @@ class TestingScreen(QWidget):
         self._access_pending_filename = None
         self._access_analyze_btn.setEnabled(True)
         self._access_analyze_btn.setText("Analyze")
+        self._access_analyze_btn.set_loading(False)
         self.usage_changed.emit()
         self._refresh_access_history()
 
@@ -2308,6 +2317,7 @@ class TestingScreen(QWidget):
         self._access_source_link.set_source(None, None)
         self._access_analyze_btn.setEnabled(True)
         self._access_analyze_btn.setText("Analyze")
+        self._access_analyze_btn.set_loading(False)
 
     # --- Build Pipeline handlers ---------------------------------------------
 
@@ -2448,6 +2458,7 @@ class TestingScreen(QWidget):
         self._last_checklist = checklist
         self._checklist_ai_btn.setEnabled(False)
         self._checklist_ai_btn.setText("Thinking…")
+        self._checklist_ai_btn.set_loading(True)
         # Snapshot the deterministic checklist text once, before streaming
         # appends anything -- the done/failed handlers below recompose from
         # this rather than re-reading the (by then AI-chunk-appended) widget.
@@ -2470,6 +2481,7 @@ class TestingScreen(QWidget):
     def _on_checklist_ai_done(self, text: str) -> None:
         self._checklist_ai_btn.setEnabled(True)
         self._checklist_ai_btn.setText("Get AI take")
+        self._checklist_ai_btn.set_loading(False)
         self._checklist_result.setPlainText(
             f"{self._checklist_base_text}\n\n--- AI take ---\n{text}"
         )
@@ -2478,6 +2490,7 @@ class TestingScreen(QWidget):
     def _on_checklist_ai_failed(self, message: str) -> None:
         self._checklist_ai_btn.setEnabled(True)
         self._checklist_ai_btn.setText("Get AI take")
+        self._checklist_ai_btn.set_loading(False)
         self._checklist_result.setPlainText(f"{self._checklist_base_text}\n\n{message}")
 
     # --- Economy Simulation handlers ----------------------------------------
@@ -2539,6 +2552,7 @@ class TestingScreen(QWidget):
             return
         self._economy_ai_btn.setEnabled(False)
         self._economy_ai_btn.setText("Thinking…")
+        self._economy_ai_btn.set_loading(True)
         self._economy_result.clear()
 
         worker = _EconomySimulationAIWorker(self._services, project, data)
@@ -2557,6 +2571,7 @@ class TestingScreen(QWidget):
     def _on_economy_ai_done(self, review: EconomySimulationReview) -> None:
         self._economy_ai_btn.setEnabled(True)
         self._economy_ai_btn.setText("Get AI summary")
+        self._economy_ai_btn.set_loading(False)
         text = _format_economy_findings(review.findings)
         if review.response_text:
             text += f"\n\n--- AI summary ---\n{review.response_text}"
@@ -2567,6 +2582,7 @@ class TestingScreen(QWidget):
     def _on_economy_ai_failed(self, message: str) -> None:
         self._economy_ai_btn.setEnabled(True)
         self._economy_ai_btn.setText("Get AI summary")
+        self._economy_ai_btn.set_loading(False)
         self._economy_result.setPlainText(message)
 
     def _refresh_economy_history(self) -> None:

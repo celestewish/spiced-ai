@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import uuid
 
+from spiced.connectors.godot import GodotDetectionResult, detect_godot_project
 from spiced.connectors.unity import UnityDetectionResult, detect_unity_project
+from spiced.connectors.unreal import UnrealDetectionResult, detect_unreal_project
 from spiced.storage.projects import Project, ProjectRepository
 
 
@@ -27,22 +29,40 @@ class ProjectsService:
     def get_project(self, project_id: int) -> Project:
         return self._repo.get(project_id)
 
-    def attach_unity_folder(
+    def attach_engine_folder(
         self, project_id: int, folder: str
-    ) -> tuple[Project, UnityDetectionResult]:
-        """Validate a Unity folder and store its path, status, and metadata.
+    ) -> tuple[Project, UnityDetectionResult | GodotDetectionResult | UnrealDetectionResult]:
+        """Validate a project's folder against its own engine and store its
+        path, status, and metadata.
 
-        The result is stored whether or not the folder is valid, so the UI can
-        show a friendly warning while still remembering the developer's choice.
+        Dispatches on ``project.engine`` -- ``"Godot"`` gets
+        ``detect_godot_project``, ``"Unreal"`` gets ``detect_unreal_project``,
+        everything else (``"Unity"``, ``"Other"``) keeps this method's
+        original Unity-shaped detection, preserving exact prior behavior for
+        every project that isn't Godot or Unreal. The result is stored
+        whether or not the folder is valid, so the UI can show a friendly
+        warning while still remembering the developer's choice.
+
+        Renamed from ``attach_unity_folder`` now that it dispatches across
+        engines -- a name that still said "unity" once it could also detect
+        a Godot or Unreal project would have been actively misleading to
+        read.
         """
-        detection = detect_unity_project(folder)
-        project = self._repo.set_unity_folder(
+        project = self._repo.get(project_id)
+        detection: UnityDetectionResult | GodotDetectionResult | UnrealDetectionResult
+        if project.engine == "Godot":
+            detection = detect_godot_project(folder)
+        elif project.engine == "Unreal":
+            detection = detect_unreal_project(folder)
+        else:
+            detection = detect_unity_project(folder)
+        updated = self._repo.set_unity_folder(
             project_id,
             path=str(folder),
             validation_status=detection.validation_status,
             metadata=detection.metadata() or None,
         )
-        return project, detection
+        return updated, detection
 
     def set_unity_test_run_settings(
         self, project_id: int, enabled: bool, editor_path_override: str | None = None
@@ -92,6 +112,16 @@ class ProjectsService:
         Off by default, same opt-in shape as the other per-project toggles.
         """
         return self._repo.set_design_doc_sync_settings(project_id, enabled)
+
+    def set_git_integration_settings(self, project_id: int, enabled: bool) -> Project:
+        """Opt a project in/out of the Version Control connector.
+
+        Off by default, same opt-in shape as the other per-project toggles.
+        This alone never touches the filesystem — see
+        ``core.git_integration`` for the gated read/write operations, which
+        the Projects screen calls separately once this is on.
+        """
+        return self._repo.set_git_integration_settings(project_id, enabled)
 
     def set_loudness_normalize_target(
         self, project_id: int, target_lufs: float | None

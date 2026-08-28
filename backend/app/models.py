@@ -35,6 +35,47 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class Subscription(Base):
+    """Billing Foundation (Market-Viability Roadmap, Phase 5): one Stripe
+    subscription, mirrored locally so plan-gating never has to call Stripe
+    on every request.
+
+    ``user_id`` is never nullable -- a Stripe customer is always a specific
+    person's payment method, even when the plan is meant to cover a team's
+    shared usage. ``team_id`` is the optional "this plan covers this team"
+    tag on top of that, not a second, mutually-exclusive owner axis; a
+    purely individual subscription simply leaves it unset. Rows are
+    upserted by ``stripe_subscription_id`` from the webhook handler
+    (``routers.billing.handle_webhook``) as Stripe's own source of truth
+    changes -- this table is a mirror, never written to independently of a
+    real Stripe event (except the temporary ``status="incomplete"`` row a
+    checkout session creation may pre-create, see that endpoint).
+
+    ``status`` stores Stripe's own subscription status string verbatim
+    (``active``, ``trialing``, ``past_due``, ``canceled``, ...) rather than
+    a narrower app-invented enum, so this table never falls out of sync
+    with what Stripe itself considers valid.
+    """
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    team_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("teams.id"), nullable=True, index=True
+    )
+    plan_key: Mapped[str] = mapped_column(String(20))
+    stripe_customer_id: Mapped[str] = mapped_column(String(255), index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(30))
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Team(Base):
     __tablename__ = "teams"
 
@@ -51,6 +92,18 @@ class Team(Base):
     )
 
 
+# Role-Based Permissions (Market-Viability Roadmap, Phase 6). A small,
+# explicit 3-tier set -- resisted the urge to design a fuller permissions
+# matrix beyond the report's actual cited need ("control who sees budget/
+# contract data vs. own role's task board"). ROLE_RANK backs
+# routers.teams.require_role's "at least this senior" check.
+ROLE_OWNER = "owner"
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
+VALID_ROLES = (ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER)
+ROLE_RANK = {ROLE_MEMBER: 0, ROLE_ADMIN: 1, ROLE_OWNER: 2}
+
+
 class TeamMember(Base):
     """A team membership row.
 
@@ -59,6 +112,11 @@ class TeamMember(Base):
     ``invited_email`` records the address. The next time any user
     authenticates (see ``app.auth.get_current_user``), pending rows matching
     their verified email are attached to their user id and marked joined.
+
+    ``role`` (Phase 6): ``owner`` (the team creator, exactly one per team,
+    never assignable via invite), ``admin``, or ``member`` -- see
+    ``routers.teams.require_role``, the dependency that makes this
+    load-bearing rather than the vestigial field it was before Phase 6.
     """
 
     __tablename__ = "team_members"
@@ -99,6 +157,41 @@ class TeamMember(Base):
         to show teammates by name/email rather than a bare user id.
         """
         return self.invited_email or (self.user.email if self.user else None)
+
+
+class AuditLogEntry(Base):
+    """One recorded team-scoped mutation (Market-Viability Roadmap, Phase
+    6). Additive only -- see ``app.audit.record_audit_event``, which is
+    called from the same database session as the mutation it's logging
+    (added to the session before that endpoint's own ``db.commit()``, not
+    committed separately), so an audit row and the change it describes are
+    always persisted atomically together, never one without the other.
+
+    ``action`` is a short, stable verb-noun string (e.g.
+    ``"member.invited"``, ``"member.removed"``, ``"team.created"``) rather
+    than a free-text description -- keeps this table filterable/groupable
+    without parsing prose. ``target_type``/``target_id`` mirror ``Comment``/
+    ``Notification``'s existing subject_type/subject_id shape;
+    ``metadata_json`` carries the few action-specific extras worth keeping
+    (e.g. the invited email, the role that changed) as a JSON blob, same
+    reasoning as ``TriggerRule.action_params_json``.
+
+    Landing incrementally per-router (this phase wires ``routers.teams``'
+    seven mutating endpoints; other team-scoped routers are real, named
+    follow-up -- see the roadmap document) rather than a single big-bang
+    sweep, per the roadmap's own explicit scope note for this table.
+    """
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    actor_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(100))
+    target_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class TeamProject(Base):
@@ -310,6 +403,39 @@ class EventRoutingRule(Base):
     team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
     event_kind: Mapped[str] = mapped_column(String(100))
     discipline: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class TriggerRule(Base):
+    """Cross-Feature Rules/Trigger Engine: one team's saved automation rule
+    (Market-Viability Roadmap, Phase 4).
+
+    Distinct from ``EventRoutingRule`` above: that table decides *who* gets
+    notified about an event kind. This table decides *what happens* --
+    ``core.rules_engine.evaluate_rules`` loads a team's rows for an incoming
+    ``event_kind`` and, for each whose ``min_severity`` the event's own
+    severity meets or exceeds, runs ``action`` (one of the fixed small set
+    in ``core.rules_engine`` -- deliberately not a scripting DSL, see that
+    module's docstring). ``action_params_json`` carries the few
+    action-specific extras a rule needs (e.g. ``create_task``'s
+    ``assigned_discipline``) -- kept as a JSON blob rather than dedicated
+    columns since it varies per action and this table doesn't need to query
+    on it.
+
+    No ``discipline`` column here (unlike ``EventRoutingRule``): the
+    ``notify`` action reuses ``EventRoutingRule``'s own routing data
+    directly rather than duplicating a second discipline mapping.
+    """
+
+    __tablename__ = "trigger_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(String(36), ForeignKey("teams.id"), index=True)
+    event_kind: Mapped[str] = mapped_column(String(100))
+    min_severity: Mapped[str] = mapped_column(String(20))
+    action: Mapped[str] = mapped_column(String(50))
+    action_params_json: Mapped[str] = mapped_column(Text, default="{}")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

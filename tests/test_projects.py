@@ -36,24 +36,73 @@ def test_empty_name_rejected():
         service.create_project("   ")
 
 
-def test_attach_unity_folder_valid(tmp_path):
+def test_attach_engine_folder_valid_unity(tmp_path):
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
     service = _service()
-    project = service.create_project("Moonlit Depths")
-    updated, detection = service.attach_unity_folder(project.id, str(tmp_path))
+    project = service.create_project("Moonlit Depths", engine="Unity")
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
     assert detection.is_valid
     assert updated.path == str(tmp_path)
     assert updated.is_valid_unity
 
 
-def test_attach_unity_folder_invalid_still_saves_path(tmp_path):
+def test_attach_engine_folder_invalid_still_saves_path(tmp_path):
     service = _service()
-    project = service.create_project("Not Unity")
-    updated, detection = service.attach_unity_folder(project.id, str(tmp_path))
+    project = service.create_project("Not Unity", engine="Unity")
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+    assert not detection.is_valid
+    assert updated.path == str(tmp_path)
+
+
+def test_attach_engine_folder_dispatches_to_godot_detection(tmp_path):
+    (tmp_path / "project.godot").write_text(
+        'config_version=5\n\n[application]\n\nconfig/name="Test Godot Game"\n',
+        encoding="utf-8",
+    )
+    service = _service()
+    project = service.create_project("A Godot Game", engine="Godot")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
+    assert detection.is_valid
+    assert detection.project_name == "Test Godot Game"
+    assert updated.path == str(tmp_path)
+    assert updated.is_valid_unity  # generic validity flag, engine-agnostic despite the name
+
+
+def test_attach_engine_folder_godot_invalid_still_saves_path(tmp_path):
+    service = _service()
+    project = service.create_project("Not Godot Either", engine="Godot")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
     assert not detection.is_valid
     assert updated.path == str(tmp_path)
     assert not updated.is_valid_unity
+
+
+def test_attach_engine_folder_dispatches_to_unreal_detection(tmp_path):
+    (tmp_path / "TPS.uproject").write_text('{"FileVersion": 3}', encoding="utf-8")
+    service = _service()
+    project = service.create_project("An Unreal Game", engine="Unreal")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
+    assert detection.is_valid
+    assert detection.project_name == "TPS"
+    assert updated.path == str(tmp_path)
+    assert updated.is_valid_unity  # generic validity flag, engine-agnostic despite the name
+
+
+def test_attach_engine_folder_unreal_invalid_still_saves_path(tmp_path):
+    service = _service()
+    project = service.create_project("Not Unreal Either", engine="Unreal")
+
+    updated, detection = service.attach_engine_folder(project.id, str(tmp_path))
+
+    assert not detection.is_valid
+    assert updated.path == str(tmp_path)
 
 
 def test_unity_test_run_settings_default_off():
@@ -165,6 +214,21 @@ def test_precommit_review_settings_can_be_enabled_and_disabled():
     assert enabled.precommit_review_enabled is True
     disabled = service.set_precommit_review_settings(project.id, False)
     assert disabled.precommit_review_enabled is False
+
+
+def test_git_integration_settings_default_off():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    assert project.git_integration_enabled is False
+
+
+def test_git_integration_settings_can_be_enabled_and_disabled():
+    service = _service()
+    project = service.create_project("Moonlit Depths")
+    enabled = service.set_git_integration_settings(project.id, True)
+    assert enabled.git_integration_enabled is True
+    disabled = service.set_git_integration_settings(project.id, False)
+    assert disabled.git_integration_enabled is False
 
 
 def test_design_doc_sync_settings_default_off():

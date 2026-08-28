@@ -58,6 +58,17 @@ dependencies = [
     # 8's xatlas worker -- a heavier native/ML dependency shouldn't be
     # able to crash the host process either.
     "faster-whisper>=1.0",
+    # Version Control connector (Market-Viability Roadmap, Phase 1): the
+    # repo's three existing git touchpoints (changelog_draft, precommit_hook,
+    # precommit_check) hand-roll `subprocess.run(["git", ...])` for simple,
+    # single-command reads. This connector adds real write operations
+    # (staging, committing, discarding) whose edge cases -- detached HEAD,
+    # partial staging, line-ending normalization -- are better served by
+    # GitPython's battle-tested index/diff/status handling than a hand-rolled
+    # subprocess wrapper. Still requires a working `git` CLI on PATH, same
+    # environmental dependency the app already has; the three existing
+    # touchpoints are left as-is, no functional reason to rewrite them.
+    "GitPython>=3.1",
 ]
 
 [project.optional-dependencies]

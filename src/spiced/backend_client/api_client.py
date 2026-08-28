@@ -23,6 +23,34 @@ class NotAuthenticatedError(BackendAPIError):
 
 
 @dataclass(frozen=True)
+class Subscription:
+    """One Stripe subscription, mirrored locally (Market-Viability Roadmap,
+    Phase 5) -- see ``app.models.Subscription``'s docstring on the backend
+    for why ``user_id`` is always set while ``team_id``/
+    ``stripe_subscription_id`` are optional. ``status`` is Stripe's own
+    subscription status string verbatim (``active``, ``trialing``,
+    ``past_due``, ``canceled``, ...)."""
+
+    id: str
+    user_id: str
+    team_id: str | None
+    plan_key: str
+    stripe_customer_id: str
+    stripe_subscription_id: str | None
+    status: str
+    current_period_end: str | None
+    created_at: str
+
+    @property
+    def is_usable(self) -> bool:
+        """True for a subscription whose plan should currently apply --
+        Stripe's own "still has access" statuses, not just "active"
+        (a subscription mid-trial or briefly past due still grants its
+        plan; canceled/unpaid/incomplete do not)."""
+        return self.status in ("active", "trialing", "past_due")
+
+
+@dataclass(frozen=True)
 class Team:
     id: str
     name: str
@@ -157,6 +185,24 @@ class EventRoutingRule:
 
 
 @dataclass(frozen=True)
+class TriggerRule:
+    """One team's saved Cross-Feature Rules/Trigger Engine rule
+    (Market-Viability Roadmap, Phase 4) -- distinct from
+    ``EventRoutingRule``, which decides *who* gets notified; this decides
+    *what happens* (see ``app.models.TriggerRule``'s docstring on the
+    backend, and ``core.rules_engine`` on the desktop side)."""
+
+    id: str
+    team_id: str
+    event_kind: str
+    min_severity: str
+    action: str
+    action_params_json: str
+    enabled: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
 class NotificationPreference:
     """One member's explicit per-event-kind opt-in/opt-out override
     (Phase J, Relevance-Based Notifications routing layer)."""
@@ -230,6 +276,11 @@ class BackendClient:
         payload = self._request("GET", f"/teams/{team_id}/members")
         return [_member(row) for row in payload]
 
+    def remove_member(self, team_id: str, member_id: str) -> None:
+        """Admin+ only on the backend (Market-Viability Roadmap, Phase 6) --
+        see ``app.routers.teams.remove_member``."""
+        self._request("DELETE", f"/teams/{team_id}/members/{member_id}")
+
     def link_project(self, team_id: str, project_uuid: str, name: str) -> TeamProject:
         payload = self._request(
             "POST",
@@ -283,6 +334,29 @@ class BackendClient:
 
     def unvote_suggestion(self, suggestion_id: str) -> None:
         self._request("DELETE", f"/roadmap/suggestions/{suggestion_id}/vote")
+
+    # --- Billing Foundation (Market-Viability Roadmap, Phase 5) --------------
+    # User-scoped, not team-scoped -- a subscription belongs to whoever pays
+    # for it (see app.models.Subscription's docstring), even when it's meant
+    # to cover a team. The desktop app never touches a card number: both
+    # session-creation calls return a Stripe-hosted URL to open in the
+    # user's own browser (see core.billing_service).
+
+    def create_checkout_session(self, plan_key: str, *, team_id: str | None = None) -> str:
+        payload = self._request(
+            "POST",
+            "/billing/checkout-session",
+            json={"plan_key": plan_key, "team_id": team_id},
+        )
+        return payload["checkout_url"]
+
+    def create_portal_session(self) -> str:
+        payload = self._request("POST", "/billing/portal-session")
+        return payload["portal_url"]
+
+    def get_subscription(self) -> Subscription | None:
+        payload = self._request("GET", "/billing/subscription")
+        return _subscription(payload) if payload else None
 
     # --- Player Crash & Error Reporting (Phase G) ----------------------------
     # Reading requires auth + team membership, same as every other team-
@@ -408,6 +482,43 @@ class BackendClient:
     def delete_routing_rule(self, team_id: str, rule_id: str) -> None:
         self._request("DELETE", f"/teams/{team_id}/routing-rules/{rule_id}")
 
+    # --- Cross-Feature Rules/Trigger Engine (Market-Viability Roadmap,
+    # Phase 4) -----------------------------------------------------------
+    # Pure CRUD, same shape as the routing-rules calls above -- evaluating a
+    # rule against an incoming event (core.rules_engine.evaluate_rules)
+    # happens entirely on the desktop side; this client only reads/writes
+    # rule configuration.
+
+    def list_trigger_rules(self, team_id: str) -> list[TriggerRule]:
+        payload = self._request("GET", f"/teams/{team_id}/trigger-rules")
+        return [_trigger_rule(row) for row in payload]
+
+    def add_trigger_rule(
+        self,
+        team_id: str,
+        event_kind: str,
+        min_severity: str,
+        action: str,
+        *,
+        action_params_json: str = "{}",
+        enabled: bool = True,
+    ) -> TriggerRule:
+        payload = self._request(
+            "POST",
+            f"/teams/{team_id}/trigger-rules",
+            json={
+                "event_kind": event_kind,
+                "min_severity": min_severity,
+                "action": action,
+                "action_params_json": action_params_json,
+                "enabled": enabled,
+            },
+        )
+        return _trigger_rule(payload)
+
+    def delete_trigger_rule(self, team_id: str, rule_id: str) -> None:
+        self._request("DELETE", f"/teams/{team_id}/trigger-rules/{rule_id}")
+
     def list_notification_preferences(self, team_id: str) -> list[NotificationPreference]:
         payload = self._request("GET", f"/teams/{team_id}/notification-preferences")
         return [_notification_preference(row) for row in payload]
@@ -494,6 +605,20 @@ def _error_message(response: httpx.Response) -> str:
     if detail:
         return str(detail)
     return f"Spiced backend request failed (HTTP {response.status_code})."
+
+
+def _subscription(row: dict) -> Subscription:
+    return Subscription(
+        id=row["id"],
+        user_id=row["user_id"],
+        team_id=row["team_id"],
+        plan_key=row["plan_key"],
+        stripe_customer_id=row["stripe_customer_id"],
+        stripe_subscription_id=row["stripe_subscription_id"],
+        status=row["status"],
+        current_period_end=row["current_period_end"],
+        created_at=row["created_at"],
+    )
 
 
 def _team(row: dict) -> Team:
@@ -612,6 +737,19 @@ def _routing_rule(row: dict) -> EventRoutingRule:
         team_id=row["team_id"],
         event_kind=row["event_kind"],
         discipline=row["discipline"],
+        created_at=row["created_at"],
+    )
+
+
+def _trigger_rule(row: dict) -> TriggerRule:
+    return TriggerRule(
+        id=row["id"],
+        team_id=row["team_id"],
+        event_kind=row["event_kind"],
+        min_severity=row["min_severity"],
+        action=row["action"],
+        action_params_json=row["action_params_json"],
+        enabled=row["enabled"],
         created_at=row["created_at"],
     )
 
