@@ -48,7 +48,12 @@ jobs:
         # single source of dependencies. The "dev" extra pulls in pytest
         # itself; pytest-asyncio is intentionally not installed here (no
         # async code exists anywhere in src/spiced as of this workflow).
-        run: pip install --break-system-packages -e ".[dev]"
+        # "gemini" is also needed: tests/test_providers.py's Gemini test
+        # does a bare `import google.generativeai` with no skip guard, so it
+        # fails outright (not skips) without it. A local dev machine that
+        # happens to already have the package installed for something
+        # unrelated won't notice; a clean CI install does.
+        run: pip install --break-system-packages -e ".[dev,gemini]"
 
       - name: Run existing unit/integration tests
         # tests/ is flat (no tests/unit or tests/integration subdirectories)
