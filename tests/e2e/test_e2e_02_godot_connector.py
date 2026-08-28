@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from tests.e2e.conftest import make_godot_fixture_project
+from conftest import make_godot_fixture_project
 
 from spiced.connectors.godot import detect_godot_project
 from spiced.connectors.godot_docs_scan import scan_scripts

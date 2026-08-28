@@ -30,7 +30,7 @@ list):**
 from __future__ import annotations
 
 import pytest
-from tests.e2e.conftest import add_large_binary, make_git_fixture_repo
+from conftest import add_large_binary, make_git_fixture_repo
 
 from spiced.connectors import git_connector
 

@@ -14,7 +14,7 @@ outside this repo and is out of scope here.
 from __future__ import annotations
 
 import pytest
-from tests.e2e.conftest import _NOW, build_e2e_services, log_in_as, seed_team_with_tiered_accounts
+from conftest import _NOW, build_e2e_services, log_in_as, seed_team_with_tiered_accounts
 
 from spiced.backend_client.api_client import BackendAPIError
 

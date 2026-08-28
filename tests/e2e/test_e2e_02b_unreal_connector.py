@@ -20,7 +20,7 @@ broken-reference equivalent to Godot's ``.tscn`` parsing to test here.
 
 from __future__ import annotations
 
-from tests.e2e.conftest import make_unreal_fixture_project
+from conftest import make_unreal_fixture_project
 
 from spiced.connectors.unreal import detect_unreal_project
 from spiced.connectors.unreal_docs_scan import scan_headers

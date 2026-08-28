@@ -23,7 +23,7 @@ into the full-stack flow the plan asks for.
 
 from __future__ import annotations
 
-from tests.e2e.conftest import (
+from conftest import (
     build_e2e_services,
     log_in_as,
     make_git_fixture_repo,

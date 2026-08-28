@@ -36,7 +36,7 @@ production (see ``app.services.Services.__init__``'s
 
 from __future__ import annotations
 
-from tests.e2e.conftest import build_e2e_services, seed_team_with_tiered_accounts
+from conftest import build_e2e_services, seed_team_with_tiered_accounts
 
 from spiced.automation.finding import (
     SEVERITY_WARNING,

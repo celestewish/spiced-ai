@@ -39,7 +39,7 @@ directly, and folds in what actually stands in for each plan row:
 from __future__ import annotations
 
 import pytest
-from tests.e2e.conftest import _NOW, build_e2e_services
+from conftest import _NOW, build_e2e_services
 
 from spiced.backend_client.api_client import BackendAPIError, Subscription
 from spiced.core.plans import PLANS
@@ -205,7 +205,7 @@ def test_4_4_backend_hiccup_during_migration_falls_back_safely(tmp_path, monkeyp
 
 
 def test_4_5_billing_tier_never_gates_whether_a_rule_fires(tmp_path):
-    from tests.e2e.conftest import seed_team_with_tiered_accounts
+    from conftest import seed_team_with_tiered_accounts
 
     from spiced.automation.finding import SEVERITY_WARNING
     from spiced.core.rules_engine import ACTION_CREATE_TASK, TriggerEvent, evaluate_rules
