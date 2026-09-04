@@ -125,12 +125,49 @@ def test_error_response_raises_backend_api_error_with_detail():
         _client(handler).list_members("team-1")
 
 
-def test_network_error_raises_backend_api_error():
+def test_connect_error_raises_friendly_message_not_raw_os_text():
+    # Regression: a refused connection (WinError 10061 on Windows, wrapped by
+    # httpx as ConnectError) used to leak str(exc) -- including the raw OS
+    # text -- straight into the UI. This must be translated to something a
+    # developer can act on instead.
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused")
+        raise httpx.ConnectError(
+            "[WinError 10061] No connection could be made because the target "
+            "machine actively refused it"
+        )
+
+    with pytest.raises(BackendAPIError) as excinfo:
+        _client(handler).list_teams()
+
+    message = str(excinfo.value)
+    assert "WinError" not in message
+    assert "actively refused" not in message
+    assert "Can't reach the Spiced backend" in message
+    assert "http://testserver" in message
+    assert "Is it running?" in message
+
+
+def test_other_http_errors_keep_more_detail():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
 
     with pytest.raises(BackendAPIError, match="Could not reach the Spiced backend"):
         _client(handler).list_teams()
+
+
+def test_ping_returns_true_when_health_endpoint_ok():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/health"
+        return httpx.Response(200, json={"status": "ok"})
+
+    assert _client(handler, token=None).ping() is True
+
+
+def test_ping_returns_false_without_raising_on_connect_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    assert _client(handler, token=None).ping() is False
 
 
 def test_set_token_updates_subsequent_requests():

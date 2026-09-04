@@ -34,6 +34,7 @@ from spiced.backend_client.api_client import (
     NotAuthenticatedError,
     RoadmapSuggestion,
 )
+from spiced.backend_client.config import backend_unreachable_message
 from spiced.ui.auth_dialog import AuthDialog
 from spiced.ui.widgets.pill_button import PillButton
 
@@ -87,7 +88,7 @@ class RoadmapScreen(QWidget):
         title_row.addWidget(self._account_status)
         title_row.addStretch(1)
         self._refresh_btn = PillButton("Refresh", ghost=True)
-        self._refresh_btn.clicked.connect(self.refresh)
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
         title_row.addWidget(self._refresh_btn)
         self._signin_btn = PillButton("Sign in / Sign up")
         self._signin_btn.clicked.connect(self._on_sign_in)
@@ -278,6 +279,13 @@ class RoadmapScreen(QWidget):
 
     # --- Refresh ---------------------------------------------------------------
 
+    def _on_refresh_clicked(self) -> None:
+        # Re-check reachability instead of trusting the cache -- the
+        # developer may have just started the backend and clicked Refresh
+        # specifically to find out.
+        self._services.refresh_backend_reachable()
+        self.refresh()
+
     def refresh(self) -> None:
         auth = self._services.auth
         logged_in = auth.is_logged_in()
@@ -286,6 +294,18 @@ class RoadmapScreen(QWidget):
             f"Signed in as {user.email}" if logged_in and user else "Not signed in"
         )
         self._signin_btn.setEnabled(not logged_in)
+        # Reuses whatever Services already cached (see
+        # Services.backend_reachable) so opening this screen never fires a
+        # doomed request on its own when the backend is known to be down.
+        if not self._services.backend_reachable():
+            message = backend_unreachable_message()
+            _clear_layout(self._changelog_layout)
+            self._changelog_empty.setVisible(False)
+            self._changelog_error.setText(message)
+            _clear_layout(self._suggestions_layout)
+            self._suggestions_empty.setVisible(False)
+            self._suggestions_error.setText(message)
+            return
         self._refresh_changelog()
         self._refresh_suggestions()
 

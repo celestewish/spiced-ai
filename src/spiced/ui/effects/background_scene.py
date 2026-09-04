@@ -163,7 +163,12 @@ _STARS: tuple[_Star, ...] = (
     _Star(0.40, 0.07, 2.0, 3.4, 1.1),
 )
 
-_TICK_INTERVAL_MS = 16  # ~60fps
+# 30fps rather than 60fps: this is a decorative, slow-drifting backdrop, not
+# something a user tracks frame-by-frame, so halving the steady-state paint
+# cost isn't perceptible here the way it would be for e.g. a scrub animation.
+# Kept as its own named constant so it's easy to tune/re-measure with
+# tools/profile_effects.py.
+_TICK_INTERVAL_MS = 33  # ~30fps
 
 
 class OceanBackgroundWidget(QWidget):
@@ -190,6 +195,22 @@ class OceanBackgroundWidget(QWidget):
         self._backdrop_cache: QPixmap | None = None
         self._backdrop_cache_key: tuple | None = None
 
+        # One cached QPainterPath per wave layer (index -> (key, path)),
+        # keyed on everything that changes the path's *shape* (size, band
+        # geometry) but not its per-tick drift -- rebuilding via
+        # _wave_path's Python loop is only worth doing on resize, not on
+        # every 16/33ms tick. Drift is applied by translating the painter
+        # instead (see _wave_path_cached / _paint_ocean_and_waves).
+        self._wave_path_cache: dict[int, tuple[tuple, QPainterPath]] = {}
+
+        # Whether the *window* this widget lives in can currently be seen at
+        # all -- minimized, or not the active window (e.g. the user alt-tabbed
+        # away). Independent of the accessibility-driven pause below; either
+        # one stops the ticker. Assumed visible until MainWindow says
+        # otherwise (see set_window_visible), so construction/tests that never
+        # call it behave exactly as before.
+        self._window_visible = True
+
         self.refresh_accessibility_state()
 
     # --- Public API ----------------------------------------------------
@@ -207,12 +228,28 @@ class OceanBackgroundWidget(QWidget):
             and getattr(self._services, "accessibility_high_contrast_enabled", lambda: False)()
         )
         self.setVisible(not high_contrast)
+        self._reduced_motion_or_high_contrast = high_contrast or reduced_motion(self._services)
+        self._apply_ticker_state()
+        self.update()
 
-        if high_contrast or reduced_motion(self._services):
+    def set_window_visible(self, visible: bool) -> None:
+        """Pause/resume the ticker as the containing window is minimized or
+        loses/regains being the active window (see MainWindow.changeEvent).
+
+        A minimized or backgrounded window still burns a full 60fps repaint
+        cycle otherwise, for a scene nobody can see -- this is on top of,
+        not instead of, the reduced-motion/high-contrast checks above.
+        """
+        if visible == self._window_visible:
+            return
+        self._window_visible = visible
+        self._apply_ticker_state()
+
+    def _apply_ticker_state(self) -> None:
+        if self._reduced_motion_or_high_contrast or not self._window_visible:
             self._ticker.stop()
         else:
             self._ticker.start()
-        self.update()
 
     def set_mouse_norm(self, x: float, y: float) -> None:
         """x, y in -1..1 -- see MainWindow.mouseMoveEvent."""
@@ -228,11 +265,12 @@ class OceanBackgroundWidget(QWidget):
 
     # --- Painting ----------------------------------------------------------
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: ARG002, N802 (Qt override)
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 (Qt override)
         if self.width() <= 0 or self.height() <= 0:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(event.rect())
 
         amp = 0.0 if reduced_motion(self._services) else 1.0
         px, py = self._mouse_norm.x() * amp, self._mouse_norm.y() * amp
@@ -344,19 +382,44 @@ class OceanBackgroundWidget(QWidget):
         painter.fillRect(QRectF(0, band_top, w, band_height), gradient)
 
         period_px = max(200.0, w * _WAVE_PERIOD_FRAC)
-        for layer in _WAVE_LAYERS:
+        for index, layer in enumerate(_WAVE_LAYERS):
             baseline_y = band_top + band_height * layer.baseline_frac
             amplitude_px = band_height * layer.amplitude_frac
             offset = (self._elapsed_seconds / layer.period_seconds) * period_px
             offset %= period_px
-            path = _wave_path(w, period_px, baseline_y, amplitude_px, h, x_offset=-offset)
+            path = self._wave_path_cached(index, w, period_px, baseline_y, amplitude_px, h)
             color = QColor(layer.color)
             color.setAlphaF(layer.opacity)
+            painter.save()
+            # The cached path is built once at x_offset=0, with a full
+            # extra period of margin baked in on each side (see
+            # _wave_path) -- translating it by the per-tick drift instead
+            # of rebuilding it from scratch is exactly equivalent, since
+            # offset never exceeds one period.
+            painter.translate(-offset, 0)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
             painter.drawPath(path)
+            painter.restore()
 
         painter.restore()
+
+    def _wave_path_cached(
+        self,
+        index: int,
+        widget_width: float,
+        period_px: float,
+        baseline_y: float,
+        amplitude_px: float,
+        bottom_y: float,
+    ) -> QPainterPath:
+        key = (widget_width, period_px, baseline_y, amplitude_px, bottom_y)
+        cached = self._wave_path_cache.get(index)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        path = _wave_path(widget_width, period_px, baseline_y, amplitude_px, bottom_y, x_offset=0.0)
+        self._wave_path_cache[index] = (key, path)
+        return path
 
     def _paint_orbs(self, painter: QPainter, px: float, py: float) -> None:
         painter.save()

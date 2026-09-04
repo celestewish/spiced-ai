@@ -26,6 +26,15 @@ def backend_base_url() -> str:
     return os.environ.get("SPICED_BACKEND_URL", DEFAULT_BACKEND_URL).strip()
 
 
+def backend_unreachable_message(base_url: str | None = None) -> str:
+    """Shared copy for "the backend didn't respond" -- used both by
+    ``BackendClient`` (when a live request fails) and by callers that
+    short-circuit on a cached reachability check, so a developer sees the
+    same wording either way."""
+    url = base_url if base_url is not None else backend_base_url()
+    return f"Can't reach the Spiced backend at {url}. Is it running? See backend/README.md."
+
+
 def is_configured() -> bool:
     """True once enough is set for Team Mode to work at all."""
     return bool(supabase_url() and supabase_anon_key())

@@ -18,6 +18,9 @@ class RoadmapService:
         self._auth = auth
         self._client = api_client or BackendClient()
 
+    def ping(self) -> bool:
+        return self._client.ping()
+
     def _synced_client(self) -> BackendClient:
         # Attach whatever token (if any) is currently available. Public
         # roadmap endpoints work fine with no token at all; this only makes

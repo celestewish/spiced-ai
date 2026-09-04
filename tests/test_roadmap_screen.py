@@ -30,8 +30,15 @@ from spiced.ui.screens.roadmap import RoadmapScreen  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 
-def _services(tmp_path) -> Services:
-    return Services(db_path=str(tmp_path / "spiced.db"))
+def _services(tmp_path, *, backend_reachable: bool = True) -> Services:
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    # Tests below monkeypatch services.roadmap.list_changelog/list_suggestions
+    # directly (below BackendClient), so the reachability short-circuit added
+    # to RoadmapScreen.refresh() needs its own stub too, or it would skip
+    # calling those altogether -- see Services.backend_reachable.
+    services.backend_reachable = lambda: backend_reachable
+    services.refresh_backend_reachable = lambda: backend_reachable
+    return services
 
 
 def _entry() -> ChangelogEntry:
@@ -124,3 +131,37 @@ def test_suggestions_survives_an_unexpected_exception_instead_of_crashing(tmp_pa
 
     assert "Couldn't load suggestions" in screen._suggestions_error.text()
     assert screen._suggestions_layout.count() == 0
+
+
+def test_known_unreachable_backend_skips_the_doomed_request_entirely(tmp_path):
+    # Regression for Bug 1: when Services already knows the backend is down
+    # (cached reachability check), RoadmapScreen must not still fire a
+    # request that's certain to fail -- it should show the friendly
+    # "can't reach the backend" message straight away instead.
+    services = _services(tmp_path, backend_reachable=False)
+    calls = []
+    services.roadmap.list_changelog = lambda: calls.append("changelog") or []
+    services.roadmap.list_suggestions = lambda: calls.append("suggestions") or []
+
+    screen = RoadmapScreen(services)
+
+    assert calls == []
+    assert "Can't reach the Spiced backend" in screen._changelog_error.text()
+    assert "Can't reach the Spiced backend" in screen._suggestions_error.text()
+    assert "WinError" not in screen._changelog_error.text()
+
+
+def test_refresh_button_re_checks_reachability(tmp_path):
+    services = _services(tmp_path, backend_reachable=False)
+    services.roadmap.list_changelog = lambda: [_entry()]
+    services.roadmap.list_suggestions = lambda: []
+
+    screen = RoadmapScreen(services)
+    assert screen._changelog_layout.count() == 0  # started unreachable
+
+    services.refresh_backend_reachable = lambda: True
+    services.backend_reachable = lambda: True
+    screen._on_refresh_clicked()
+
+    assert screen._changelog_layout.count() == 1
+    assert screen._changelog_error.text() == ""

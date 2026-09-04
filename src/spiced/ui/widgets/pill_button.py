@@ -67,7 +67,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
 )
-from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton, QWidget
+from PySide6.QtWidgets import QApplication, QPushButton, QStyle, QStyleOptionButton, QWidget
 
 from spiced.ui.effects.motion import Ticker, current_reduced_motion
 from spiced.ui.effects.splash import attach_splash
@@ -123,6 +123,22 @@ class PillButton(QPushButton):
             self._fill_ticker = Ticker(_FILL_TICK_MS, self)
             self._fill_ticker.tick.connect(self._on_fill_tick)
 
+        # Rendered-pixmap cache, keyed on everything that actually changes
+        # this button's appearance -- see paintEvent. Used at ~100 call
+        # sites across every screen (ui.effects.motion's own docstring), so
+        # redoing the full allocate/native-draw/corner-punch/(maybe pixel-
+        # readback) sequence on every single paint, even when nothing about
+        # the button changed since the last frame, adds up fast (see
+        # tools/profile_effects.py's bench_pill_button_concurrent).
+        self._paint_cache_key: tuple | None = None
+        self._paint_cache_pixmap: QPixmap | None = None
+        # Separate, coarser cache for the ghost border color: it only
+        # depends on style state + palette (not size or the water-fill
+        # frame), so a size/loading-frame-only cache miss above can still
+        # reuse this without paying for another toImage() pixel readback.
+        self._border_color_cache_key: tuple | None = None
+        self._border_color_cache: QColor | None = None
+
     def set_loading(self, active: bool) -> None:
         """Show (or clear) an indeterminate water-level loading fill.
 
@@ -166,19 +182,53 @@ class PillButton(QPushButton):
             return
 
         radius = self._fixed_radius if self._fixed_radius is not None else self.height() / 2
-
         dpr = self.devicePixelRatioF()
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        state = option.state.value
+        app = QApplication.instance()
+        theme_key = hash(app.styleSheet()) if app is not None else 0
+
+        fill_bucket = (
+            round(self._fill_fraction(), 2) if self._water_fill_enabled and self._loading else None
+        )
+        cache_key = (
+            self.width(),
+            self.height(),
+            dpr,
+            radius,
+            state,
+            self.text(),
+            self.icon().cacheKey(),
+            self.font().key(),
+            self.palette().cacheKey(),
+            theme_key,
+            fill_bucket,
+        )
+        if cache_key == self._paint_cache_key and self._paint_cache_pixmap is not None:
+            widget_painter = QPainter(self)
+            widget_painter.setRenderHint(QPainter.Antialiasing)
+            widget_painter.drawPixmap(0, 0, self._paint_cache_pixmap)
+            return
+
         buffer = QPixmap(self.size() * dpr)
         buffer.setDevicePixelRatio(dpr)
         buffer.fill(Qt.transparent)
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
         self.style().drawControl(QStyle.CE_PushButton, option, buffer_painter, self)
         buffer_painter.end()
 
-        border_color = self._sample_ghost_border_color(buffer) if self._ghost else None
+        border_color = None
+        if self._ghost:
+            border_key = (state, self.palette().cacheKey(), theme_key, dpr)
+            if border_key == self._border_color_cache_key:
+                border_color = self._border_color_cache
+            else:
+                border_color = self._sample_ghost_border_color(buffer)
+                self._border_color_cache_key = border_key
+                self._border_color_cache = border_color
 
         buffer_painter = QPainter(buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing)
@@ -216,6 +266,9 @@ class PillButton(QPushButton):
             buffer_painter.setPen(QPen(border_color, _GHOST_BORDER_WIDTH))
             buffer_painter.drawPath(stroke_path)
         buffer_painter.end()
+
+        self._paint_cache_key = cache_key
+        self._paint_cache_pixmap = buffer
 
         widget_painter = QPainter(self)
         widget_painter.setRenderHint(QPainter.Antialiasing)

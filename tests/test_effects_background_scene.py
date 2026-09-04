@@ -86,6 +86,49 @@ def test_refresh_accessibility_state_reacts_to_a_live_setting_change():
     assert background._ticker.is_active() is False
 
 
+def test_set_window_visible_false_stops_the_ticker():
+    _parent, background = _mounted(_FakeServices())
+    assert background._ticker.is_active() is True
+
+    background.set_window_visible(False)
+    assert background._ticker.is_active() is False
+    # setVisible/isVisible are unaffected -- this is purely a ticker pause,
+    # not the same as the accessibility-driven hide above.
+    assert background.isVisible() is True
+
+    background.set_window_visible(True)
+    assert background._ticker.is_active() is True
+
+
+def test_set_window_visible_stays_stopped_if_reduced_motion_also_applies():
+    _parent, background = _mounted(_FakeServices(reduce_motion=True))
+    assert background._ticker.is_active() is False
+
+    background.set_window_visible(False)
+    assert background._ticker.is_active() is False
+
+    # Regaining window visibility must not override the accessibility gate.
+    background.set_window_visible(True)
+    assert background._ticker.is_active() is False
+
+
+def test_wave_path_cache_is_reused_across_ticks_at_the_same_size():
+    _parent, background = _mounted(_FakeServices())
+    background.resize(920, 600)
+    background._on_tick()
+    background.repaint()
+    cached_after_first = dict(background._wave_path_cache)
+
+    background._on_tick()
+    background.repaint()
+
+    assert background._wave_path_cache.keys() == cached_after_first.keys()
+    for index, (key, path) in background._wave_path_cache.items():
+        prev_key, prev_path = cached_after_first[index]
+        assert key == prev_key
+        assert path is prev_path  # same QPainterPath object, not rebuilt
+
+
 def test_set_mouse_norm_is_a_no_op_when_motion_is_reduced():
     _parent, background = _mounted(_FakeServices(reduce_motion=True))
     background.set_mouse_norm(0.5, -0.5)

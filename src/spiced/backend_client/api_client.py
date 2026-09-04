@@ -258,6 +258,19 @@ class BackendClient:
     def set_token(self, token: str | None) -> None:
         self._token = token
 
+    def ping(self) -> bool:
+        """Cheap reachability check against the backend's ``/health`` route.
+
+        Never raises -- callers use this to decide whether it's worth making
+        a real request at all, so a network failure here just means "not
+        reachable" rather than another exception to handle.
+        """
+        try:
+            response = self._http.request("GET", f"{self._base_url}/health")
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 200
+
     def create_team(self, name: str) -> Team:
         payload = self._request("POST", "/teams", json={"name": name})
         return _team(payload)
@@ -581,6 +594,12 @@ class BackendClient:
                 headers=headers,
                 json=json,
             )
+        except httpx.ConnectError as exc:
+            # The OS-level cause (e.g. WinError 10061 / ConnectionRefusedError
+            # on Windows) is useless to a user and must never reach the UI
+            # verbatim -- this is almost always just "the backend isn't
+            # running", so say that instead.
+            raise BackendAPIError(config.backend_unreachable_message(self._base_url)) from exc
         except httpx.HTTPError as exc:
             raise BackendAPIError(f"Could not reach the Spiced backend: {exc}") from exc
 

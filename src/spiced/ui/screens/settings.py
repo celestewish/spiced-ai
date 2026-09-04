@@ -36,6 +36,7 @@ from spiced.core.notification_routing import (
     KNOWN_EVENT_KINDS,
     disciplines_for_event,
 )
+from spiced.backend_client.config import backend_unreachable_message
 from spiced.core.plans import PLANS
 from spiced.core.rules_engine import (
     ACTION_CREATE_TASK,
@@ -941,6 +942,27 @@ class SettingsScreen(QWidget):
                 "Only available for a team-linked project you're signed in for -- select one on "
                 "the Projects screen."
             )
+            self._trigger_rules_list.setPlainText("")
+            self._trigger_add_btn.setEnabled(False)
+            return
+
+        if not self._services.backend_reachable():
+            # Same reachability cache Roadmap checks -- avoids each of the
+            # three panels below independently discovering (and separately
+            # reporting) that the backend isn't running.
+            message = backend_unreachable_message()
+            self._routing_team_id = None
+            self._routing_status.setText(message)
+            self._routing_list.setPlainText("")
+            self._routing_add_btn.setEnabled(False)
+
+            self._pref_team_id = None
+            self._pref_status.setText(message)
+            self._pref_list.setPlainText("")
+            self._pref_save_btn.setEnabled(False)
+
+            self._trigger_rules_team_id = None
+            self._trigger_rules_status.setText(message)
             self._trigger_rules_list.setPlainText("")
             self._trigger_add_btn.setEnabled(False)
             return

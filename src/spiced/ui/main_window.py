@@ -211,6 +211,16 @@ class MainWindow(QWidget):
         self._background.setGeometry(self.rect())
         super().resizeEvent(event)
 
+    def changeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        """Pauses the ocean background's ticker while this window can't be
+        seen -- minimized, or backgrounded behind another app -- so Spiced
+        doesn't keep repainting a full-window scene at 60fps for nobody
+        (see OceanBackgroundWidget.set_window_visible)."""
+        if event.type() in (QEvent.Type.WindowStateChange, QEvent.Type.ActivationChange):
+            visible = not self.isMinimized() and self.isActiveWindow()
+            self._background.set_window_visible(visible)
+        super().changeEvent(event)
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 (Qt override)
         """Feeds the ocean background's mouse parallax from every mouse
         move in the app, not just ones MainWindow's own mouseMoveEvent

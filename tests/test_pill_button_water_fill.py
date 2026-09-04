@@ -13,7 +13,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtGui import QPixmap  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from spiced.ui.effects import motion  # noqa: E402
 from spiced.ui.widgets.pill_button import PillButton  # noqa: E402
@@ -121,3 +122,97 @@ def test_paints_without_error_after_loading_clears():
     button.set_loading(True)
     button.set_loading(False)
     button.repaint()
+
+
+# --- Paint cache (Bug 2 fix 5: don't redo the full render every frame) -----
+#
+# repaint() is a no-op under the offscreen QPA platform (see
+# tools/profile_effects.py's module docstring) -- render() drives the real
+# paintEvent synchronously instead.
+
+
+def _rendered(button) -> QPixmap:
+    target = QPixmap(button.size())
+    button.render(target)
+    return target
+
+
+def test_repeated_paint_with_no_change_reuses_the_cached_pixmap():
+    parent = QWidget()
+    button = PillButton("Plain", parent)
+    button.resize(160, 32)
+    parent.show()
+
+    _rendered(button)
+    first = button._paint_cache_pixmap
+    _rendered(button)
+    second = button._paint_cache_pixmap
+
+    assert first is second  # same object -- no re-render happened
+
+
+def test_resizing_invalidates_the_cache():
+    parent = QWidget()
+    button = PillButton("Plain", parent)
+    button.resize(160, 32)
+    parent.show()
+
+    _rendered(button)
+    first = button._paint_cache_pixmap
+    button.resize(200, 32)
+    _rendered(button)
+    second = button._paint_cache_pixmap
+
+    assert first is not second
+
+
+def test_checked_state_change_invalidates_the_cache():
+    parent = QWidget()
+    button = PillButton("Plain", parent)
+    button.setCheckable(True)
+    button.resize(160, 32)
+    parent.show()
+
+    _rendered(button)
+    first = button._paint_cache_pixmap
+    button.setChecked(True)
+    _rendered(button)
+    second = button._paint_cache_pixmap
+
+    assert first is not second
+
+
+def test_ghost_border_color_is_not_resampled_when_only_the_loading_frame_changes():
+    motion.set_active_services(_FakeServices(reduce_motion=False))
+    parent = QWidget()
+    button = PillButton("Regenerate docs", parent, water_fill=True, ghost=True)
+    button.resize(160, 32)
+    parent.show()
+    button.set_loading(True)
+
+    sample_calls = []
+    original = PillButton._sample_ghost_border_color
+
+    def _spy(buffer):
+        sample_calls.append(1)
+        return original(buffer)
+
+    PillButton._sample_ghost_border_color = staticmethod(_spy)
+    try:
+        button._fill_elapsed = 0.05
+        _rendered(button)
+        assert len(sample_calls) == 1  # first paint: no cached color yet
+
+        # Advance the loading animation enough that the fill-fraction cache
+        # bucket changes (forcing a full pixmap re-render) while style
+        # state/palette/theme stay identical -- the border color cache
+        # should still be reused rather than sampled again via toImage().
+        button._fill_elapsed = 0.40
+        first_pixmap = _rendered(button)
+        assert len(sample_calls) == 1
+        button._fill_elapsed = 0.75
+        second_pixmap = _rendered(button)
+        assert len(sample_calls) == 1
+        assert first_pixmap.toImage() != second_pixmap.toImage()  # fill actually redrew
+    finally:
+        PillButton._sample_ghost_border_color = staticmethod(original)

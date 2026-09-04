@@ -227,6 +227,9 @@ class Services:
         # Open Roadmap & Feedback Loop (Phase C): viewing needs no login;
         # submitting/voting reuses this same AuthService/account system.
         self.roadmap = RoadmapService(self.auth)
+        # Cache for backend_reachable() below -- None means "not checked
+        # yet this run".
+        self._backend_reachable: bool | None = None
 
         # Session Summaries (Phase B): always local; optionally also posted
         # to the team backend when Team Mode is on and the active project is
@@ -617,6 +620,24 @@ class Services:
 
     def set_team_mode_enabled(self, enabled: bool) -> None:
         self._settings.set(TEAM_MODE_ENABLED_KEY, "1" if enabled else "")
+
+    def backend_reachable(self) -> bool:
+        """Whether the Spiced backend answers ``/health`` right now.
+
+        Cached for the lifetime of this ``Services`` instance (one app run)
+        so Roadmap and Settings' notification panels -- which would
+        otherwise each independently discover the backend is down -- share
+        one check instead of each making their own doomed request. Call
+        ``refresh_backend_reachable()`` to force a re-check (e.g. after the
+        user starts the backend and clicks Refresh).
+        """
+        if self._backend_reachable is None:
+            self._backend_reachable = self.roadmap.ping()
+        return self._backend_reachable
+
+    def refresh_backend_reachable(self) -> bool:
+        self._backend_reachable = self.roadmap.ping()
+        return self._backend_reachable
 
     def team_prompt_context(self, project: Project | None) -> list[str] | None:
         """Other teammates' display names/emails for AI prompt context.
