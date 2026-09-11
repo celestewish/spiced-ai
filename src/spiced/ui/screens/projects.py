@@ -39,8 +39,16 @@ from spiced.backend_client.api_client import BackendAPIError, NotAuthenticatedEr
 from spiced.connectors import unity_build
 from spiced.connectors.git_connector import (
     GitConnectorError,
-    NotAGitRepositoryError,
     NothingStagedError,
+)
+from spiced.core.build_pipeline import list_build_targets_for_project
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL, detect_engine
+from spiced.core.engine_executable_resolve import (
+    find_godot_on_path,
+    find_installed_unreal_engines,
+    resolve_godot_executable,
+    resolve_unreal_editor_cmd,
+    resolve_unreal_uat,
 )
 from spiced.core.git_integration import GitIntegrationNotEnabledError
 from spiced.core.precommit_hook import ForeignHookExistsError, NotAGitRepoError
@@ -65,6 +73,10 @@ class ProjectsScreen(QWidget):
         self._services = services
         self._projects = services.projects
         self._accordions: list[AccordionSection] = []
+        # Set while "Create project" is waiting on a second click to
+        # confirm the auto-detected engine for this folder -- see
+        # _create()'s docstring.
+        self._pending_new_project_folder: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 28, 28, 28)
@@ -112,6 +124,13 @@ class ProjectsScreen(QWidget):
         self._engine_input = ScrollSafeComboBox()
         self._engine_input.addItems(["Unity", "Godot", "Unreal", "Other"])
         new_layout.addWidget(self._engine_input)
+        # Filled in once a folder's been picked and detect_engine() has run
+        # against it -- see _create(). Stays empty (and the combo box above
+        # keeps its plain, no-folder-yet meaning) until then.
+        self._new_project_status = QLabel()
+        self._new_project_status.setObjectName("Muted")
+        self._new_project_status.setWordWrap(True)
+        new_layout.addWidget(self._new_project_status)
         self._create_btn = PillButton("Create project")
         self._create_btn.clicked.connect(self._create)
         new_layout.addWidget(self._create_btn)
@@ -207,35 +226,39 @@ class ProjectsScreen(QWidget):
 
     def _build_unity_test_run(self, accordion: AccordionSection) -> None:
         layout = accordion.body_layout
-        intro = QLabel(
-            "Off by default. When enabled, the Testing screen can launch this project's "
-            "Unity Editor headlessly to run its tests — the one place Spiced executes an "
-            "external process rather than only reading text you give it."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._unity_run_intro = QLabel()
+        self._unity_run_intro.setObjectName("Muted")
+        self._unity_run_intro.setWordWrap(True)
+        layout.addWidget(self._unity_run_intro)
 
         self._unity_run_pill = _status_pill()
         accordion.header_extra.addWidget(self._unity_run_pill)
-        self._unity_run_toggle = QCheckBox(
-            "Allow Spiced to run this project's Unity tests"
-        )
+        self._unity_run_toggle = QCheckBox("Allow Spiced to run this project's tests")
         self._unity_run_toggle.toggled.connect(self._on_unity_run_toggle)
         accordion.header_extra.addWidget(self._unity_run_toggle)
 
         override_row = QHBoxLayout()
-        override_row.addWidget(QLabel("Unity Editor path (optional override):"))
+        self._unity_editor_path_label = QLabel()
+        override_row.addWidget(self._unity_editor_path_label)
         self._unity_editor_path_input = QLineEdit()
-        self._unity_editor_path_input.setPlaceholderText(
-            "Leave blank to auto-detect via Unity Hub"
-        )
         self._unity_editor_path_input.editingFinished.connect(self._on_unity_editor_path_changed)
         override_row.addWidget(self._unity_editor_path_input, 1)
         self._unity_editor_browse_btn = PillButton("Browse…")
         self._unity_editor_browse_btn.clicked.connect(self._on_browse_unity_editor)
         override_row.addWidget(self._unity_editor_browse_btn)
         layout.addLayout(override_row)
+
+        # Godot/Unreal auto-discovery suggestion (Connect-a-Project Setup
+        # Simplification spec, Finding 2): only shown when no override is
+        # set yet and something was actually found (a Godot on PATH, or an
+        # Unreal Engine version matching this project's .uproject via the
+        # Epic Games Launcher's install manifest). One click accepts it;
+        # Browse… above stays available either way -- never applied
+        # silently, see _update_unity_run_status/_on_use_suggested_engine_path.
+        self._engine_suggest_btn = PillButton("", ghost=True)
+        self._engine_suggest_btn.clicked.connect(self._on_use_suggested_engine_path)
+        self._engine_suggest_btn.setVisible(False)
+        layout.addWidget(self._engine_suggest_btn)
 
         self._unity_run_status = QLabel()
         self._unity_run_status.setObjectName("Muted")
@@ -262,20 +285,64 @@ class ProjectsScreen(QWidget):
         self._update_unity_run_status()
 
     def _on_browse_unity_editor(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose the Unity Editor executable",
-            "",
-            "Unity Editor (Unity.exe);;All files (*)",
-        )
+        project = self._services.active_project()
+        engine = project.engine if project else None
+        if engine == ENGINE_UNREAL:
+            # The override means an Engine install root for Unreal, not a
+            # single executable (see core.engine_executable_resolve).
+            path = QFileDialog.getExistingDirectory(self, "Choose the Unreal Engine install folder")
+        elif engine == ENGINE_GODOT:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Choose the Godot executable", "", "Godot executable;;All files (*)"
+            )
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose the Unity Editor executable",
+                "",
+                "Unity Editor (Unity.exe);;All files (*)",
+            )
         if not path:
             return
+        self._unity_editor_path_input.setText(path)
+        self._on_unity_editor_path_changed()
+
+    def _suggested_engine_override(self, project: Project | None) -> tuple[str, str] | None:
+        """(button label, path/root to apply) if there's an auto-discovered
+        suggestion for this project's engine and no override is set yet --
+        see ``core.engine_executable_resolve.find_installed_unreal_engines``/
+        ``find_godot_on_path`` (Connect-a-Project Setup Simplification spec,
+        Finding 2). ``None`` once an override exists -- this is a one-time
+        suggestion, not something to keep nagging about.
+        """
+        if project is None or project.unity_editor_path_override:
+            return None
+        if project.engine == ENGINE_UNREAL:
+            association = project.engine_metadata.get("engine_association")
+            root = find_installed_unreal_engines().get(association) if association else None
+            if root:
+                return f"Use Unreal Engine {association} at {root}", root
+            return None
+        if project.engine == ENGINE_GODOT:
+            found = find_godot_on_path()
+            if found:
+                return f"Use Godot on PATH: {found}", found
+            return None
+        return None
+
+    def _on_use_suggested_engine_path(self) -> None:
+        project = self._services.active_project()
+        suggestion = self._suggested_engine_override(project)
+        if suggestion is None:
+            return
+        _label, path = suggestion
         self._unity_editor_path_input.setText(path)
         self._on_unity_editor_path_changed()
 
     def _update_unity_run_status(self) -> None:
         project = self._services.active_project()
         has_project = project is not None
+        engine = project.engine if project else None
         enabled = project.unity_test_run_enabled if project else False
         self._unity_run_toggle.blockSignals(True)
         self._unity_run_toggle.setChecked(bool(enabled))
@@ -290,12 +357,72 @@ class ProjectsScreen(QWidget):
         self._unity_editor_path_input.setEnabled(has_project)
         self._unity_editor_browse_btn.setEnabled(has_project)
 
+        suggestion = self._suggested_engine_override(project)
+        if suggestion is not None:
+            label, _path = suggestion
+            self._engine_suggest_btn.setText(label)
+            self._engine_suggest_btn.setVisible(True)
+        else:
+            self._engine_suggest_btn.setVisible(False)
+
+        if engine == ENGINE_GODOT:
+            self._unity_run_intro.setText(
+                "Off by default. When enabled, the Testing screen can launch this project's "
+                "Godot executable headlessly to run its GUT test suite — the one place Spiced "
+                "executes an external process rather than only reading text you give it."
+            )
+            self._unity_editor_path_label.setText("Godot executable path (required):")
+            self._unity_editor_path_input.setPlaceholderText(
+                "No auto-detect — set the path to your Godot executable"
+            )
+        elif engine == ENGINE_UNREAL:
+            self._unity_run_intro.setText(
+                "Off by default. When enabled, the Testing screen can launch this project's "
+                "Unreal Editor headlessly to run its Automation test suite — the one place "
+                "Spiced executes an external process rather than only reading text you give it."
+            )
+            self._unity_editor_path_label.setText("Unreal Engine install folder (required):")
+            self._unity_editor_path_input.setPlaceholderText(
+                "No auto-detect — set your Unreal Engine install root, e.g. C:\\UE_5.3"
+            )
+        else:
+            self._unity_run_intro.setText(
+                "Off by default. When enabled, the Testing screen can launch this project's "
+                "Unity Editor headlessly to run its tests — the one place Spiced executes an "
+                "external process rather than only reading text you give it."
+            )
+            self._unity_editor_path_label.setText("Unity Editor path (optional override):")
+            self._unity_editor_path_input.setPlaceholderText(
+                "Leave blank to auto-detect via Unity Hub"
+            )
+
         if not has_project:
             self._unity_run_status.setText("")
             return
         if not enabled:
             self._unity_run_status.setText("Not enabled. Turn this on to run tests from Testing.")
             return
+
+        if engine == ENGINE_GODOT:
+            godot_path = resolve_godot_executable(override)
+            if godot_path is not None:
+                self._unity_run_status.setText(f"Will run GUT tests via {godot_path}")
+            else:
+                self._unity_run_status.setText(
+                    "No valid Godot executable configured yet — set the path above."
+                )
+            return
+        if engine == ENGINE_UNREAL:
+            editor_cmd = resolve_unreal_editor_cmd(override)
+            if editor_cmd is not None:
+                self._unity_run_status.setText(f"Will run Automation tests via {editor_cmd}")
+            else:
+                self._unity_run_status.setText(
+                    "No valid Unreal Engine install configured yet — set the install folder "
+                    "above."
+                )
+            return
+
         required_version = project.engine_metadata.get("unity_version")
         editor = resolve_unity_editor(required_version, override)
         if editor is not None:
@@ -318,16 +445,10 @@ class ProjectsScreen(QWidget):
 
     def _build_build_pipeline(self, accordion: AccordionSection) -> None:
         layout = accordion.body_layout
-        intro = QLabel(
-            "Off by default. When enabled, Spiced writes a standard Editor build script into "
-            "this project (only if one doesn't already exist) and can trigger a headless build "
-            "for it — from the Testing screen, or nightly while Spiced is open. The nightly "
-            "schedule only fires while Spiced is running: it does not register anything with "
-            "Windows Task Scheduler, so a build won't happen on a day Spiced isn't open."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._build_pipeline_intro = QLabel()
+        self._build_pipeline_intro.setObjectName("Muted")
+        self._build_pipeline_intro.setWordWrap(True)
+        layout.addWidget(self._build_pipeline_intro)
 
         self._build_pipeline_pill = _status_pill()
         accordion.header_extra.addWidget(self._build_pipeline_pill)
@@ -401,7 +522,35 @@ class ProjectsScreen(QWidget):
     def _update_build_pipeline_status(self) -> None:
         project = self._services.active_project()
         has_project = project is not None
+        engine = project.engine if project else None
         enabled = project.build_pipeline_enabled if project else False
+
+        if engine == ENGINE_GODOT:
+            self._build_pipeline_intro.setText(
+                "Off by default. When enabled, Spiced can trigger a headless export of this "
+                "project's own export presets (set up in the Godot Editor, not written by "
+                "Spiced) — from the Testing screen, or nightly while Spiced is open. The "
+                "nightly schedule only fires while Spiced is running: it does not register "
+                "anything with Windows Task Scheduler, so a build won't happen on a day Spiced "
+                "isn't open."
+            )
+        elif engine == ENGINE_UNREAL:
+            self._build_pipeline_intro.setText(
+                "Off by default. When enabled, Spiced can trigger a headless build/cook/package "
+                "run via Unreal's own Automation Tool (UAT) — from the Testing screen, or "
+                "nightly while Spiced is open. The nightly schedule only fires while Spiced is "
+                "running: it does not register anything with Windows Task Scheduler, so a build "
+                "won't happen on a day Spiced isn't open."
+            )
+        else:
+            self._build_pipeline_intro.setText(
+                "Off by default. When enabled, Spiced writes a standard Editor build script "
+                "into this project (only if one doesn't already exist) and can trigger a "
+                "headless build for it — from the Testing screen, or nightly while Spiced is "
+                "open. The nightly schedule only fires while Spiced is running: it does not "
+                "register anything with Windows Task Scheduler, so a build won't happen on a "
+                "day Spiced isn't open."
+            )
 
         self._build_pipeline_toggle.blockSignals(True)
         self._build_pipeline_toggle.setChecked(bool(enabled))
@@ -409,9 +558,18 @@ class ProjectsScreen(QWidget):
         self._build_pipeline_toggle.setEnabled(has_project)
         _set_pill_state(self._build_pipeline_pill, bool(enabled))
 
+        # Godot's target list is read live from this project's own
+        # export_presets.cfg (see core.build_pipeline.
+        # list_build_targets_for_project) -- repopulate on every refresh
+        # rather than once at screen-construction time.
+        targets = list_build_targets_for_project(project) if project else []
+        current = self._build_platform_input.currentText()
         self._build_platform_input.blockSignals(True)
-        if project and project.build_target_platform:
-            idx = self._build_platform_input.findText(project.build_target_platform)
+        self._build_platform_input.clear()
+        self._build_platform_input.addItems(targets)
+        preferred = (project.build_target_platform if project else None) or current
+        if preferred:
+            idx = self._build_platform_input.findText(preferred)
             if idx >= 0:
                 self._build_platform_input.setCurrentIndex(idx)
         self._build_platform_input.blockSignals(False)
@@ -437,7 +595,25 @@ class ProjectsScreen(QWidget):
             )
         elif not project.path:
             self._build_pipeline_status.setText(
-                "Connect a Unity folder above before Spiced can build this project."
+                f"Connect a {project.engine} folder above before Spiced can build this project."
+            )
+        elif engine == ENGINE_GODOT and not targets:
+            self._build_pipeline_status.setText(
+                "This project has no export presets configured yet. Set up Export in the "
+                "Godot Editor first (Project > Export…)."
+            )
+        elif engine == ENGINE_GODOT and resolve_godot_executable(
+            project.unity_editor_path_override
+        ) is None:
+            self._build_pipeline_status.setText(
+                "No valid Godot executable configured yet — set it under \"Run Tests\" above."
+            )
+        elif engine == ENGINE_UNREAL and resolve_unreal_uat(
+            project.unity_editor_path_override
+        ) is None:
+            self._build_pipeline_status.setText(
+                "No valid Unreal Engine install configured yet — set it under \"Run Tests\" "
+                "above."
             )
         else:
             self._build_pipeline_status.setText(
@@ -774,10 +950,13 @@ class ProjectsScreen(QWidget):
 
         try:
             status = self._services.git_repo_status(project)
-        except NotAGitRepositoryError as exc:
+        except GitIntegrationNotEnabledError as exc:
             self._git_status_label.setText(str(exc))
             return
-        except GitIntegrationNotEnabledError as exc:
+        except GitConnectorError as exc:
+            # Covers NotAGitRepositoryError and GitNotInstalledError alike
+            # (Connect-a-Project Setup Simplification spec, Finding 3 fix
+            # 6) -- a missing git executable used to reach here uncaught.
             self._git_status_label.setText(str(exc))
             return
 
@@ -1023,13 +1202,57 @@ class ProjectsScreen(QWidget):
             )
 
     def _create(self) -> None:
+        """Create a project -- folder first, engine confirmed after.
+
+        First click: validate the name, then open a folder picker. If the
+        developer cancels it (no folder handy yet), create the project
+        shell right away using whatever the engine combo already says,
+        exactly as before -- a folder can always be attached later via
+        "Choose folder" on the project's detail panel. If a folder *is*
+        picked, run ``detect_engine()`` against it, pre-select the combo
+        to what was found, and stop -- the combo box stays visible and
+        editable as an escape hatch (never silently overridden) while the
+        developer reviews or overrides it.
+
+        Second click (``self._pending_new_project_folder`` already set):
+        actually create the project, using whatever the combo currently
+        says (the detected engine, or the developer's own override), and
+        attach the already-picked folder to it.
+        """
         name = self._name_input.text().strip()
         if not name:
             QMessageBox.information(self, "Name needed", "Please enter a project name.")
             return
-        project = self._projects.create_project(
-            name=name, engine=self._engine_input.currentText()
-        )
+
+        if self._pending_new_project_folder is None:
+            folder = QFileDialog.getExistingDirectory(self, "Choose your project folder")
+            if not folder:
+                self._finish_create(name, self._engine_input.currentText(), folder=None)
+                return
+            detected_engine, detection = detect_engine(folder)
+            index = self._engine_input.findText(detected_engine)
+            if index >= 0:
+                self._engine_input.setCurrentIndex(index)
+            self._pending_new_project_folder = folder
+            self._new_project_status.setText(_detected_engine_message(detected_engine, detection))
+            self._create_btn.setText("Confirm engine & create")
+            return
+
+        folder = self._pending_new_project_folder
+        self._reset_pending_new_project()
+        self._finish_create(name, self._engine_input.currentText(), folder=folder)
+
+    def _reset_pending_new_project(self) -> None:
+        self._pending_new_project_folder = None
+        self._new_project_status.setText("")
+        self._create_btn.setText("Create project")
+
+    def _finish_create(self, name: str, engine: str, *, folder: str | None) -> None:
+        project = self._projects.create_project(name=name, engine=engine)
+        if folder:
+            _updated, detection = self._projects.attach_engine_folder(project.id, folder)
+            if not detection.is_valid:
+                self._show_mismatch_warning(project.id, engine, folder, detection)
         self._services.set_active_project(project.id)
         self._name_input.clear()
         self.refresh()
@@ -1077,17 +1300,40 @@ class ProjectsScreen(QWidget):
                 f"That looks like a valid {engine} project ({detection.project_name}).",
             )
         else:
-            warnings = (
-                "\n".join(f"• {w}" for w in detection.warnings) or "Unexpected folder layout."
-            )
-            QMessageBox.warning(
-                self,
-                f"That doesn't look like a {engine} project",
-                f"I saved the path, but it's missing some things a {engine} project usually "
-                f"has:\n\n{warnings}\n\nYou can pick a different folder any time.",
-            )
+            self._show_mismatch_warning(project.id, engine, folder, detection)
         self.refresh()
         self.projects_changed.emit()
+
+    def _show_mismatch_warning(
+        self, project_id: int, engine: str, folder: str, detection
+    ) -> None:
+        """The folder didn't validate against ``engine``. If ``detect_engine``
+        recognizes it as a *different* engine, offer to switch the project
+        to that engine directly instead of only listing what's missing --
+        the real mistake in that case is almost always a stale engine
+        choice from an earlier step, not a broken project folder.
+        """
+        detected_engine, redetection = detect_engine(folder)
+        if detected_engine != engine and redetection.is_valid:
+            choice = QMessageBox.question(
+                self,
+                f"That doesn't look like a {engine} project",
+                f"This doesn't look like a {engine} project, but it does look like a "
+                f"{detected_engine} one ({redetection.project_name}) — switch this project "
+                f"to {detected_engine}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if choice == QMessageBox.StandardButton.Yes:
+                self._projects.set_engine(project_id, detected_engine)
+                self._projects.attach_engine_folder(project_id, folder)
+                return
+        warnings = "\n".join(f"• {w}" for w in detection.warnings) or "Unexpected folder layout."
+        QMessageBox.warning(
+            self,
+            f"That doesn't look like a {engine} project",
+            f"I saved the path, but it's missing some things a {engine} project usually "
+            f"has:\n\n{warnings}\n\nYou can pick a different folder any time.",
+        )
 
     def refresh(self) -> None:
         self._refresh_project_cards()
@@ -1177,6 +1423,24 @@ class _ProjectCard(QFrame):
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self.clicked.emit(self._project_id)
         super().mousePressEvent(event)
+
+
+def _detected_engine_message(engine: str, detection) -> str:
+    """Status text shown under the "New project" engine combo once
+    ``detect_engine()`` has run against a picked folder -- see
+    ProjectsScreen._create."""
+    if not detection.is_valid:
+        # Unity's own detector was tried and still didn't recognize the
+        # folder -- detect_engine()'s documented fallback shape.
+        return (
+            "Couldn't tell what kind of project this is from the folder. Defaulting to Unity-"
+            "shaped checks below — pick the right engine if that's wrong, then click Create "
+            "project again."
+        )
+    label = f"Looks like a {engine} project"
+    if detection.project_name:
+        label += f" ({detection.project_name})"
+    return f"{label} — connect it as {engine}? Change the engine below if that's wrong, then click Create project again."
 
 
 def _card() -> QFrame:

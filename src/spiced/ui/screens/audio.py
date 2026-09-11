@@ -972,6 +972,20 @@ class AudioScreen(QWidget):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
+        # Connect-a-Project Setup Simplification spec, Finding 3 fix 5: the
+        # first "Check content" run for a given model size (see
+        # docs/faster_whisper_model_caching.md) downloads it from Hugging
+        # Face Hub before transcribing anything -- said out loud here so
+        # that first run's extra delay reads as expected, not a hang.
+        # Every run after that is fully offline.
+        self._cv_model_note = QLabel(
+            "The first time you use this, Spiced downloads a small speech-recognition model "
+            "(the default is a few dozen MB) -- after that it works fully offline."
+        )
+        self._cv_model_note.setObjectName("Muted")
+        self._cv_model_note.setWordWrap(True)
+        layout.addWidget(self._cv_model_note)
+
         self._cv_script_input = QPlainTextEdit()
         self._cv_script_input.setPlaceholderText(
             "One script line per row, as: line_id,text\n"
@@ -1045,7 +1059,8 @@ class AudioScreen(QWidget):
         self._cv_run_btn.setEnabled(False)
         self._cv_run_btn.setText("Checking…")
         self._cv_result.setPlainText(
-            "Transcribing and comparing voice lines (this can take a while)…"
+            "Transcribing and comparing voice lines (this can take a while, and may include a "
+            "one-time speech-recognition model download -- see the note above)…"
         )
 
         worker = _ContentVerificationWorker(self._services, project, script_text, folder, threshold)

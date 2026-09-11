@@ -1,8 +1,11 @@
 """OpenAI provider.
 
 Reads the API key from the OPENAI_API_KEY environment variable and the model
-from OPENAI_MODEL (defaulting to a conservative, widely available model). The
-key is never hardcoded, logged, or written to disk by this module.
+from OPENAI_MODEL (defaulting to a conservative, widely available model). If
+the environment variable isn't set, falls back to a key saved through the
+Settings screen (see core.api_key_store) -- the environment variable always
+wins when both are present. The key is never hardcoded or logged by this
+module.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import os
 from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
+from spiced.core.api_key_store import get_api_key
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -23,7 +27,9 @@ class OpenAIProvider(AIProvider):
 
     def _api_key(self) -> str | None:
         key = os.environ.get("OPENAI_API_KEY")
-        return key.strip() if key else None
+        if key and key.strip():
+            return key.strip()
+        return get_api_key("openai")
 
     def is_available(self) -> bool:
         if not self._api_key():
@@ -39,7 +45,8 @@ class OpenAIProvider(AIProvider):
         if not key:
             raise RuntimeError(
                 "OPENAI_API_KEY is not set. Add it to your environment or a local "
-                ".env file (see .env.example) to use the OpenAI provider."
+                ".env file (see .env.example), or paste it into Settings -> API key, "
+                "to use the OpenAI provider."
             )
         try:
             from openai import OpenAI
@@ -65,7 +72,8 @@ class OpenAIProvider(AIProvider):
         if not key:
             raise RuntimeError(
                 "OPENAI_API_KEY is not set. Add it to your environment or a local "
-                ".env file (see .env.example) to use the OpenAI provider."
+                ".env file (see .env.example), or paste it into Settings -> API key, "
+                "to use the OpenAI provider."
             )
         try:
             from openai import OpenAI

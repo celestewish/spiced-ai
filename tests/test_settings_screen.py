@@ -19,12 +19,22 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFrame  # noqa: E402
 
 from spiced.app.services import Services  # noqa: E402
+from spiced.core import api_key_store  # noqa: E402
 from spiced.ui.screens.settings import SettingsScreen  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def _isolated_key_store(tmp_path, monkeypatch):
+    # Isolate the API-key store (Connect-a-Project Setup Simplification
+    # spec, Finding 3 fix 1) from whatever's saved on the machine running
+    # these tests -- same reasoning as tests/test_providers.py's fixture.
+    monkeypatch.setattr(api_key_store.Path, "home", lambda: tmp_path)
 
 
 def test_settings_screen_constructs_without_error(tmp_path):
@@ -45,5 +55,74 @@ def test_settings_screen_sections_are_visually_separated(tmp_path):
 
     hairlines = [w for w in screen.findChildren(QFrame) if w.objectName() == "Hairline"]
     assert len(hairlines) >= 8
+
+    services.close()
+
+
+# --- API key field (Connect-a-Project Setup Simplification spec, Finding 3
+# fix 1/4) ---
+
+
+def test_api_key_field_hidden_for_mock_provider(tmp_path):
+    # The screen is never .show()n in this headless test (offscreen
+    # platform, no top-level window) -- isVisible() would read False for
+    # every widget regardless of our own setVisible() calls, since it
+    # factors in ancestor visibility. isHidden() reflects only this
+    # widget's own explicit hidden flag, which is what _refresh_api_key_
+    # section() actually toggles.
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("mock")
+
+    assert screen._api_key_input.isHidden() is True
+
+    services.close()
+
+
+def test_api_key_field_visible_for_openai_provider(tmp_path):
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    assert screen._api_key_input.isHidden() is False
+
+    services.close()
+
+
+def test_saving_api_key_through_the_field_is_read_back(tmp_path):
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    screen._api_key_input.setText("sk-typed-in")
+    screen._on_save_api_key()
+
+    assert api_key_store.get_api_key("openai") == "sk-typed-in"
+    assert "saved" in screen._api_key_status.text().lower()
+
+    services.close()
+
+
+def test_env_var_still_wins_when_both_are_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    api_key_store.set_api_key("openai", "sk-saved")
+
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    assert "environment" in screen._api_key_status.text().lower()
+
+    services.close()
+
+
+def test_no_key_configured_status_when_store_is_empty(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    assert "no key configured" in screen._api_key_status.text().lower()
 
     services.close()

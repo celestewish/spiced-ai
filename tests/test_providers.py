@@ -1,8 +1,21 @@
+import pytest
+
 from spiced.ai import DEFAULT_PROVIDER, MockProvider, OpenAIProvider, build_provider
 from spiced.ai.base import AIProvider, AIResponse
 from spiced.ai.gemini_provider import DEFAULT_MODEL as GEMINI_DEFAULT_MODEL
 from spiced.ai.gemini_provider import GeminiProvider
 from spiced.ai.openai_provider import DEFAULT_MODEL as OPENAI_DEFAULT_MODEL
+from spiced.core import api_key_store
+
+
+@pytest.fixture(autouse=True)
+def _isolated_key_store(tmp_path, monkeypatch):
+    # Both providers now fall back to core.api_key_store when their env var
+    # is unset (Connect-a-Project Setup Simplification spec, Finding 3 fix
+    # 1). Redirect it to an empty tmp_path so tests that delete the env var
+    # to exercise the "no key" path stay deterministic regardless of
+    # whatever's saved in the real ~/.spiced on the machine running them.
+    monkeypatch.setattr(api_key_store.Path, "home", lambda: tmp_path)
 
 
 def test_mock_provider_always_available():
@@ -207,3 +220,32 @@ def test_gemini_model_not_found_error_mentions_gemini_model():
     )
     assert "GEMINI_MODEL" in str(err)
     assert "gemini-1.5-flash" in str(err)
+
+
+# --- Falling back to a key saved via Settings (Finding 3 fix 1) ---
+
+
+def test_openai_falls_back_to_saved_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api_key_store.set_api_key("openai", "sk-saved")
+    assert OpenAIProvider().is_available() is True
+    assert OpenAIProvider()._api_key() == "sk-saved"
+
+
+def test_openai_env_var_wins_over_saved_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    api_key_store.set_api_key("openai", "sk-saved")
+    assert OpenAIProvider()._api_key() == "sk-env"
+
+
+def test_gemini_falls_back_to_saved_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    api_key_store.set_api_key("gemini", "sk-saved")
+    assert GeminiProvider().is_available() is True
+    assert GeminiProvider()._api_key() == "sk-saved"
+
+
+def test_gemini_env_var_wins_over_saved_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-env")
+    api_key_store.set_api_key("gemini", "sk-saved")
+    assert GeminiProvider()._api_key() == "sk-env"

@@ -11,7 +11,7 @@ filter) must already be on the host machine's `PATH` (or pointed to via the
 If `ffmpeg` isn't found, `normalize_folder()` raises `FfmpegNotAvailableError`
 before touching any file — never partway through a batch.
 
-## Installing ffmpeg
+## Installing ffmpeg (source checkout / macOS / Linux)
 
 - **Windows:** `winget install ffmpeg` (or download a build from
   https://ffmpeg.org/download.html and add its `bin/` folder to `PATH`).
@@ -19,6 +19,16 @@ before touching any file — never partway through a batch.
 - **Linux:** `apt install ffmpeg` / `dnf install ffmpeg` / your distro's
   package manager.
 
-Spiced's installer should document this as a prerequisite, the same way it
-already documents a Unity install for engine-connected features — Spiced
-itself never installs `ffmpeg` on the user's behalf.
+## The Windows installer bundles its own
+
+Connect-a-Project Setup Simplification spec, Finding 3 fix 4: the packaged
+Windows installer (`packaging/inno_setup.iss`) bundles a static
+`ffmpeg.exe` (see `packaging/vendor/README.md` for the build a maintainer
+places before running a release build) and points `FFMPEG_PATH` at it via
+a machine-level environment variable set at install time — loudness
+normalization works out of the box for anyone using the installer, no
+separate `ffmpeg` install needed. A source checkout (or a build run
+without a vendored `ffmpeg.exe` present) still needs the manual install
+above; a missing `ffmpeg` either way still fails cleanly with
+`FfmpegNotAvailableError` before any file is touched, rather than partway
+through a batch.

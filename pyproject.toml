@@ -79,6 +79,10 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.5",
 ]
+# Windows installer build (Connect-a-Project Setup Simplification spec,
+# Finding 3 fix 2) -- not needed to run or develop Spiced, only to build
+# packaging/spiced.spec into a standalone .exe. See packaging/README.md.
+build = ["pyinstaller>=6.6"]
 
 [project.scripts]
 # CLI-first (SPICED_IMPLEMENTATION_BIBLE.md, section 0): every automation

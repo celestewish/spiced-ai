@@ -1,7 +1,10 @@
 """Google Gemini provider.
 
-Reads the API key from the GEMINI_API_KEY environment variable. The key is
-never hardcoded, logged, or written to disk by this module.
+Reads the API key from the GEMINI_API_KEY environment variable. If the
+environment variable isn't set, falls back to a key saved through the
+Settings screen (see core.api_key_store) -- the environment variable always
+wins when both are present. The key is never hardcoded or logged by this
+module.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import os
 from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
+from spiced.core.api_key_store import get_api_key
 
 DEFAULT_MODEL = "gemini-2.0-flash"
 
@@ -22,7 +26,9 @@ class GeminiProvider(AIProvider):
 
     def _api_key(self) -> str | None:
         key = os.environ.get("GEMINI_API_KEY")
-        return key.strip() if key else None
+        if key and key.strip():
+            return key.strip()
+        return get_api_key("gemini")
 
     def is_available(self) -> bool:
         if not self._api_key():
@@ -38,7 +44,8 @@ class GeminiProvider(AIProvider):
         if not key:
             raise RuntimeError(
                 "GEMINI_API_KEY is not set. Add it to your environment or a local "
-                ".env file (see .env.example) to use the Gemini provider."
+                ".env file (see .env.example), or paste it into Settings -> API key, "
+                "to use the Gemini provider."
             )
         try:
             import google.generativeai as genai
@@ -62,7 +69,8 @@ class GeminiProvider(AIProvider):
         if not key:
             raise RuntimeError(
                 "GEMINI_API_KEY is not set. Add it to your environment or a local "
-                ".env file (see .env.example) to use the Gemini provider."
+                ".env file (see .env.example), or paste it into Settings -> API key, "
+                "to use the Gemini provider."
             )
         try:
             import google.generativeai as genai
