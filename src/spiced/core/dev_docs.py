@@ -31,6 +31,7 @@ from spiced.ai.base import AIProvider
 from spiced.ai.prompt_templates import build_dev_docs_prompt
 from spiced.connectors import godot_docs_scan, unity_docs_scan, unreal_docs_scan
 from spiced.connectors.unity_docs_scan import DevDocsScanResult
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL
 from spiced.storage.dev_docs_snapshots import DevDocsSnapshot, DevDocsSnapshotRepository
 from spiced.storage.projects import Project
 
@@ -61,9 +62,9 @@ class DevDocsService:
             raise NoProjectFolderError(
                 f"Connect a {project.engine} folder for this project first (Projects screen)."
             )
-        if project.engine == "Godot":
+        if project.engine == ENGINE_GODOT:
             return godot_docs_scan.scan_scripts(project.path)
-        if project.engine == "Unreal":
+        if project.engine == ENGINE_UNREAL:
             return unreal_docs_scan.scan_headers(project.path)
         return unity_docs_scan.scan_scripts(project.path)
 

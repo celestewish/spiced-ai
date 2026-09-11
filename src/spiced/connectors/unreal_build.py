@@ -36,6 +36,13 @@ LOG_TAIL_CHARS = 4000
 
 DEFAULT_CLIENT_CONFIG = "Development"
 
+# -platform= values BuildCookRun accepts, offered as this connector's build-
+# target list -- the same role unity_build.BUILD_TARGETS plays for Unity.
+# Windows-first per this app's own conventions (see e.g.
+# core.engine_executable_resolve's RunUAT.bat-only resolution).
+PLATFORMS = ("Win64", "Linux", "Mac")
+DEFAULT_PLATFORM = "Win64"
+
 
 @dataclass(frozen=True)
 class UnrealBuildResult:

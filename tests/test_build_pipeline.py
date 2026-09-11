@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from spiced.connectors import unity_build
+from spiced.connectors import godot_build, unity_build, unreal_build
 from spiced.core import build_pipeline
 from spiced.core.build_pipeline import (
     BuildNotEnabledError,
     BuildUnavailableError,
+    list_build_targets_for_project,
     run_build_pipeline,
     trigger_build_from_hook,
 )
@@ -194,3 +195,147 @@ def test_run_build_pipeline_progress_stops_before_editor_step_when_not_enabled(t
     with pytest.raises(BuildNotEnabledError):
         run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL, on_progress=messages.append)
     assert messages == []
+
+
+# --- Engine dispatch: Godot ---------------------------------------------
+
+
+def _setup_godot(tmp_path):
+    db = Database(":memory:")
+    projects = ProjectRepository(db)
+    reports = BuildReportRepository(db)
+    project = projects.create("Fixture Game", engine="Godot")
+    project = projects.set_unity_folder(project.id, str(tmp_path), "valid")
+    project = projects.set_build_pipeline_settings(project.id, True, None)
+    return projects, reports, project
+
+
+def test_run_build_pipeline_dispatches_to_godot_export(monkeypatch, tmp_path):
+    projects, reports, project = _setup_godot(tmp_path)
+    monkeypatch.setattr(
+        build_pipeline, "resolve_godot_executable", lambda *a, **k: "/usr/bin/godot"
+    )
+    monkeypatch.setattr(
+        godot_build,
+        "list_export_presets",
+        lambda path: [
+            godot_build.ExportPreset(index=0, name="Windows Desktop", platform="Windows")
+        ],
+    )
+    monkeypatch.setattr(
+        godot_build,
+        "run_export",
+        lambda *a, **k: godot_build.GodotExportResult(
+            succeeded=True,
+            output_path=str(tmp_path / "Builds" / "Windows_Desktop" / "Windows_Desktop"),
+            log_tail="export ok",
+            exit_code=0,
+            timed_out=False,
+        ),
+    )
+
+    report = run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+    assert report.succeeded is True
+    assert report.target_platform == "Windows Desktop"
+
+
+def test_run_build_pipeline_godot_raises_without_executable(tmp_path):
+    projects, reports, project = _setup_godot(tmp_path)
+    with pytest.raises(BuildUnavailableError):
+        run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+
+def test_run_build_pipeline_godot_raises_without_export_presets(monkeypatch, tmp_path):
+    projects, reports, project = _setup_godot(tmp_path)
+    monkeypatch.setattr(
+        build_pipeline, "resolve_godot_executable", lambda *a, **k: "/usr/bin/godot"
+    )
+    monkeypatch.setattr(godot_build, "list_export_presets", lambda path: [])
+
+    with pytest.raises(BuildUnavailableError):
+        run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+
+# --- Engine dispatch: Unreal ---------------------------------------------
+
+
+def _setup_unreal(tmp_path):
+    db = Database(":memory:")
+    projects = ProjectRepository(db)
+    reports = BuildReportRepository(db)
+    project = projects.create("Fixture Game", engine="Unreal")
+    (tmp_path / "FixtureGame.uproject").write_text("{}", encoding="utf-8")
+    project = projects.set_unity_folder(project.id, str(tmp_path), "valid")
+    project = projects.set_build_pipeline_settings(project.id, True, None)
+    return projects, reports, project
+
+
+def test_run_build_pipeline_dispatches_to_unreal_build(monkeypatch, tmp_path):
+    projects, reports, project = _setup_unreal(tmp_path)
+    monkeypatch.setattr(build_pipeline, "resolve_unreal_uat", lambda *a, **k: r"C:\UE\RunUAT.bat")
+    monkeypatch.setattr(
+        unreal_build,
+        "run_build",
+        lambda *a, **k: unreal_build.UnrealBuildResult(
+            succeeded=True,
+            output_path=str(tmp_path / "Builds" / "Win64"),
+            log_tail="build ok",
+            exit_code=0,
+            timed_out=False,
+        ),
+    )
+
+    report = run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+    assert report.succeeded is True
+    assert report.target_platform == "Win64"
+
+
+def test_run_build_pipeline_unreal_raises_without_engine_install(tmp_path):
+    projects, reports, project = _setup_unreal(tmp_path)
+    with pytest.raises(BuildUnavailableError):
+        run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+
+def test_run_build_pipeline_unreal_raises_without_uproject_file(monkeypatch, tmp_path):
+    db = Database(":memory:")
+    projects = ProjectRepository(db)
+    reports = BuildReportRepository(db)
+    project = projects.create("Fixture Game", engine="Unreal")
+    project = projects.set_unity_folder(project.id, str(tmp_path), "valid")  # no .uproject written
+    project = projects.set_build_pipeline_settings(project.id, True, None)
+    monkeypatch.setattr(build_pipeline, "resolve_unreal_uat", lambda *a, **k: r"C:\UE\RunUAT.bat")
+
+    with pytest.raises(BuildUnavailableError):
+        run_build_pipeline(project, reports, trigger=TRIGGER_MANUAL)
+
+
+# --- list_build_targets_for_project ---------------------------------------
+
+
+def test_list_build_targets_returns_unity_build_targets(tmp_path):
+    _projects, _reports, project = _setup(tmp_path)
+    assert list_build_targets_for_project(project) == list(unity_build.BUILD_TARGETS)
+
+
+def test_list_build_targets_returns_unreal_platforms(tmp_path):
+    _projects, _reports, project = _setup_unreal(tmp_path)
+    assert list_build_targets_for_project(project) == list(unreal_build.PLATFORMS)
+
+
+def test_list_build_targets_reads_godot_export_presets(monkeypatch, tmp_path):
+    _projects, _reports, project = _setup_godot(tmp_path)
+    monkeypatch.setattr(
+        godot_build,
+        "list_export_presets",
+        lambda path: [godot_build.ExportPreset(index=0, name="Linux", platform="Linux")],
+    )
+    assert list_build_targets_for_project(project) == ["Linux"]
+
+
+def test_list_build_targets_empty_for_godot_with_no_folder():
+    db = Database(":memory:")
+    projects = ProjectRepository(db)
+    project = projects.create("Fixture Game", engine="Godot")
+    assert list_build_targets_for_project(project) == []

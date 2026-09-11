@@ -42,7 +42,11 @@ from spiced.app.services import Services
 from spiced.connectors import unity_build
 from spiced.core.accessibility import AccessibilityReview
 from spiced.core.accessibility import ProviderNotReadyError as AccessibilityNotReadyError
-from spiced.core.build_pipeline import BuildNotEnabledError, BuildUnavailableError
+from spiced.core.build_pipeline import (
+    BuildNotEnabledError,
+    BuildUnavailableError,
+    list_build_targets_for_project,
+)
 from spiced.core.economy_simulator import (
     ECONOMY_SCHEMA_DOC,
     EconomySimulationFindings,
@@ -50,6 +54,11 @@ from spiced.core.economy_simulator import (
     InvalidEconomyDataError,
 )
 from spiced.core.economy_simulator import ProviderNotReadyError as EconomyNotReadyError
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL
+from spiced.core.engine_executable_resolve import (
+    resolve_godot_executable,
+    resolve_unreal_editor_cmd,
+)
 from spiced.core.hardware_simulation import available_tiers
 from spiced.core.performance import PerformanceReview
 from spiced.core.performance import ProviderNotReadyError as PerformanceNotReadyError
@@ -63,14 +72,9 @@ from spiced.core.release_checklist import (
 )
 from spiced.core.test_generator import NoUnityFolderError, TestGenerationResult
 from spiced.core.test_generator import ProviderNotReadyError as TestGenNotReadyError
-from spiced.core.testing import (
-    SOURCE_FILE,
-    SOURCE_PASTE,
-    SOURCE_UNITY_RUN,
-    ProviderNotReadyError,
-    TestReview,
-)
-from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor, run_tests
+from spiced.core.test_runner_pipeline import TestRunnerNotAvailableError, run_test_pipeline
+from spiced.core.testing import SOURCE_FILE, SOURCE_PASTE, ProviderNotReadyError, TestReview
+from spiced.core.unity_test_runner import EDIT_MODE, PLAY_MODE, resolve_unity_editor
 from spiced.storage.build_reports import TRIGGER_MANUAL, BuildReport
 from spiced.storage.known_issues import SOURCE_PLAYER, STATUS_RESOLVED
 from spiced.storage.test_cases import CATEGORIES, PRIORITIES, STATUSES
@@ -305,16 +309,21 @@ class _FunctionalWorker(AIStreamWorker):
 
 
 class _UnityRunWorker(QObject):
-    """Runs one or more Unity test platforms sequentially on a worker thread.
+    """Runs one or more test passes sequentially on a worker thread --
+    Unity's EditMode/PlayMode platforms, or a single generic pass for a
+    Godot/Unreal project (neither has a platform concept the way Unity
+    does; see ``core.test_runner_pipeline``'s module docstring). The class
+    name is a holdover from when this only ever ran Unity; its behavior is
+    now engine-dispatching via ``core.test_runner_pipeline.run_test_pipeline``.
 
-    Emits per-platform so a failure on one platform (e.g. PlayMode timing out)
-    doesn't hide a result already obtained from another (e.g. EditMode).
+    Emits per-pass so a failure on one platform/pass (e.g. PlayMode timing
+    out) doesn't hide a result already obtained from another (e.g. EditMode).
 
     Also emits ``progress`` (Live Task Progress Transparency, Phase L) with a
-    plain-language description of each real step -- launching a platform,
-    then reviewing its results -- since a full Unity test run naturally has
-    several minutes-long steps a developer benefits from seeing named, not
-    just a spinner. Purely additive: ``platform_started``/``platform_done``/
+    plain-language description of each real step -- launching a pass, then
+    reviewing its results -- since a full test run naturally has several
+    minutes-long steps a developer benefits from seeing named, not just a
+    spinner. Purely additive: ``platform_started``/``platform_done``/
     ``platform_failed`` still carry the exact same information they always
     did, for callers that don't care about the progress trail.
     """
@@ -332,21 +341,30 @@ class _UnityRunWorker(QObject):
         self._editor_path = editor_path
         self._platforms = platforms
 
+    @staticmethod
+    def _label(platform: str) -> str:
+        # Unity's EditMode/PlayMode double as both the real value passed to
+        # run_test_pipeline and a friendly label. Godot/Unreal pass "" (no
+        # platform/filter concept -- see run_test_pipeline), which needs its
+        # own friendly stand-in label here.
+        return platform or "Tests"
+
     def run(self) -> None:
         total = len(self._platforms)
         try:
             provider = self._services.build_provider()
         except Exception as exc:
             self.platform_failed.emit(
-                self._platforms[0], f"Could not set up the AI provider: {exc}"
+                self._label(self._platforms[0]), f"Could not set up the AI provider: {exc}"
             )
             self.finished.emit()
             return
         if not provider.is_available():
-            # Checked before launching Unity at all: a run can take a long time, and
-            # there's no point spending it only to fail on the AI review afterward.
+            # Checked before launching the engine at all: a run can take a
+            # long time, and there's no point spending it only to fail on
+            # the AI review afterward.
             self.platform_failed.emit(
-                self._platforms[0],
+                self._label(self._platforms[0]),
                 f"The {provider.display_name()} provider isn't ready. Add its API key to a "
                 "local .env file, or switch to the Mock provider in Settings, before running "
                 "tests — this is checked first so a run isn't wasted.",
@@ -357,35 +375,36 @@ class _UnityRunWorker(QObject):
         team_mode = self._services.team_mode_enabled()
         team_members = self._services.team_prompt_context(self._project) if team_mode else None
         for index, platform in enumerate(self._platforms, start=1):
-            self.platform_started.emit(platform)
-            self.progress.emit(f"Running {platform} tests… ({index} of {total})")
+            label = self._label(platform)
+            self.platform_started.emit(label)
+            self.progress.emit(f"Running {label} tests… ({index} of {total})")
             try:
-                result = run_tests(self._editor_path, self._project.path, platform)
+                result = run_test_pipeline(self._project, self._editor_path, platform)
                 if not result.succeeded:
-                    message = result.error or "Unity did not produce a results file."
+                    message = result.error or "The run did not produce a results file."
                     if result.log_tail:
                         message += f"\n\nLog excerpt:\n{result.log_tail}"
-                    self.platform_failed.emit(platform, message)
-                    self.progress.emit(f"{platform} tests did not complete successfully.")
+                    self.platform_failed.emit(label, message)
+                    self.progress.emit(f"{label} tests did not complete successfully.")
                     continue
-                self.progress.emit(f"Reviewing {platform} results with the AI provider…")
+                self.progress.emit(f"Reviewing {label} results with the AI provider…")
                 review = self._services.testing.analyze(
                     provider,
-                    result.results_xml,
+                    result.raw_text,
                     project=self._project,
-                    source_type=SOURCE_UNITY_RUN,
-                    source_filename=f"unity-{platform.lower()}-run.xml",
+                    source_type=result.source_type,
+                    source_filename=result.source_filename,
                     record_usage=self._services.usage.record_prompt,
                     team_mode=team_mode,
                     team_members=team_members,
                 )
-                self.platform_done.emit(platform, review)
-                self.progress.emit(f"{platform} tests complete.")
-            except ProviderNotReadyError as exc:
-                self.platform_failed.emit(platform, str(exc))
+                self.platform_done.emit(label, review)
+                self.progress.emit(f"{label} tests complete.")
+            except (ProviderNotReadyError, TestRunnerNotAvailableError) as exc:
+                self.platform_failed.emit(label, str(exc))
             except Exception as exc:  # surfaced calmly to the user
-                self.platform_failed.emit(platform, f"Something went wrong: {exc}")
-        self.progress.emit("All platforms finished.")
+                self.platform_failed.emit(label, f"Something went wrong: {exc}")
+        self.progress.emit("All finished.")
         self.finished.emit()
 
 
@@ -875,19 +894,15 @@ class TestingScreen(QWidget):
 
 
     def _build_unity_run(self, layout: QVBoxLayout) -> None:
-        heading = QLabel("Run Unity tests")
+        heading = QLabel("Run Tests")
         heading.setObjectName("SectionTitle")
         layout.addWidget(heading)
 
-        intro = QLabel(
-            "Opt-in per project (Projects screen). Launches your project's Unity Editor "
-            "headlessly to run its own tests, then feeds the results into the same review "
-            "and Known Issues matching as a pasted result — nothing else about how Spiced "
-            "handles results changes."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._unity_run_intro = QLabel()
+        self._unity_run_intro.setObjectName("Muted")
+        self._unity_run_intro.setWordWrap(True)
+        layout.addWidget(self._unity_run_intro)
+        self._refresh_test_run_intro()
 
         self._unity_run_status = QLabel()
         self._unity_run_status.setObjectName("Muted")
@@ -1465,6 +1480,7 @@ class TestingScreen(QWidget):
         self._refresh_player_crash_status()
         self._refresh_perf_history()
         self._refresh_access_history()
+        self._refresh_test_run_intro()
         self._refresh_unity_run_status()
         self._refresh_build_pipeline_status()
         self._refresh_build_history()
@@ -1613,23 +1629,84 @@ class TestingScreen(QWidget):
             lines.append(f"[{r.created_at}] score {score}\n    {r.ai_summary or ''}")
         self._access_history.setPlainText("\n".join(lines))
 
+    def _refresh_test_run_intro(self) -> None:
+        project = self._services.active_project()
+        engine = project.engine if project is not None else None
+        if engine == ENGINE_GODOT:
+            text = (
+                "Opt-in per project (Projects screen). Launches this project's Godot executable "
+                "headlessly to run its GUT test suite, then feeds the results into the same "
+                "review and Known Issues matching as a pasted result — nothing else about how "
+                "Spiced handles results changes."
+            )
+        elif engine == ENGINE_UNREAL:
+            text = (
+                "Opt-in per project (Projects screen). Launches this project's Unreal Editor "
+                "headlessly to run its Automation test suite, then feeds the results into the "
+                "same review and Known Issues matching as a pasted result — nothing else about "
+                "how Spiced handles results changes."
+            )
+        else:
+            text = (
+                "Opt-in per project (Projects screen). Launches your project's Unity Editor "
+                "headlessly to run its own tests, then feeds the results into the same review "
+                "and Known Issues matching as a pasted result — nothing else about how Spiced "
+                "handles results changes."
+            )
+        self._unity_run_intro.setText(text)
+
     def _refresh_unity_run_status(self) -> None:
         project = self._services.active_project()
+        # EditMode/PlayMode/Both is Unity-only vocabulary -- GUT and Unreal
+        # Automation have no platform concept (see core.test_runner_pipeline's
+        # module docstring), so those pills are hidden rather than repurposed.
+        is_unity = project is None or project.engine not in (ENGINE_GODOT, ENGINE_UNREAL)
+        for btn in self._unity_platform_buttons.values():
+            btn.setVisible(is_unity)
+
         if project is None:
-            self._unity_run_status.setText("Select a project to run its Unity tests.")
+            self._unity_run_status.setText("Select a project to run its tests.")
             self._unity_run_btn.setEnabled(False)
             return
         if not project.unity_test_run_enabled:
             self._unity_run_status.setText(
                 "Not enabled for this project. Turn on \"Allow Spiced to run this project's "
-                "Unity tests\" on the Projects screen."
+                "tests\" on the Projects screen."
             )
             self._unity_run_btn.setEnabled(False)
             return
         if not project.path:
-            self._unity_run_status.setText("Connect a Unity folder for this project first.")
+            self._unity_run_status.setText(
+                f"Connect a {project.engine} folder for this project first."
+            )
             self._unity_run_btn.setEnabled(False)
             return
+
+        if project.engine == ENGINE_GODOT:
+            editor_path = resolve_godot_executable(project.unity_editor_path_override)
+            if editor_path is None:
+                self._unity_run_status.setText(
+                    "No valid Godot executable is configured for this project. Set the Godot "
+                    "executable path on the Projects screen — Spiced can't auto-detect it."
+                )
+                self._unity_run_btn.setEnabled(False)
+                return
+            self._unity_run_status.setText(f"Will run GUT tests via {editor_path}")
+            self._unity_run_btn.setEnabled(True)
+            return
+        if project.engine == ENGINE_UNREAL:
+            editor_path = resolve_unreal_editor_cmd(project.unity_editor_path_override)
+            if editor_path is None:
+                self._unity_run_status.setText(
+                    "No valid Unreal Engine install is configured for this project. Set the "
+                    "Engine install folder on the Projects screen — Spiced can't auto-detect it."
+                )
+                self._unity_run_btn.setEnabled(False)
+                return
+            self._unity_run_status.setText(f"Will run Automation tests via {editor_path}")
+            self._unity_run_btn.setEnabled(True)
+            return
+
         required_version = project.engine_metadata.get("unity_version")
         editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
         if editor is None:
@@ -1842,33 +1919,59 @@ class TestingScreen(QWidget):
         project = self._services.active_project()
         if project is None or not project.unity_test_run_enabled or not project.path:
             return
-        required_version = project.engine_metadata.get("unity_version")
-        editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
-        if editor is None:
-            QMessageBox.information(
-                self,
-                "Unity Editor not found",
-                "Spiced couldn't resolve a Unity Editor to run — see the status above.",
-            )
-            return
 
-        platform_choice = next(
-            (p for p, btn in self._unity_platform_buttons.items() if btn.isChecked()), EDIT_MODE
-        )
-        if platform_choice == _BOTH_PLATFORMS:
-            platforms = [EDIT_MODE, PLAY_MODE]
+        if project.engine == ENGINE_GODOT:
+            editor_path = resolve_godot_executable(project.unity_editor_path_override)
+            if editor_path is None:
+                QMessageBox.information(
+                    self,
+                    "Godot executable not found",
+                    "Spiced couldn't find a valid Godot executable — see the status above.",
+                )
+                return
+            platforms = [""]  # GUT has no platform concept
+            launch_message = "Launching Godot — this can take a while, especially on a first run…"
+        elif project.engine == ENGINE_UNREAL:
+            editor_path = resolve_unreal_editor_cmd(project.unity_editor_path_override)
+            if editor_path is None:
+                QMessageBox.information(
+                    self,
+                    "Unreal Engine not found",
+                    "Spiced couldn't find a valid Unreal Engine install — see the status above.",
+                )
+                return
+            platforms = [""]  # runs every registered Automation test
+            launch_message = (
+                "Launching Unreal Editor — this can take a while, especially on a first run…"
+            )
         else:
-            platforms = [platform_choice]
+            required_version = project.engine_metadata.get("unity_version")
+            editor = resolve_unity_editor(required_version, project.unity_editor_path_override)
+            if editor is None:
+                QMessageBox.information(
+                    self,
+                    "Unity Editor not found",
+                    "Spiced couldn't resolve a Unity Editor to run — see the status above.",
+                )
+                return
+            editor_path = editor.path
+            platform_choice = next(
+                (p for p, btn in self._unity_platform_buttons.items() if btn.isChecked()),
+                EDIT_MODE,
+            )
+            if platform_choice == _BOTH_PLATFORMS:
+                platforms = [EDIT_MODE, PLAY_MODE]
+            else:
+                platforms = [platform_choice]
+            launch_message = "Launching Unity — this can take a while, especially on a first run…"
 
         self._unity_run_btn.setEnabled(False)
         for btn in self._unity_platform_buttons.values():
             btn.setEnabled(False)
-        self._unity_run_result.setPlainText(
-            "Launching Unity — this can take a while, especially on a first run…"
-        )
+        self._unity_run_result.setPlainText(launch_message)
         self._unity_progress_trail.reset()
 
-        worker = _UnityRunWorker(self._services, project, editor.path, platforms)
+        worker = _UnityRunWorker(self._services, project, editor_path, platforms)
         thread = launch_worker(self, worker, progress_slot=self._unity_progress_trail.add_step)
         thread.started.connect(worker.run)
         worker.platform_started.connect(self._on_unity_platform_started)
@@ -2323,6 +2426,21 @@ class TestingScreen(QWidget):
 
     def _refresh_build_pipeline_status(self) -> None:
         project = self._services.active_project()
+
+        # Godot's target list is read live from this project's own
+        # export_presets.cfg (see core.build_pipeline.list_build_targets_
+        # for_project) -- repopulate on every refresh (regardless of the
+        # gating checks below) rather than once at screen-construction
+        # time, the way Unity's/Unreal's fixed lists were previously set
+        # up, so a Godot project never shows a stale Unity/prior-project
+        # target list.
+        targets = list_build_targets_for_project(project) if project is not None else []
+        current = self._build_platform_input.currentText()
+        self._build_platform_input.blockSignals(True)
+        self._build_platform_input.clear()
+        self._build_platform_input.addItems(targets)
+        self._build_platform_input.blockSignals(False)
+
         if project is None:
             self._build_status.setText("Select a project to use the Build Pipeline.")
             self._build_run_btn.setEnabled(False)
@@ -2335,13 +2453,24 @@ class TestingScreen(QWidget):
             self._build_run_btn.setEnabled(False)
             return
         if not project.path:
-            self._build_status.setText("Connect a Unity folder for this project first.")
+            self._build_status.setText(
+                f"Connect a {project.engine} folder for this project first."
+            )
             self._build_run_btn.setEnabled(False)
             return
+        if project.engine == ENGINE_GODOT and not targets:
+            self._build_status.setText(
+                "This project has no export presets configured yet. Set up Export in the "
+                "Godot Editor first (Project > Export…), then come back here."
+            )
+            self._build_run_btn.setEnabled(False)
+            return
+
         self._build_status.setText(f"Ready. Builds are written under {project.path}\\Builds\\.")
         self._build_run_btn.setEnabled(True)
-        if project.build_target_platform:
-            idx = self._build_platform_input.findText(project.build_target_platform)
+        preferred = project.build_target_platform or current
+        if preferred:
+            idx = self._build_platform_input.findText(preferred)
             if idx >= 0:
                 self._build_platform_input.setCurrentIndex(idx)
 

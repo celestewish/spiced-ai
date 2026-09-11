@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from spiced.app.services import Services
 from spiced.core.asset_scan import AssetScanFindings, AssetScanReview
-from spiced.core.asset_scan import NoUnityFolderError as AssetScanNoUnityFolderError
+from spiced.core.asset_scan import NoProjectFolderError as AssetScanNoUnityFolderError
 from spiced.core.asset_scan import ProviderNotReadyError as AssetScanNotReadyError
 from spiced.core.changelog_draft import ChangelogResult
 from spiced.core.changelog_draft import NotAGitRepoError as ChangelogNotAGitRepoError
@@ -64,6 +64,7 @@ from spiced.core.draft_translation import NoDialogueError as DraftTranslationNoD
 from spiced.core.draft_translation import (
     ProviderNotReadyError as DraftTranslationNotReadyError,
 )
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL
 from spiced.core.localization_readiness import HEURISTIC_CAVEAT, LocalizationReadinessScan
 from spiced.core.localization_readiness import (
     NoUnityFolderError as LocalizationNoUnityFolderError,
@@ -105,8 +106,18 @@ def _format_asset_findings(findings: AssetScanFindings) -> str:
         lines.extend(f"- {p}" for p in findings.orphaned_assets)
     else:
         lines.append("None found.")
+    if findings.orphan_caveat:
+        lines.append("")
+        lines.append(findings.orphan_caveat)
+    # Godot only -- always shown for layout consistency across engines,
+    # matching how the other two sections show "None found." rather than
+    # disappearing when empty (see core.asset_scan's module docstring).
     lines.append("")
-    lines.append(findings.orphan_caveat)
+    lines.append("Broken scene references:")
+    if findings.broken_scene_references:
+        lines.extend(f"- {r}" for r in findings.broken_scene_references)
+    else:
+        lines.append("None found.")
     return "\n".join(lines)
 
 
@@ -903,14 +914,11 @@ class DebuggingScreen(QWidget):
         heading.setObjectName("SectionTitle")
         layout.addWidget(heading)
 
-        intro = QLabel(
-            "A read-only scan of this project's Assets/ folder: oversized or uncompressed-"
-            "format textures/audio, and assets that don't look referenced anywhere Spiced "
-            "scanned. Suggestions only — nothing is ever resized, recompressed, or deleted."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._asset_health_intro = QLabel()
+        self._asset_health_intro.setObjectName("Muted")
+        self._asset_health_intro.setWordWrap(True)
+        layout.addWidget(self._asset_health_intro)
+        self._refresh_asset_health_intro()
 
         row = QHBoxLayout()
         self._asset_scan_btn = PillButton("Scan assets (local, free)")
@@ -986,15 +994,11 @@ class DebuggingScreen(QWidget):
         heading.setObjectName("SectionTitle")
         layout.addWidget(heading)
 
-        intro = QLabel(
-            "Scans this project's own .cs scripts under Assets/ for class/method signatures "
-            "and any doc comments, then asks the AI to turn them into a living, plain-language "
-            "summary. Regenerated only when you click the button below — never a background "
-            "file-watcher."
-        )
-        intro.setObjectName("Muted")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
+        self._dev_docs_intro = QLabel()
+        self._dev_docs_intro.setObjectName("Muted")
+        self._dev_docs_intro.setWordWrap(True)
+        layout.addWidget(self._dev_docs_intro)
+        self._refresh_dev_docs_intro()
 
         row = QHBoxLayout()
         self._dev_docs_btn = PillButton("Regenerate docs", water_fill=True)
@@ -1072,6 +1076,33 @@ class DebuggingScreen(QWidget):
         self._dev_docs_btn.setText("Regenerate docs")
         self._dev_docs_btn.set_loading(False)
         self._dev_docs_result.setPlainText(message)
+
+    def _refresh_dev_docs_intro(self) -> None:
+        project = self._services.active_project()
+        engine = project.engine if project is not None else None
+        if engine == ENGINE_GODOT:
+            text = (
+                "Scans this project's own .gd scripts (Godot has no separate Assets/ folder — "
+                "the whole project is scanned) for class/method signatures and any doc comments, "
+                "then asks the AI to turn them into a living, plain-language summary. Regenerated "
+                "only when you click the button below — never a background file-watcher."
+            )
+        elif engine == ENGINE_UNREAL:
+            text = (
+                "Scans this project's own C++ headers (.h/.hpp) under Source/ for class/method "
+                "signatures and any doc comments, then asks the AI to turn them into a living, "
+                "plain-language summary. Blueprint visual scripts are binary and can't be scanned "
+                "this way. Regenerated only when you click the button below — never a background "
+                "file-watcher."
+            )
+        else:
+            text = (
+                "Scans this project's own .cs scripts under Assets/ for class/method signatures "
+                "and any doc comments, then asks the AI to turn them into a living, plain-language "
+                "summary. Regenerated only when you click the button below — never a background "
+                "file-watcher."
+            )
+        self._dev_docs_intro.setText(text)
 
     def _refresh_dev_docs_history(self) -> None:
         project = self._services.active_project()
@@ -1609,8 +1640,10 @@ class DebuggingScreen(QWidget):
         self._refresh_health_history()
         self._refresh_changelog_status()
         self._refresh_changelog_history()
+        self._refresh_asset_health_intro()
         self._refresh_asset_scan_history()
         self._refresh_dependency_check_history()
+        self._refresh_dev_docs_intro()
         self._refresh_dev_docs_history()
         self._refresh_design_drift()
         self._refresh_localization_history()
@@ -2114,6 +2147,32 @@ class DebuggingScreen(QWidget):
         self._asset_scan_ai_btn.setText("Get AI summary")
         self._asset_scan_ai_btn.set_loading(False)
         self._asset_scan_result.setPlainText(message)
+
+    def _refresh_asset_health_intro(self) -> None:
+        project = self._services.active_project()
+        engine = project.engine if project is not None else None
+        if engine == ENGINE_GODOT:
+            text = (
+                "A read-only scan of this project (Godot has no separate Assets/ folder — the "
+                "whole project is scanned): oversized or uncompressed-format textures/audio, "
+                "and scenes that reference a missing file. Suggestions only — nothing is ever "
+                "resized, recompressed, or deleted."
+            )
+        elif engine == ENGINE_UNREAL:
+            text = (
+                "A read-only scan of this project's Content/ folder: oversized packaged assets "
+                "(.uasset/.umap) by file size, plus loose uncompressed texture/audio source "
+                "files sitting in Content/ instead of imported. Unreal's binary asset format "
+                "can't be inspected further than size/extension without the Editor itself. "
+                "Suggestions only — nothing is ever resized, recompressed, or deleted."
+            )
+        else:
+            text = (
+                "A read-only scan of this project's Assets/ folder: oversized or uncompressed-"
+                "format textures/audio, and assets that don't look referenced anywhere Spiced "
+                "scanned. Suggestions only — nothing is ever resized, recompressed, or deleted."
+            )
+        self._asset_health_intro.setText(text)
 
     def _refresh_asset_scan_history(self) -> None:
         project = self._services.active_project()
