@@ -1,0 +1,79 @@
+name: Build Windows installer
+
+# Connect-a-Project Setup Simplification spec, Finding 3 fix 8: the build
+# is a CI job, not a laptop step -- the same "CI does it, not a laptop"
+# discipline e2e-tests.yml already established for testing. Triggered on a
+# version tag so a release is a deliberate, named act (`git tag v0.1.0 &&
+# git push --tags`), not something that fires on every push to main.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    # Inno Setup and the PyInstaller build both need a real Windows
+    # environment -- unlike e2e-tests.yml's offscreen Qt tests, this can't
+    # run on ubuntu-latest.
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Spiced with the build extra
+        # "gemini" too, so this build supports the Gemini provider --
+        # matches e2e-tests.yml's own reasoning for including it.
+        run: pip install -e ".[build,gemini]"
+
+      - name: Build the PyInstaller onedir bundle
+        run: pyinstaller packaging/spiced.spec
+
+      - name: Smoke-test the built exe
+        # Constructs the real app (Services, MainWindow, every screen)
+        # against the *built* exe and exits without opening a real window
+        # -- catches a missing-DLL/missing-font/missing-FFMPEG_PATH
+        # bundling gap here, before a user hits it. See packaging/README.md.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          dist\Spiced\Spiced.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Smoke test failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile the installer
+        # No vendored ffmpeg.exe in CI (packaging/vendor/README.md's
+        # download step is a manual, license-reviewed action a maintainer
+        # takes locally, not automated here) -- spiced.spec and
+        # inno_setup.iss both already degrade cleanly without one, so this
+        # CI-built installer behaves like a source checkout for loudness
+        # normalization until that's wired up separately.
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" packaging\inno_setup.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spiced-Setup
+          path: packaging/output/Spiced-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/output/Spiced-Setup.exe
+          generate_release_notes: true

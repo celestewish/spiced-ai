@@ -28,6 +28,8 @@ from spiced.storage.test_runs import TestRun, TestRunRepository
 SOURCE_PASTE = "paste"
 SOURCE_FILE = "file"
 SOURCE_UNITY_RUN = "unity_run"
+SOURCE_GODOT_RUN = "godot_run"
+SOURCE_UNREAL_RUN = "unreal_run"
 
 
 @dataclass(frozen=True)

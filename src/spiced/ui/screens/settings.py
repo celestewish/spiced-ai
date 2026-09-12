@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QScrollArea,
     QTextEdit,
@@ -22,6 +25,8 @@ from PySide6.QtWidgets import (
 from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
 from spiced.automation.finding import SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_WARNING
+from spiced.backend_client.config import backend_unreachable_message
+from spiced.core.api_key_store import get_api_key, set_api_key
 from spiced.core.keyboard_shortcuts import (
     ACTIONS as SHORTCUT_ACTIONS,
 )
@@ -36,7 +41,6 @@ from spiced.core.notification_routing import (
     KNOWN_EVENT_KINDS,
     disciplines_for_event,
 )
-from spiced.backend_client.config import backend_unreachable_message
 from spiced.core.plans import PLANS
 from spiced.core.rules_engine import (
     ACTION_CREATE_TASK,
@@ -56,6 +60,11 @@ def _hairline() -> QFrame:
     line.setObjectName("Hairline")
     line.setFixedHeight(1)
     return line
+
+
+# Providers that take an API key at all (mock needs none). Shared between
+# the in-app "API key" field and the existing not-configured message below.
+_PROVIDER_ENV_VARS = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}
 
 
 class _RoutingLoadWorker(QObject):
@@ -365,6 +374,33 @@ class SettingsScreen(QWidget):
         self._build_notification_preferences_section(layout)
         self._build_automation_rules_section(layout)
 
+        # In-app API key entry (Connect-a-Project Setup Simplification spec,
+        # Finding 3 fix 1). Only openai/gemini take a key -- mock needs none,
+        # so this section hides itself when mock is selected. An environment
+        # variable, if set, always takes priority over a key saved here (see
+        # core.api_key_store and each provider's _api_key()) -- this exists
+        # for a packaged build with no shell and no .env file to edit.
+        layout.addWidget(_hairline())
+        self._api_key_title = QLabel("API key")
+        self._api_key_title.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(self._api_key_title)
+
+        api_key_row = QHBoxLayout()
+        self._api_key_input = QLineEdit()
+        self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_input.returnPressed.connect(self._on_save_api_key)
+        api_key_row.addWidget(self._api_key_input, 1)
+        self._api_key_save_btn = PillButton("Save", ghost=True)
+        self._api_key_save_btn.clicked.connect(self._on_save_api_key)
+        api_key_row.addWidget(self._api_key_save_btn)
+        layout.addLayout(api_key_row)
+
+        self._api_key_status = QLabel("")
+        self._api_key_status.setObjectName("Muted")
+        self._api_key_status.setWordWrap(True)
+        layout.addWidget(self._api_key_status)
+
         # Connection test for the selected provider
         layout.addWidget(_hairline())
         test_title = QLabel("Connection test")
@@ -399,11 +435,47 @@ class SettingsScreen(QWidget):
         self._pref_team_id: str | None = None
         self._trigger_rules_team_id: str | None = None
         self._billing_subscription = None
+        self._refresh_api_key_section()
         self.refresh()
 
     def _on_provider_changed(self, name: str) -> None:
         self._services.set_provider_name(name)
+        self._refresh_api_key_section()
         self.settings_changed.emit()
+
+    def _refresh_api_key_section(self) -> None:
+        provider_key = self._provider_box.currentText()
+        env_var = _PROVIDER_ENV_VARS.get(provider_key)
+        needs_key = env_var is not None
+        self._api_key_title.setVisible(needs_key)
+        self._api_key_input.setVisible(needs_key)
+        self._api_key_save_btn.setVisible(needs_key)
+        self._api_key_status.setVisible(needs_key)
+        if not needs_key:
+            return
+
+        self._api_key_input.clear()
+        self._api_key_input.setPlaceholderText(f"Paste your {provider_key.capitalize()} API key")
+        if os.environ.get(env_var, "").strip():
+            self._api_key_status.setText(
+                f"{env_var} is set in your environment -- that value is used and takes "
+                "priority over any key saved here."
+            )
+        elif get_api_key(provider_key):
+            self._api_key_status.setText(
+                "A key is saved for this provider. Paste a new one to replace it, or save "
+                "a blank field to remove it."
+            )
+        else:
+            self._api_key_status.setText(
+                "No key configured yet. Paste one above and click Save -- never sent "
+                "anywhere but the provider itself."
+            )
+
+    def _on_save_api_key(self) -> None:
+        provider_key = self._provider_box.currentText()
+        set_api_key(provider_key, self._api_key_input.text())
+        self._refresh_api_key_section()
 
     def _on_team_mode_toggled(self, checked: bool) -> None:
         if checked and not self._services.auth.is_logged_in():
@@ -1156,11 +1228,12 @@ class SettingsScreen(QWidget):
 
     @staticmethod
     def _not_configured_message(provider_key: str) -> str:
-        env_var = {"openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}.get(provider_key)
+        env_var = _PROVIDER_ENV_VARS.get(provider_key)
         if env_var:
             return (
                 f"{provider_key.capitalize()} isn't configured yet. Set {env_var} in your "
-                "environment or a local .env file (see .env.example), then try again. "
-                "You can also switch to the mock provider for free offline testing."
+                "environment or a local .env file (see .env.example), or paste a key into "
+                "the API key field above, then try again. You can also switch to the mock "
+                "provider for free offline testing."
             )
         return "This provider is ready to use."

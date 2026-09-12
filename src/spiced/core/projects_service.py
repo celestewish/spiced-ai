@@ -7,6 +7,7 @@ import uuid
 from spiced.connectors.godot import GodotDetectionResult, detect_godot_project
 from spiced.connectors.unity import UnityDetectionResult, detect_unity_project
 from spiced.connectors.unreal import UnrealDetectionResult, detect_unreal_project
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL
 from spiced.storage.projects import Project, ProjectRepository
 
 
@@ -50,9 +51,9 @@ class ProjectsService:
         """
         project = self._repo.get(project_id)
         detection: UnityDetectionResult | GodotDetectionResult | UnrealDetectionResult
-        if project.engine == "Godot":
+        if project.engine == ENGINE_GODOT:
             detection = detect_godot_project(folder)
-        elif project.engine == "Unreal":
+        elif project.engine == ENGINE_UNREAL:
             detection = detect_unreal_project(folder)
         else:
             detection = detect_unity_project(folder)
@@ -63,6 +64,21 @@ class ProjectsService:
             metadata=detection.metadata() or None,
         )
         return updated, detection
+
+    def set_engine(self, project_id: int, engine: str) -> Project:
+        """Change an existing project's stored engine.
+
+        Not a general settings toggle -- the only caller is the Projects
+        screen's "this looks like a different engine" mismatch prompt
+        (Connect-a-Project Setup Simplification spec, Finding 1 fix 3),
+        offered only when ``attach_engine_folder`` comes back invalid and
+        ``core.engine_dispatch.detect_engine`` recognizes the same folder
+        as a different engine. The caller is expected to re-run
+        ``attach_engine_folder`` afterward so the stored validation
+        status/metadata reflect the new engine too -- this alone only
+        updates the ``engine`` column.
+        """
+        return self._repo.set_engine(project_id, engine)
 
     def set_unity_test_run_settings(
         self, project_id: int, enabled: bool, editor_path_override: str | None = None

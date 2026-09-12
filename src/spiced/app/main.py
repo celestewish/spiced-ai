@@ -37,7 +37,18 @@ def _register_bundled_fonts() -> None:
         QFontDatabase.addApplicationFont(str(font_file))
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv if argv is None else argv
+    # --smoke-test (Connect-a-Project Setup Simplification spec, Finding 3
+    # fix 8): constructs the real app -- Services, MainWindow, every screen
+    # -- then exits without ever calling .show()/.exec(). Meant for CI to
+    # run once against a freshly built installer on a clean Windows runner,
+    # to catch the class of bug that only shows up in a bundled build and
+    # never in a source checkout (a file PyInstaller silently didn't
+    # include, an unset FFMPEG_PATH, a relative path that assumed the
+    # source tree's layout) before a real user does.
+    smoke_test = "--smoke-test" in argv[1:]
+
     _load_env()
 
     # Imported here so non-GUI tooling can import spiced.app.services without Qt.
@@ -61,7 +72,14 @@ def main() -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
-    app = QApplication(sys.argv)
+    # QApplication.instance() or ...: constructing a second QApplication
+    # while one already exists raises RuntimeError -- never happens in a
+    # real run (main() is the process's first Qt code), but the
+    # --smoke-test path being genuinely callable from a test suite (a
+    # shared pytest session already has one from other screen tests) is
+    # exactly what makes --smoke-test itself testable outside a full
+    # PyInstaller build. See tests/test_app_main_smoke_test.py.
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Spiced")
     _register_bundled_fonts()
 
@@ -84,6 +102,13 @@ def main() -> int:
     )
 
     window = MainWindow(services)
+
+    if smoke_test:
+        window.close()
+        services.close()
+        print("Spiced smoke test OK")
+        return 0
+
     window.show()
 
     exit_code = app.exec()

@@ -7,16 +7,22 @@ convention as test_precommit_hook.py -- no mocked filesystem or faked
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
+from git.exc import GitCommandNotFound
 
 from spiced.connectors.git_connector import (
     DiscardNotConfirmedError,
     GitConnectorError,
+    GitNotInstalledError,
     NotAGitRepositoryError,
     NothingStagedError,
     PathEscapesRepositoryError,
+    _friendly_git_errors,
     commit_staged,
     diff_for_path,
     discard_unstaged_changes,
@@ -286,3 +292,56 @@ def test_discard_unstaged_changes_rejects_path_escaping_repo_even_when_confirmed
 
     with pytest.raises(PathEscapesRepositoryError):
         discard_unstaged_changes(repo, ["../../outside.txt"], confirmed=True)
+
+
+# --- Missing git on PATH (Connect-a-Project Setup Simplification spec,
+# Finding 3 fix 6) -------------------------------------------------------
+
+
+def test_friendly_git_errors_translates_command_not_found_into_actionable_message():
+    @_friendly_git_errors
+    def _boom():
+        raise GitCommandNotFound("git", FileNotFoundError("not found"))
+
+    with pytest.raises(GitNotInstalledError, match="git-scm.com"):
+        _boom()
+
+
+def test_friendly_git_errors_passes_through_other_exceptions():
+    @_friendly_git_errors
+    def _boom():
+        raise ValueError("unrelated")
+
+    with pytest.raises(ValueError, match="unrelated"):
+        _boom()
+
+
+def test_importing_module_does_not_raise_when_git_executable_is_missing():
+    """Regression test for a real startup crash: ``connectors.git_connector``
+    is imported eagerly at app launch (``app.services`` ->
+    ``core.git_integration`` -> here), and GitPython's own ``import git``
+    raises ``ImportError`` by default if it can't find the git executable.
+    Before this module set ``GIT_PYTHON_REFRESH=quiet`` ahead of that
+    import, Spiced would fail to even launch for anyone without git
+    installed -- not just fail the Version Control feature.
+
+    Simulated via ``GIT_PYTHON_GIT_EXECUTABLE`` pointed at a path that can't
+    exist, with ``GIT_PYTHON_REFRESH`` unset so GitPython's own default
+    ("raise") is what's actually being guarded against -- run in a
+    subprocess since ``git`` is already imported (and cached) in this test
+    process by the time this test runs.
+    """
+    src_root = Path(__file__).resolve().parent.parent / "src"
+    env = dict(os.environ)
+    env.pop("GIT_PYTHON_REFRESH", None)
+    env["GIT_PYTHON_GIT_EXECUTABLE"] = "C:/definitely/not/a/real/git.exe"
+    env["PYTHONPATH"] = str(src_root)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import spiced.connectors.git_connector"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr

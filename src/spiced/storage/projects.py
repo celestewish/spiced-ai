@@ -90,6 +90,10 @@ class ProjectRepository:
         )
         return self.get(project_id)
 
+    def set_engine(self, project_id: int, engine: str) -> Project:
+        self._db.execute("UPDATE projects SET engine = ? WHERE id = ?", (engine, project_id))
+        return self.get(project_id)
+
     def set_unity_test_run_settings(
         self, project_id: int, enabled: bool, editor_path_override: str | None
     ) -> Project:

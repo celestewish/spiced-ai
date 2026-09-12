@@ -52,3 +52,11 @@ htmlcov/
 *.swp
 .DS_Store
 Thumbs.db
+
+# --- Windows installer build (Finding 3 fixes 2/4) ---
+# A vendored ffmpeg.exe is a build-time input a maintainer places by hand
+# (see packaging/vendor/README.md) -- a compiled binary has no business in
+# version control, and its redistribution terms are a build-time decision.
+packaging/vendor/ffmpeg/*.exe
+# Inno Setup's compiled output (Spiced-Setup.exe).
+packaging/output/

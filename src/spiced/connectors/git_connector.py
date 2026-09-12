@@ -20,18 +20,46 @@ result escapes that root (``_resolve_within`` below). This is a new,
 explicit control -- no existing connector before this one has taken a
 user-suppliable relative path into a write operation, so there's no prior
 precedent to lean on.
+
+Missing ``git`` on PATH (Connect-a-Project Setup Simplification spec,
+Finding 3 fix 6): GitPython's own ``import git`` probes for the executable
+and *raises* ``ImportError`` by default if it isn't found -- and this
+module is imported eagerly at app startup (``app.services`` ->
+``core.git_integration`` -> here), so without the ``os.environ.setdefault``
+below, Spiced would fail to even launch for anyone without git installed,
+not just fail the Version Control feature. ``GIT_PYTHON_REFRESH=quiet``
+must be set *before* ``import git`` runs (module import order matters) --
+it defers the failure from import time to first actual command, which
+``_friendly_git_errors`` below then turns into ``GitNotInstalledError``
+instead of a raw ``GitCommandNotFound``/traceback reaching the UI, the same
+class of fix ``BUGFIX_SPEC.md``'s Bug 1 already applied to ``WinError
+10061``.
 """
 
 from __future__ import annotations
 
+import functools
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import GitCommandError, InvalidGitRepositoryError, NoSuchPathError, Repo
+os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
+
+from git import (  # noqa: E402
+    GitCommandError,
+    GitCommandNotFound,
+    InvalidGitRepositoryError,
+    NoSuchPathError,
+    Repo,
+)
 
 
 class GitConnectorError(RuntimeError):
     """Base class for every error this module raises."""
+
+
+class GitNotInstalledError(GitConnectorError):
+    """Raised when ``git`` isn't on PATH (or at ``GIT_PYTHON_GIT_EXECUTABLE``)."""
 
 
 class NotAGitRepositoryError(GitConnectorError):
@@ -48,6 +76,26 @@ class NothingStagedError(GitConnectorError):
 
 class DiscardNotConfirmedError(GitConnectorError):
     """Raised by ``discard_unstaged_changes`` unless called with confirmed=True."""
+
+
+def _friendly_git_errors(func):
+    """Turn ``GitCommandNotFound`` into ``GitNotInstalledError`` with an
+    actionable message. ``Repo()`` construction alone doesn't need git on
+    PATH (it reads ``.git/`` directly), so this only ever fires once a
+    function goes on to run a real git command -- the same place a missing
+    git binary would otherwise surface as a raw traceback in the UI."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except GitCommandNotFound as exc:
+            raise GitNotInstalledError(
+                "git isn't installed, or isn't on PATH -- Version Control needs it. "
+                "Install it from https://git-scm.com/downloads, then try again."
+            ) from exc
+
+    return wrapper
 
 
 def _open_repo(project_path: str | Path) -> Repo:
@@ -104,6 +152,7 @@ class GitStatusResult:
         return len(set(self.staged) | set(self.unstaged) | set(self.untracked))
 
 
+@_friendly_git_errors
 def repo_status(project_path: str | Path) -> GitStatusResult:
     """Current branch, ahead/behind vs. its upstream, and staged/unstaged/
     untracked file lists. Ahead/behind is 0/0 when there's no upstream
@@ -148,6 +197,7 @@ class GitCommitEntry:
     message: str
 
 
+@_friendly_git_errors
 def file_history(
     project_path: str | Path, relative_path: str, limit: int = 20
 ) -> list[GitCommitEntry]:
@@ -173,6 +223,7 @@ def file_history(
     ]
 
 
+@_friendly_git_errors
 def diff_for_path(project_path: str | Path, relative_path: str, *, staged: bool = False) -> str:
     """Unified diff text for one file -- feeds ``ui.widgets.diff_viewer.
     DiffViewerDialog`` directly rather than a new diff UI. ``""`` if there's
@@ -197,6 +248,7 @@ class GitStageResult:
     staged: list[str]
 
 
+@_friendly_git_errors
 def stage_paths(project_path: str | Path, relative_paths: list[str]) -> GitStageResult:
     """Stage one or more files (``git add``). Each path is validated to stay
     inside the repo before reaching GitPython."""
@@ -217,6 +269,7 @@ class GitCommitResult:
     message: str
 
 
+@_friendly_git_errors
 def commit_staged(
     project_path: str | Path,
     message: str,
@@ -257,6 +310,7 @@ class GitDiscardResult:
     discarded: list[str]
 
 
+@_friendly_git_errors
 def discard_unstaged_changes(
     project_path: str | Path,
     relative_paths: list[str],

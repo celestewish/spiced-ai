@@ -669,6 +669,16 @@ available as an optional provider.
 
 ## Setup
 
+**Just want to run Spiced, not develop it?** Download `Spiced-Setup.exe`
+from the [latest release](https://github.com/celestewish/spiced-ai/releases)
+and run it -- no Python, no virtualenv, no shell. Configure an AI provider
+key from inside the app (Settings screen) rather than editing a `.env`
+file; see "Configure OpenAI" below, which now also covers the in-app field.
+(The installer is unsigned as of this writing -- Windows SmartScreen may
+warn about an "unrecognized publisher" on first run; see
+`packaging/README.md`'s Code signing section.) The rest of this section is
+for developing Spiced itself.
+
 Requires Python 3.10+.
 
 ```bash
@@ -687,18 +697,25 @@ The **mock** provider works with no setup and no key — use it for free, offlin
 testing. To use OpenAI:
 
 1. Get an API key from <https://platform.openai.com/api-keys>.
-2. Copy `.env.example` to `.env` and set your key:
+2. Set it one of three ways, in priority order:
+   - **In the app:** open **Settings** (OpenAI is selected by default),
+     paste your key into the **API key** field, and click **Save** — the
+     simplest path if you're running the packaged installer with no shell
+     or `.env` file. Spiced stores it locally (`~/.spiced/api_keys.json`)
+     and never sends it anywhere but OpenAI itself.
+   - Copy `.env.example` to `.env` and set your key:
 
-   ```
-   OPENAI_API_KEY=your-real-key
-   ```
+     ```
+     OPENAI_API_KEY=your-real-key
+     ```
 
-   …or export it in your shell:
+   - …or export it in your shell (this always wins over both of the above
+     if set):
 
-   ```bash
-   # Windows (PowerShell):  $env:OPENAI_API_KEY="your-real-key"
-   export OPENAI_API_KEY="your-real-key"
-   ```
+     ```bash
+     # Windows (PowerShell):  $env:OPENAI_API_KEY="your-real-key"
+     export OPENAI_API_KEY="your-real-key"
+     ```
 
 3. In the app, open **Settings** (OpenAI is selected by default) and click
    **Send test prompt**.

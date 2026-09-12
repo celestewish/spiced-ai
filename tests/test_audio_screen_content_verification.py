@@ -32,6 +32,16 @@ def test_content_verification_section_constructs_with_placeholders(tmp_path):
     assert screen._cv_result.toPlainText() == ""
 
 
+def test_content_verification_shows_first_run_model_download_note(tmp_path):
+    # Connect-a-Project Setup Simplification spec, Finding 3 fix 5: the
+    # first faster-whisper run downloads a model before transcribing --
+    # said out loud so it doesn't read as a silent hang.
+    screen = AudioScreen(_services(tmp_path))
+    note_text = screen._cv_model_note.text().lower()
+    assert "download" in note_text
+    assert "offline" in note_text
+
+
 def test_content_verification_on_done_renders_plain_language_not_json(tmp_path):
     services = _services(tmp_path)
     project = services.projects.create_project("Moonlit Depths")

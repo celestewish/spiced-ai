@@ -9,9 +9,10 @@ than guessing from raw text.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from spiced.connectors.unity_docs_scan import DevDocsScanResult
 from spiced.connectors.unity_package_registry import PackageCheckResult
-from spiced.connectors.unity_scan import OversizedAssetFinding
 from spiced.core.accessibility_parser import ParsedAccessibility
 from spiced.core.code_health_analyzer import LONG_FUNCTION_LINES, CodeHealthMetrics
 from spiced.core.community.base import CommunityMessage
@@ -24,6 +25,13 @@ from spiced.core.precommit_check import PrecommitFinding
 from spiced.core.test_result_parser import ParsedTestResults
 from spiced.core.unity_log_parser import ParsedError, ParsedLog
 from spiced.core.version_check_parser import ParsedVersionCheck
+
+if TYPE_CHECKING:
+    # core.asset_scan itself imports build_asset_scan_prompt from this module
+    # -- a real (non-type-checking) import here would be circular. Postponed
+    # annotation evaluation (see `from __future__ import annotations` above)
+    # makes this safe: the name is only ever resolved by a type checker.
+    from spiced.core.asset_scan import AssetFinding
 
 # Human-control rules. Kept as discrete lines so tests can assert their presence
 # and so the voice stays consistent across providers.
@@ -1030,6 +1038,9 @@ ASSET_SCAN_RULES: tuple[str, ...] = (
     "(Resources.Load, Addressables) or from a package won't show up here.",
     "If a category (oversized files, orphaned assets) has nothing in it, say so plainly rather "
     "than padding.",
+    "Broken scene references only apply to Godot projects — if the list is empty because this "
+    "isn't a Godot project, omit that whole section from your reply rather than including it "
+    "empty.",
 )
 
 ASSET_SCAN_RESPONSE_FORMAT = """Structure your reply exactly like this, keeping each section \
@@ -1043,6 +1054,9 @@ Oversized or uncompressed files:
 Possibly orphaned assets:
 - [File — or "None found." if the list is empty]
 
+Broken scene references (Godot only — omit this whole section for other engines):
+- [Scene → missing file — or "None found." if the list is empty]
+
 What this does not know:
 [A short, plain note on what "orphaned" can miss — assets loaded dynamically or from a package]
 
@@ -1055,7 +1069,7 @@ def _format_asset_scan_rules() -> str:
     return "\n".join(f"- {rule}" for rule in ASSET_SCAN_RULES)
 
 
-def _format_oversized_findings(findings: list[OversizedAssetFinding]) -> str:
+def _format_oversized_findings(findings: list[AssetFinding]) -> str:
     if not findings:
         return "- None found by the local scan."
     lines = []
@@ -1073,22 +1087,31 @@ def _format_orphaned_assets(paths: list[str]) -> str:
     return "\n".join(f"- {p}" for p in paths)
 
 
+def _format_broken_scene_references(refs: list[str]) -> str:
+    if not refs:
+        return "- None found by the local scan."
+    return "\n".join(f"- {r}" for r in refs)
+
+
 def build_asset_scan_prompt(
-    oversized: list[OversizedAssetFinding],
+    oversized: list[AssetFinding],
     orphaned_assets: list[str],
     *,
     orphan_caveat: str,
     project_name: str | None = None,
+    engine: str = "Unity",
+    broken_scene_references: list[str] | None = None,
 ) -> str:
     """Assemble the asset-sweep prompt from the deterministic local scan.
 
     Only file paths, sizes, and short reasons are included — never file
     contents, and Spiced never reads anything outside the project's own
-    ``Assets/`` folder.
+    scanned folder (``Assets/`` for Unity, the whole project for Godot,
+    ``Content/`` for Unreal).
     """
     project_line = f"Project: {project_name}" if project_name else "Project: (unnamed)"
     return (
-        "You are Spiced, a calm companion giving an indie Unity developer a read-only asset "
+        f"You are Spiced, a calm companion giving an indie {engine} developer a read-only asset "
         "health sweep. You never modify, recompress, resize, or delete anything.\n\n"
         "Follow these rules:\n"
         f"{_format_asset_scan_rules()}\n\n"
@@ -1098,6 +1121,8 @@ def build_asset_scan_prompt(
         "Possibly-orphaned assets from the local scan "
         f"({orphan_caveat}):\n"
         f"{_format_orphaned_assets(orphaned_assets)}\n\n"
+        "Broken scene references from the local scan (Godot only):\n"
+        f"{_format_broken_scene_references(broken_scene_references or [])}\n\n"
         f"{ASSET_SCAN_RESPONSE_FORMAT}\n"
     )
 
