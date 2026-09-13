@@ -1,6 +1,8 @@
 from spiced.core.unity_log_parser import (
     CATEGORY_COMPILER,
     CATEGORY_EXCEPTION,
+    LEADING_CONTEXT_LINES,
+    leading_context,
     parse_unity_log,
 )
 
@@ -74,3 +76,74 @@ def test_excerpt_is_capped():
     huge = "NullReferenceException: boom\n" + ("frame line here\n" * 5000)
     parsed = parse_unity_log(huge)
     assert len(parsed.excerpt) <= 2100  # cap + truncation note
+
+
+# --- first_error_line_index / leading_context (Unity Alpha Readiness Spec,
+# Priority 3b) --------------------------------------------------------------
+
+
+def test_first_error_line_index_is_none_without_errors():
+    parsed = parse_unity_log("Everything compiled fine.\nAll good.")
+    assert parsed.first_error_line_index is None
+
+
+def test_first_error_line_index_points_at_the_exception_header():
+    log = (
+        "Loading scene DungeonLevel1\n"
+        "Player spawned at (0, 1, 0)\n"
+        "NullReferenceException: Object reference not set to an instance of an object\n"
+        "HealthPickup.OnTriggerEnter2D () (at Assets/Scripts/HealthPickup.cs:24)\n"
+    )
+    parsed = parse_unity_log(log)
+    assert parsed.first_error_line_index == 2  # 0-indexed: the exception header line
+
+
+def test_first_error_line_index_points_at_the_compiler_error_line():
+    log = (
+        "Compiling...\n"
+        "Assets/Scripts/Player.cs(12,20): error CS0103: The name 'speed' does not exist\n"
+    )
+    parsed = parse_unity_log(log)
+    assert parsed.first_error_line_index == 1
+
+
+def test_first_error_line_index_is_the_first_of_several_errors():
+    log = (
+        "line 0\n"
+        "NullReferenceException: boom\n"  # line 1 -- first error
+        "Foo.Bar () (at Assets/Scripts/Foo.cs:1)\n\n"
+        "MissingReferenceException: also boom\n"  # a second, later error
+        "Baz.Qux () (at Assets/Scripts/Baz.cs:2)\n\n"
+    )
+    parsed = parse_unity_log(log)
+    assert parsed.first_error_line_index == 1
+
+
+def test_leading_context_returns_preceding_nonblank_lines_verbatim():
+    text = (
+        "Loading scene DungeonLevel1\n\nPlayer spawned at (0, 1, 0)\n"
+        "NullReferenceException: boom\n"
+    )
+    # The error header is line index 3.
+    assert leading_context(text, 3) == [
+        "Loading scene DungeonLevel1",
+        "Player spawned at (0, 1, 0)",
+    ]
+
+
+def test_leading_context_is_capped_at_leading_context_lines():
+    lines = [f"log line {i}" for i in range(20)]
+    text = "\n".join(lines) + "\nNullReferenceException: boom\n"
+    context = leading_context(text, 20)  # error header is line index 20
+    assert len(context) == LEADING_CONTEXT_LINES
+    assert context == lines[20 - LEADING_CONTEXT_LINES : 20]
+
+
+def test_leading_context_clamps_at_the_start_of_the_file():
+    text = "line a\nline b\nNullReferenceException: boom\n"
+    assert leading_context(text, 2) == ["line a", "line b"]
+
+
+def test_leading_context_at_index_zero_is_empty():
+    text = "NullReferenceException: boom\n"
+    assert leading_context(text, 0) == []

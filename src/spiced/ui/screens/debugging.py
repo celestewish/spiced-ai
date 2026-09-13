@@ -64,12 +64,14 @@ from spiced.core.draft_translation import NoDialogueError as DraftTranslationNoD
 from spiced.core.draft_translation import (
     ProviderNotReadyError as DraftTranslationNotReadyError,
 )
-from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNREAL
+from spiced.core.engine_dispatch import ENGINE_GODOT, ENGINE_UNITY, ENGINE_UNREAL
+from spiced.core.engine_executable_resolve import find_unity_editor_log
 from spiced.core.localization_readiness import HEURISTIC_CAVEAT, LocalizationReadinessScan
 from spiced.core.localization_readiness import (
     NoUnityFolderError as LocalizationNoUnityFolderError,
 )
 from spiced.core.scope_creep import detect_scope_creep
+from spiced.core.unity_log_parser import leading_context
 from spiced.core.version_check import ProviderNotReadyError as VersionCheckNotReadyError
 from spiced.core.version_check import VersionCheckReview
 from spiced.ui.thread_utils import AIStreamWorker, launch_worker
@@ -122,6 +124,16 @@ def _format_asset_findings(findings: AssetScanFindings) -> str:
 
 
 class _CrashWorker(AIStreamWorker):
+    """Live Task Progress Transparency (Unity Alpha Readiness Spec,
+    Priority 2): the flagship "paste a crash log, get an AI-written fix"
+    flow had no step feedback before the AI response started streaming in
+    -- only the Analyze button's water_fill animation. ``progress`` covers
+    exactly that pre-stream gap (reading the log, resolving the provider);
+    once tokens start arriving, ``chunk`` (AIStreamWorker's own signal)
+    already gives real per-token feedback."""
+
+    progress = Signal(str)
+
     def __init__(
         self, services: Services, log_text: str, source_type: str, source_filename: str | None
     ) -> None:
@@ -132,9 +144,11 @@ class _CrashWorker(AIStreamWorker):
         self._source_filename = source_filename
 
     def _call(self, on_chunk):
+        self.progress.emit("Reading the log…")
         provider = self._services.build_provider()
         project = self._services.active_project()
         team_mode = self._services.team_mode_enabled()
+        self.progress.emit(f"Contacting {provider.display_name()}…")
         analysis = self._services.debugging.analyze(
             provider,
             self._log_text,
@@ -603,17 +617,40 @@ class DebuggingScreen(QWidget):
             "Paste your Unity console output or Editor.log excerpt here…"
         )
         self._log_input.setFixedHeight(140)
+        self._log_input.textChanged.connect(self._refresh_leading_context)
         layout.addWidget(self._log_input)
+
+        # "What was happening before this" (Unity Alpha Readiness Spec,
+        # Priority 3b): a local parse, no AI call -- populated as soon as a
+        # log is pasted/imported, before Analyze is ever clicked. Reuses
+        # SourceLinkExpander rather than a new widget, so it reads as the
+        # same "show me the evidence" interaction language already
+        # established on this screen (see self._source_link below).
+        self._leading_context_expander = SourceLinkExpander()
+        layout.addWidget(self._leading_context_expander)
 
         row = QHBoxLayout()
         self._import_btn = PillButton("Import log file…")
         self._import_btn.clicked.connect(self._import_file)
         row.addWidget(self._import_btn)
+        # One-click Editor.log import (Unity Alpha Readiness Spec, Priority
+        # 3a): Unity writes Editor.log to a fixed, well-known OS path, so a
+        # Unity user shouldn't have to know that or go find it themselves.
+        # Enablement kept in sync with the active project in refresh().
+        self._editor_log_btn = PillButton("Import latest Editor.log")
+        self._editor_log_btn.clicked.connect(self._import_editor_log)
+        self._editor_log_btn.setEnabled(False)
+        row.addWidget(self._editor_log_btn)
         row.addStretch(1)
         self._analyze_btn = PillButton("Analyze", water_fill=True)
         self._analyze_btn.clicked.connect(self._on_analyze)
         row.addWidget(self._analyze_btn)
         layout.addLayout(row)
+
+        # Live Task Progress Transparency (Unity Alpha Readiness Spec,
+        # Priority 2) -- see _CrashWorker.progress.
+        self._analysis_progress_trail = ProgressTrail()
+        layout.addWidget(self._analysis_progress_trail)
 
         result_title = QLabel("Analysis")
         result_title.setObjectName("SectionTitle")
@@ -630,6 +667,19 @@ class DebuggingScreen(QWidget):
         # excerpt that was actually sent, whichever applies.
         self._source_link = SourceLinkExpander()
         layout.addWidget(self._source_link)
+
+        # Repeat-offender signal (Unity Alpha Readiness Spec, Priority 3c):
+        # a script that's shown up across several *different* past
+        # analyses -- distinct from RegressionService's same-bug-recurring
+        # match above. A quiet, non-blocking line, shown once per project
+        # per app session rather than recomputed on every refresh() (see
+        # self._hotspot_shown_for_project_id in _refresh_history).
+        self._hotspot_label = QLabel("")
+        self._hotspot_label.setObjectName("Muted")
+        self._hotspot_label.setWordWrap(True)
+        self._hotspot_label.setVisible(False)
+        layout.addWidget(self._hotspot_label)
+        self._hotspot_shown_for_project_id: int | None = None
 
         history_title = QLabel("Recent sessions")
         history_title.setObjectName("SectionTitle")
@@ -657,7 +707,12 @@ class DebuggingScreen(QWidget):
         layout.addWidget(intro)
 
         self._version_input = QPlainTextEdit()
-        self._version_input.setPlaceholderText("Paste a C# script here…")
+        # Unity Alpha Readiness Spec, Priority 3e: this check is genuinely
+        # Unity-only (core.version_check scans for deprecated Unity APIs
+        # specifically, unlike Code Health's language-agnostic metrics
+        # below), so naming it here matches the pattern the crash-log
+        # placeholder above already established.
+        self._version_input.setPlaceholderText("Paste a Unity C# script here…")
         self._version_input.setFixedHeight(120)
         layout.addWidget(self._version_input)
 
@@ -1622,6 +1677,11 @@ class DebuggingScreen(QWidget):
 
     def refresh(self) -> None:
         project = self._services.active_project()
+        self._editor_log_btn.setEnabled(
+            project is not None
+            and project.engine == ENGINE_UNITY
+            and find_unity_editor_log() is not None
+        )
         if project is None:
             self._context_label.setText(
                 "No active project yet. You can still analyze a log, but pick a project on "
@@ -1654,6 +1714,7 @@ class DebuggingScreen(QWidget):
         if project is None:
             self._history.setPlainText("Sessions are saved once you select an active project.")
             return
+        self._refresh_hotspot(project.id)
         sessions = self._services.debugging.history(project.id, limit=10)
         if not sessions:
             self._history.setPlainText("No debugging sessions saved for this project yet.")
@@ -1665,6 +1726,21 @@ class DebuggingScreen(QWidget):
             summary = s.summary or ""
             lines.append(f"[{s.created_at}] {error}{where}\n    {summary}")
         self._history.setPlainText("\n".join(lines))
+
+    def _refresh_hotspot(self, project_id: int) -> None:
+        if self._hotspot_shown_for_project_id == project_id:
+            return  # once per project per app session, not on every refresh()
+        self._hotspot_shown_for_project_id = project_id
+        hotspots = self._services.debugging.hotspots(project_id)
+        if not hotspots:
+            self._hotspot_label.setVisible(False)
+            return
+        name, count = hotspots[0]
+        self._hotspot_label.setText(
+            f"{name} has come up in {count} of your last past analyses — might be worth a "
+            "closer look."
+        )
+        self._hotspot_label.setVisible(True)
 
     def _refresh_version_history(self) -> None:
         project = self._services.active_project()
@@ -1714,6 +1790,42 @@ class DebuggingScreen(QWidget):
         self._log_input.setPlainText(text)
         self._pending_filename = Path(path).name
 
+    def _import_editor_log(self) -> None:
+        """Same import path as `_import_file`, just a pre-resolved source
+        (Unity's own fixed Editor.log location) instead of a file dialog."""
+        log_path = find_unity_editor_log()
+        if log_path is None:
+            QMessageBox.information(
+                self, "Editor.log not found", "Couldn't find a Unity Editor.log on this machine."
+            )
+            return
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Could not read file", f"Sorry, I couldn't open that file:\n{exc}"
+            )
+            return
+        self._log_input.setPlainText(text)
+        self._pending_filename = log_path.name
+
+    def _refresh_leading_context(self) -> None:
+        """Local, AI-free parse -- runs on every edit to self._log_input
+        (paste, typing, or one of the import buttons above), not just
+        before Analyze (Unity Alpha Readiness Spec, Priority 3b)."""
+        text = self._log_input.toPlainText()
+        parsed = self._services.debugging.parse(text) if text.strip() else None
+        if parsed is None or parsed.first_error_line_index is None:
+            self._leading_context_expander.set_source(None, None)
+            return
+        context_lines = leading_context(text, parsed.first_error_line_index)
+        if not context_lines:
+            self._leading_context_expander.set_source(None, None)
+            return
+        self._leading_context_expander.set_source(
+            "What was happening before this", "\n".join(context_lines)
+        )
+
     def _on_analyze(self) -> None:
         log_text = self._log_input.toPlainText().strip()
         if not log_text:
@@ -1726,9 +1838,10 @@ class DebuggingScreen(QWidget):
         filename = self._pending_filename
         self._set_busy(True)
         self._result.clear()
+        self._analysis_progress_trail.reset()
 
         worker = _CrashWorker(self._services, log_text, source_type, filename)
-        thread = launch_worker(self, worker)
+        thread = launch_worker(self, worker, progress_slot=self._analysis_progress_trail.add_step)
         thread.started.connect(worker.run)
         worker.chunk.connect(self._on_chunk)
         worker.done.connect(self._on_done)

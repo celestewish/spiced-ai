@@ -1,5 +1,6 @@
 """core.engine_executable_resolve: resolving/suggesting the Godot/Unreal
-executables a build or test run needs.
+executables a build or test run needs, plus (Unity Alpha Readiness Spec,
+Priority 3a) locating Unity's own Editor.log.
 
 Connect-a-Project Setup Simplification spec, Finding 2 fix 4. The existing
 ``resolve_godot_executable``/``resolve_unreal_uat``/``resolve_unreal_editor_cmd``
@@ -15,6 +16,7 @@ import json
 from spiced.core.engine_executable_resolve import (
     find_godot_on_path,
     find_installed_unreal_engines,
+    find_unity_editor_log,
     resolve_godot_executable,
     resolve_unreal_editor_cmd,
     resolve_unreal_uat,
@@ -156,3 +158,60 @@ def test_find_godot_on_path_returns_none_when_not_found(monkeypatch):
     monkeypatch.setattr("spiced.core.engine_executable_resolve.shutil.which", lambda name: None)
 
     assert find_godot_on_path() is None
+
+
+# --- find_unity_editor_log -----------------------------------------------
+
+
+def test_find_unity_editor_log_windows_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "spiced.core.engine_executable_resolve.platform.system", lambda: "Windows"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    log = tmp_path / "Unity" / "Editor" / "Editor.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("Unity console output", encoding="utf-8")
+
+    assert find_unity_editor_log() == log
+
+
+def test_find_unity_editor_log_windows_missing_localappdata_returns_none(monkeypatch):
+    monkeypatch.setattr(
+        "spiced.core.engine_executable_resolve.platform.system", lambda: "Windows"
+    )
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    assert find_unity_editor_log() is None
+
+
+def test_find_unity_editor_log_macos_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "spiced.core.engine_executable_resolve.platform.system", lambda: "Darwin"
+    )
+    monkeypatch.setattr("spiced.core.engine_executable_resolve.Path.home", lambda: tmp_path)
+    log = tmp_path / "Library" / "Logs" / "Unity" / "Editor.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("Unity console output", encoding="utf-8")
+
+    assert find_unity_editor_log() == log
+
+
+def test_find_unity_editor_log_linux_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "spiced.core.engine_executable_resolve.platform.system", lambda: "Linux"
+    )
+    monkeypatch.setattr("spiced.core.engine_executable_resolve.Path.home", lambda: tmp_path)
+    log = tmp_path / ".config" / "unity3d" / "Editor.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("Unity console output", encoding="utf-8")
+
+    assert find_unity_editor_log() == log
+
+
+def test_find_unity_editor_log_returns_none_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "spiced.core.engine_executable_resolve.platform.system", lambda: "Windows"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))  # no Editor.log written
+
+    assert find_unity_editor_log() is None
