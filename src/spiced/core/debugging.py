@@ -7,6 +7,7 @@ The full log is never sent or stored; only a trimmed excerpt is used.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -126,6 +127,22 @@ class DebuggingService:
 
     def history(self, project_id: int, limit: int = 20) -> list[DebugSession]:
         return self._sessions.list_for_project(project_id, limit=limit)
+
+    def hotspots(
+        self, project_id: int, limit: int = 3, min_occurrences: int = 3
+    ) -> list[tuple[str, int]]:
+        """Scripts that have shown up in several *different* past analyses
+        for this project -- a repeat-offender signal, distinct from
+        RegressionService's same-bug-recurring match (Unity Alpha
+        Readiness Spec, Priority 3c). Purely local aggregation over
+        already-stored sessions; no new data collection."""
+        sessions = self._sessions.list_for_project(project_id, limit=200)
+        counts = Counter(s.detected_file for s in sessions if s.detected_file)
+        return [
+            (name, count)
+            for name, count in counts.most_common(limit)
+            if count >= min_occurrences
+        ]
 
     def _save_session(
         self,

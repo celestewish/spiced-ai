@@ -47,7 +47,18 @@ from spiced.ui.widgets.nav_icons import NavOrbButton
 # refresh(), so they get their own shadow applied at construction time (see
 # dashboard.py's _card()) rather than here, where a one-time findChildren
 # pass would only ever catch the very first set built.
-_SHADOWED_FRAME_NAMES = {"Panel", "Sidebar", "ContextPanel", "TopBar"}
+#
+# "Panel" deliberately excluded (Unity Alpha Readiness Spec, Priority 1):
+# it's the direct parent of self._stack (FadeStackedWidget, all 14 screens),
+# including Debugging Buddy's token-by-token AI streaming and water_fill
+# button animation. QGraphicsDropShadowEffect rasterizes its owning
+# widget's *entire subtree* to an offscreen buffer on every repaint of
+# anything inside it -- every streamed character, every button-animation
+# tick, every screen crossfade was paying for a full-subtree
+# rasterize+blur on top of its own paint cost. Sidebar/ContextPanel/TopBar
+# don't have this problem since nothing inside them repaints at animation
+# frequency.
+_SHADOWED_FRAME_NAMES = {"Sidebar", "ContextPanel", "TopBar"}
 
 NAV_ITEMS = [
     "Dashboard",

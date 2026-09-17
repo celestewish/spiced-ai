@@ -132,3 +132,71 @@ def test_regression_match_none_without_regression_service():
     service = DebuggingService(DebugSessionRepository(db))  # no regression service wired
     analysis = service.analyze(FakeProvider(), NULL_REF_LOG, project=project)
     assert analysis.regression_match is None
+
+
+# --- hotspots (Unity Alpha Readiness Spec, Priority 3c) ----------------------
+
+
+def _seed_session(sessions: DebugSessionRepository, project_id: int, detected_file: str) -> None:
+    sessions.create(
+        project_id=project_id,
+        source_type="paste",
+        summary="summary",
+        detected_error_type="NullReferenceException",
+        detected_file=detected_file,
+    )
+
+
+def test_hotspots_empty_with_no_sessions():
+    service, project = _service()
+    assert service.hotspots(project.id) == []
+
+
+def test_hotspots_requires_min_occurrences():
+    db = Database(":memory:")
+    sessions = DebugSessionRepository(db)
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = DebuggingService(sessions)
+    _seed_session(sessions, project.id, "HealthPickup.cs")
+    _seed_session(sessions, project.id, "HealthPickup.cs")  # only 2 -- below default min of 3
+
+    assert service.hotspots(project.id) == []
+
+
+def test_hotspots_flags_a_script_across_several_different_analyses():
+    db = Database(":memory:")
+    sessions = DebugSessionRepository(db)
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = DebuggingService(sessions)
+    for _ in range(4):
+        _seed_session(sessions, project.id, "HealthPickup.cs")
+    _seed_session(sessions, project.id, "Player.cs")
+
+    hotspots = service.hotspots(project.id)
+
+    assert hotspots == [("HealthPickup.cs", 4)]
+
+
+def test_hotspots_ignores_sessions_with_no_detected_file():
+    db = Database(":memory:")
+    sessions = DebugSessionRepository(db)
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = DebuggingService(sessions)
+    for _ in range(3):
+        sessions.create(
+            project_id=project.id, source_type="paste", summary="s", detected_file=None
+        )
+
+    assert service.hotspots(project.id) == []
+
+
+def test_hotspots_respects_limit():
+    db = Database(":memory:")
+    sessions = DebugSessionRepository(db)
+    project = ProjectRepository(db).create("Moonlit Depths", engine="Unity")
+    service = DebuggingService(sessions)
+    for name in ("A.cs", "B.cs", "C.cs"):
+        for _ in range(3):
+            _seed_session(sessions, project.id, name)
+
+    assert len(service.hotspots(project.id, limit=2)) == 2

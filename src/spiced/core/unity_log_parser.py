@@ -29,6 +29,9 @@ _COMPILER_RE = re.compile(
 MAX_EXCERPT_CHARS = 2000
 MAX_STACK_FRAMES = 6
 
+# Unity Alpha Readiness Spec, Priority 3b.
+LEADING_CONTEXT_LINES = 12
+
 
 def _script_from_path(path: str | None) -> str | None:
     if not path:
@@ -59,6 +62,10 @@ class ParsedLog:
     errors: list[ParsedError]
     total_lines: int
     excerpt: str
+    # Line index of the first matched error (compiler error or exception
+    # header) -- None when has_errors is false. Feeds leading_context()
+    # below; not used by _build_excerpt/the AI prompt.
+    first_error_line_index: int | None = None
 
     @property
     def primary(self) -> ParsedError | None:
@@ -74,6 +81,7 @@ def parse_unity_log(text: str) -> ParsedLog:
     ordered: list[ParsedError] = []
     grouped: dict[tuple, ParsedError] = {}
     current: ParsedError | None = None
+    first_error_line_index: int | None = None
 
     def commit(err: ParsedError) -> None:
         existing = grouped.get(err.signature)
@@ -85,7 +93,7 @@ def parse_unity_log(text: str) -> ParsedLog:
             if not existing.stack_excerpt and err.stack_excerpt:
                 existing.stack_excerpt = err.stack_excerpt
 
-    for raw in lines:
+    for i, raw in enumerate(lines):
         line = raw.rstrip()
 
         compiler = _COMPILER_RE.search(line)
@@ -93,6 +101,8 @@ def parse_unity_log(text: str) -> ParsedLog:
             if current is not None:
                 commit(current)
                 current = None
+            if first_error_line_index is None:
+                first_error_line_index = i
             err = ParsedError(
                 category=CATEGORY_COMPILER,
                 error_type=compiler.group("code"),
@@ -109,6 +119,8 @@ def parse_unity_log(text: str) -> ParsedLog:
         if header:
             if current is not None:
                 commit(current)
+            if first_error_line_index is None:
+                first_error_line_index = i
             current = ParsedError(
                 category=CATEGORY_EXCEPTION,
                 error_type=header.group("type"),
@@ -142,7 +154,23 @@ def parse_unity_log(text: str) -> ParsedLog:
         commit(current)
 
     excerpt = _build_excerpt(ordered)
-    return ParsedLog(errors=ordered, total_lines=len(lines), excerpt=excerpt)
+    return ParsedLog(
+        errors=ordered,
+        total_lines=len(lines),
+        excerpt=excerpt,
+        first_error_line_index=first_error_line_index,
+    )
+
+
+def leading_context(text: str, first_error_line_index: int) -> list[str]:
+    """The plain Console lines immediately before the first detected error,
+    verbatim -- deliberately not filtered through the exception/compiler
+    regexes above, since the point is showing what was happening generally,
+    not extracting another structured error (Unity Alpha Readiness Spec,
+    Priority 3b)."""
+    lines = text.splitlines()
+    start = max(0, first_error_line_index - LEADING_CONTEXT_LINES)
+    return [line for line in lines[start:first_error_line_index] if line.strip()]
 
 
 def _build_excerpt(errors: list[ParsedError]) -> str:

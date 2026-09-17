@@ -23,12 +23,20 @@ purely to help the UI *suggest* a value for that override before falling
 back to an empty manual browse dialog; the developer still has to click
 something to accept a suggestion (see ``ui.screens.projects``), same as
 every other "opt-in, never silent" auto-detection in this codebase.
+
+``find_unity_editor_log`` (Unity Alpha Readiness Spec, Priority 3a) is a
+different kind of discovery -- a log file's fixed OS path, not an
+executable -- but lives here rather than in a new module for the same
+reason the two functions above do: this file is already the established
+home for "look in the one place this engine's tooling always puts
+something" discovery.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 from pathlib import Path
 
@@ -120,3 +128,22 @@ def find_godot_on_path() -> str | None:
     still needs the manual override, same as before.
     """
     return shutil.which("godot") or shutil.which("godot.exe")
+
+
+def find_unity_editor_log() -> Path | None:
+    """The current user's live Unity Editor.log, if it exists on this OS.
+
+    Unity writes it to a fixed, well-known path per OS -- a one-click
+    import source for ``ui.screens.debugging``'s crash-analysis flow,
+    alongside the existing paste/manual-file-picker paths (Unity Alpha
+    Readiness Spec, Priority 3a).
+    """
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("LOCALAPPDATA")
+        candidate = Path(base) / "Unity" / "Editor" / "Editor.log" if base else None
+    elif system == "Darwin":
+        candidate = Path.home() / "Library" / "Logs" / "Unity" / "Editor.log"
+    else:
+        candidate = Path.home() / ".config" / "unity3d" / "Editor.log"
+    return candidate if candidate and candidate.is_file() else None

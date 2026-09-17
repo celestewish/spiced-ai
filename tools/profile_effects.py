@@ -48,8 +48,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from PySide6.QtCore import QPoint  # noqa: E402
-from PySide6.QtGui import QPixmap  # noqa: E402
-from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
+from PySide6.QtGui import QColor, QPixmap  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QVBoxLayout,
+    QWidget,
+)
 
 from spiced.ui.effects import motion  # noqa: E402
 from spiced.ui.effects.background_scene import OceanBackgroundWidget  # noqa: E402
@@ -269,6 +275,58 @@ def bench_water_splash_overlay() -> None:
     _report("1 splash", times)
 
 
+# --- Panel drop-shadow (Unity Alpha Readiness Spec, Priority 1) --------------
+
+_PANEL_SCREEN_COUNT = 14  # matches main_window._build_workspace's real stack
+_PANEL_ITERATIONS = 300
+
+
+def _bench_shadowed_panel(shadowed: bool) -> list[float]:
+    parent = QWidget()
+    parent.resize(1280, 800)
+    panel = QFrame()
+    panel.setObjectName("Panel")
+    panel_layout = QVBoxLayout(panel)
+    stack = FadeStackedWidget(panel, services=_FakeServices())
+    for i in range(_PANEL_SCREEN_COUNT):
+        page = QWidget()
+        page.setObjectName(f"page{i}")
+        stack.addWidget(page)
+    panel_layout.addWidget(stack)
+
+    parent_layout = QVBoxLayout(parent)
+    parent_layout.addWidget(panel)
+
+    if shadowed:
+        shadow = QGraphicsDropShadowEffect(panel)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(20, 10, 40, 90))
+        panel.setGraphicsEffect(shadow)
+
+    parent.show()
+    target = QPixmap(1280, 800)
+
+    for _ in range(5):
+        panel.render(target)
+
+    times: list[float] = []
+    for _ in range(_PANEL_ITERATIONS):
+        start = time.perf_counter()
+        panel.render(target)
+        times.append((time.perf_counter() - start) * 1000.0)
+
+    parent.deleteLater()
+    _app.processEvents()
+    return times
+
+
+def bench_shadowed_panel() -> None:
+    print("Panel repaint cost: with vs. without QGraphicsDropShadowEffect")
+    _report("shadowed", _bench_shadowed_panel(shadowed=True))
+    _report("unshadowed", _bench_shadowed_panel(shadowed=False))
+
+
 # --- cProfile deep-dive -------------------------------------------------------
 
 
@@ -316,6 +374,8 @@ def main() -> None:
     bench_fade_stacked_widget()
     print()
     bench_water_splash_overlay()
+    print()
+    bench_shadowed_panel()
     print("=" * 78)
     print()
     profile_worst_case()
