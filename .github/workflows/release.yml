@@ -60,13 +60,12 @@ jobs:
           }
 
       - name: Build the PyInstaller onedir bundle
-        # SPICED_DEBUG_CONSOLE=1 (temporary, for diagnosing the known
-        # silent-crash issue -- packaging/README.md) makes this a
-        # console-subsystem build instead of the shipped windowed one, so
-        # anything the process writes on its way down is actually captured
-        # instead of going to a standard-handle nobody's reading.
-        env:
-          SPICED_DEBUG_CONSOLE: "1"
+        # The real shipped shape: windowed (console=False, spiced.spec's
+        # own default). See packaging/README.md's "Known issue" section
+        # for how SPICED_DEBUG_CONSOLE=1 was used to root-cause and confirm
+        # the fix for the windowed build's sys.stdout/stderr being None
+        # (spiced.app.main._ensure_std_streams) -- not needed here anymore
+        # now that that's fixed at the source instead of worked around.
         run: pyinstaller packaging/spiced.spec
 
       - name: Smoke-test the built exe

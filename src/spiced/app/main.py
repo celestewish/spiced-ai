@@ -6,9 +6,41 @@ Run with:  python -m spiced.app.main
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from spiced.app.services import Services
 from spiced.storage.database import DatabaseUnavailableError
+
+
+def _ensure_std_streams() -> None:
+    """A frozen, windowed (``console=False``) build has ``sys.stdout``/
+    ``sys.stderr`` as ``None`` -- there's no console for them to be
+    connected to. Any code that then touches them (this module's own
+    ``print()`` on the ``--smoke-test`` success path included) raises an
+    uncaught ``AttributeError`` that kills the process before it can
+    report anything: confirmed root cause of a real, previously-unexplained
+    "the packaged build fails --smoke-test with zero output and no crash
+    record" issue (see packaging/README.md's former "Known issue" section)
+    -- a diagnostic console-subsystem build of the exact same code ran
+    clean, which only makes sense if the difference is stdout/stderr
+    existing at all.
+
+    Redirected to a real per-user log file, not silently discarded, so
+    anything printed there -- or an unhandled exception's default
+    traceback, which also writes to stderr -- still ends up somewhere a
+    developer (or a tester filing a bug) can actually find, rather than
+    just vanishing. A no-op for every other run (source checkout, tests,
+    a console-subsystem build), which already have real streams.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log_path = Path.home() / ".spiced" / "spiced_stdio.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    stream = open(log_path, "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
 
 
 def _load_env() -> None:
@@ -49,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     # source tree's layout) before a real user does.
     smoke_test = "--smoke-test" in argv[1:]
 
+    _ensure_std_streams()
     _load_env()
 
     # Imported here so non-GUI tooling can import spiced.app.services without Qt.
