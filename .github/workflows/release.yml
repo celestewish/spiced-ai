@@ -71,10 +71,30 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           dist\Spiced\Spiced.exe --smoke-test
+          Write-Host "LASTEXITCODE: $LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Smoke test failed with exit code $LASTEXITCODE"
             exit 1
           }
+
+      - name: Dump crash diagnostics on smoke-test failure
+        # packaging/README.md documents an unresolved, silent (no Python
+        # traceback -- the exe's own stdout never appears) crash inside
+        # Qt6Core.dll. A native fault like that shows up in Windows'
+        # Application event log with the real faulting module/exception
+        # code, which is a lot more actionable than guessing at a fix
+        # blind. Runs only when the previous step actually failed.
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "--- Application error events (most recent first) ---"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 5 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Message
+          Write-Host "--- .NET/native crash (Id 1001, WER) events ---"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1001} -MaxEvents 5 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Message
+          Write-Host "--- dist\Spiced contents (sanity check nothing's missing) ---"
+          Get-ChildItem -Recurse dist\Spiced | Select-Object -First 200 FullName
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
