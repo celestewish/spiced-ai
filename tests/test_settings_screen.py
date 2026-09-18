@@ -126,3 +126,38 @@ def test_no_key_configured_status_when_store_is_empty(tmp_path, monkeypatch):
     assert "no key configured" in screen._api_key_status.text().lower()
 
     services.close()
+
+
+def test_bundled_key_status_shown_when_only_a_bundled_key_is_available(tmp_path, monkeypatch):
+    # Pre-Alpha Testing spec: a tester with neither an env var nor a saved
+    # key of their own, but a maintainer-bundled default, should see that
+    # explained -- not the old "no key configured yet" text, which would be
+    # actively wrong once a bundled key makes the provider actually work.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(api_key_store.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(api_key_store.sys, "executable", str(tmp_path / "Spiced.exe"))
+    (tmp_path / "bundled_openai_key.txt").write_text("sk-bundled", encoding="utf-8")
+
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    assert "built-in" in screen._api_key_status.text().lower()
+
+    services.close()
+
+
+def test_saved_key_status_wins_over_bundled_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api_key_store.set_api_key("openai", "sk-saved")
+    monkeypatch.setattr(api_key_store.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(api_key_store.sys, "executable", str(tmp_path / "Spiced.exe"))
+    (tmp_path / "bundled_openai_key.txt").write_text("sk-bundled", encoding="utf-8")
+
+    services = Services(db_path=str(tmp_path / "spiced.db"))
+    screen = SettingsScreen(services)
+    screen._provider_box.setCurrentText("openai")
+
+    assert "a key is saved" in screen._api_key_status.text().lower()
+
+    services.close()

@@ -58,5 +58,10 @@ Thumbs.db
 # (see packaging/vendor/README.md) -- a compiled binary has no business in
 # version control, and its redistribution terms are a build-time decision.
 packaging/vendor/ffmpeg/*.exe
+# A maintainer-bundled default AI provider key (Pre-Alpha Testing spec) is
+# an even more sensitive build-time input than ffmpeg.exe -- see
+# packaging/vendor/README.md's spend-cap requirement before ever creating
+# one of these files locally.
+packaging/vendor/bundled_*_key.txt
 # Inno Setup's compiled output (Spiced-Setup.exe).
 packaging/output/

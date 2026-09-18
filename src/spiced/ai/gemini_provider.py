@@ -2,9 +2,10 @@
 
 Reads the API key from the GEMINI_API_KEY environment variable. If the
 environment variable isn't set, falls back to a key saved through the
-Settings screen (see core.api_key_store) -- the environment variable always
-wins when both are present. The key is never hardcoded or logged by this
-module.
+Settings screen (see core.api_key_store), then to a maintainer-bundled
+default key baked into a packaged build (Pre-Alpha Testing spec) -- see
+core.api_key_store.get_bundled_api_key's own docstring. The key is never
+hardcoded or logged by this module.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import os
 from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
-from spiced.core.api_key_store import get_api_key
+from spiced.core.api_key_store import get_api_key, get_bundled_api_key
 
 DEFAULT_MODEL = "gemini-2.0-flash"
 
@@ -28,7 +29,7 @@ class GeminiProvider(AIProvider):
         key = os.environ.get("GEMINI_API_KEY")
         if key and key.strip():
             return key.strip()
-        return get_api_key("gemini")
+        return get_api_key("gemini") or get_bundled_api_key("gemini")
 
     def is_available(self) -> bool:
         if not self._api_key():

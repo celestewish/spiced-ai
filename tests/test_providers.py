@@ -249,3 +249,41 @@ def test_gemini_env_var_wins_over_saved_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "sk-env")
     api_key_store.set_api_key("gemini", "sk-saved")
     assert GeminiProvider()._api_key() == "sk-env"
+
+
+# --- Falling back further, to a maintainer-bundled key (Pre-Alpha Testing
+# spec) -- always the *last* resort, below both the env var and a key the
+# developer saved themselves. ------------------------------------------------
+
+
+def _bundle_key(tmp_path, monkeypatch, provider_key: str, value: str) -> None:
+    monkeypatch.setattr(api_key_store.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(api_key_store.sys, "executable", str(tmp_path / "Spiced.exe"))
+    (tmp_path / f"bundled_{provider_key}_key.txt").write_text(value, encoding="utf-8")
+
+
+def test_openai_falls_back_to_bundled_key_when_nothing_else_is_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _bundle_key(tmp_path, monkeypatch, "openai", "sk-bundled")
+    assert OpenAIProvider().is_available() is True
+    assert OpenAIProvider()._api_key() == "sk-bundled"
+
+
+def test_openai_saved_key_wins_over_bundled_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    api_key_store.set_api_key("openai", "sk-saved")
+    _bundle_key(tmp_path, monkeypatch, "openai", "sk-bundled")
+    assert OpenAIProvider()._api_key() == "sk-saved"
+
+
+def test_openai_env_var_wins_over_bundled_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    _bundle_key(tmp_path, monkeypatch, "openai", "sk-bundled")
+    assert OpenAIProvider()._api_key() == "sk-env"
+
+
+def test_gemini_falls_back_to_bundled_key_when_nothing_else_is_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    _bundle_key(tmp_path, monkeypatch, "gemini", "sk-bundled")
+    assert GeminiProvider().is_available() is True
+    assert GeminiProvider()._api_key() == "sk-bundled"

@@ -34,6 +34,31 @@ jobs:
         # matches e2e-tests.yml's own reasoning for including it.
         run: pip install -e ".[build,gemini]"
 
+      - name: Write bundled AI provider key(s) from repo secrets (optional)
+        # Pre-Alpha Testing spec: bundles a maintainer-supplied default key
+        # into this release so a tester gets working AI features with zero
+        # setup -- see packaging/vendor/README.md's spend-cap requirement
+        # before ever configuring these secrets (Settings -> Secrets and
+        # variables -> Actions on this repo). Each one is skipped entirely
+        # if its secret isn't set, matching spiced.spec's own "quietly
+        # absent" handling for the resulting file -- a release built
+        # without either behaves like a source checkout for that provider
+        # (a tester needs their own key, or uses MockProvider). Values come
+        # in via env:, not interpolated directly into the script, per
+        # GitHub's own guidance for handling secrets in a run: step.
+        shell: pwsh
+        env:
+          BUNDLED_OPENAI_API_KEY: ${{ secrets.BUNDLED_OPENAI_API_KEY }}
+          BUNDLED_GEMINI_API_KEY: ${{ secrets.BUNDLED_GEMINI_API_KEY }}
+        run: |
+          New-Item -ItemType Directory -Force -Path packaging/vendor | Out-Null
+          if ($env:BUNDLED_OPENAI_API_KEY) {
+            Set-Content -Path packaging/vendor/bundled_openai_key.txt -Value $env:BUNDLED_OPENAI_API_KEY -NoNewline
+          }
+          if ($env:BUNDLED_GEMINI_API_KEY) {
+            Set-Content -Path packaging/vendor/bundled_gemini_key.txt -Value $env:BUNDLED_GEMINI_API_KEY -NoNewline
+          }
+
       - name: Build the PyInstaller onedir bundle
         run: pyinstaller packaging/spiced.spec
 

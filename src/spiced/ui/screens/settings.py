@@ -26,7 +26,7 @@ from spiced.ai import available_providers, build_provider
 from spiced.app.services import Services
 from spiced.automation.finding import SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_WARNING
 from spiced.backend_client.config import backend_unreachable_message
-from spiced.core.api_key_store import get_api_key, set_api_key
+from spiced.core.api_key_store import get_api_key, get_bundled_api_key, set_api_key
 from spiced.core.keyboard_shortcuts import (
     ACTIONS as SHORTCUT_ACTIONS,
 )
@@ -473,6 +473,11 @@ class SettingsScreen(QWidget):
             self._api_key_status.setText(
                 "A key is saved for this provider. Paste a new one to replace it, or save "
                 "a blank field to remove it."
+            )
+        elif get_bundled_api_key(provider_key):
+            self._api_key_status.setText(
+                "Using Spiced's built-in key for this pre-alpha -- no setup needed. Paste "
+                "your own above if you'd rather use that instead."
             )
         else:
             self._api_key_status.setText(

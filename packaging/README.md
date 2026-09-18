@@ -43,6 +43,16 @@ at install time. Skipped quietly if absent; loudness normalization then
 behaves exactly like a source checkout (needs `ffmpeg` on the user's own
 PATH -- see `docs/loudness_normalize_ffmpeg.md`).
 
+### Optional: bundle a default AI provider key (Pre-Alpha Testing spec)
+
+So a pre-alpha tester gets working AI features with no account/key of
+their own, place the raw key at `packaging/vendor/bundled_openai_key.txt`
+(and/or `bundled_gemini_key.txt`) *before* running `pyinstaller` above.
+**Read `packaging/vendor/README.md`'s "Bundled default AI provider key"
+section first** -- this is not secret storage, and it requires setting a
+hard spending cap on that key at the provider before bundling it anywhere.
+Skipped quietly if absent, same as ffmpeg.
+
 ### Smoke-testing the build (Finding 3 fix 8)
 
 `spiced.app.main.main()` takes a `--smoke-test` flag: constructs the real

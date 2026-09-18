@@ -40,6 +40,18 @@ ffmpeg_exe = REPO_ROOT / "packaging" / "vendor" / "ffmpeg" / "ffmpeg.exe"
 if ffmpeg_exe.is_file():
     datas.append((str(ffmpeg_exe), "."))
 
+# Maintainer-bundled default AI provider key(s) (Pre-Alpha Testing spec) --
+# placed here by hand (or by the release CI workflow from a repo secret)
+# before a release build, same spot/same "skipped quietly if absent"
+# pattern as ffmpeg above. See packaging/vendor/README.md for the required
+# spend-cap precaution before bundling a real key this way --
+# core.api_key_store.get_bundled_api_key reads it back at runtime from
+# right next to Spiced.exe.
+for _provider_key in ("openai", "gemini"):
+    bundled_key_file = REPO_ROOT / "packaging" / "vendor" / f"bundled_{_provider_key}_key.txt"
+    if bundled_key_file.is_file():
+        datas.append((str(bundled_key_file), "."))
+
 a = Analysis(
     [str(SRC / "spiced" / "app" / "main.py")],
     pathex=[str(SRC)],

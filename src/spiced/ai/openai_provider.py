@@ -3,9 +3,12 @@
 Reads the API key from the OPENAI_API_KEY environment variable and the model
 from OPENAI_MODEL (defaulting to a conservative, widely available model). If
 the environment variable isn't set, falls back to a key saved through the
-Settings screen (see core.api_key_store) -- the environment variable always
-wins when both are present. The key is never hardcoded or logged by this
-module.
+Settings screen (see core.api_key_store), then to a maintainer-bundled
+default key baked into a packaged build (Pre-Alpha Testing spec) so a
+tester gets working AI features with zero setup -- see
+core.api_key_store.get_bundled_api_key's own docstring for why that one is
+never secret, only spend-capped. The key is never hardcoded or logged by
+this module.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import os
 from collections.abc import Callable
 
 from spiced.ai.base import AIProvider, AIResponse
-from spiced.core.api_key_store import get_api_key
+from spiced.core.api_key_store import get_api_key, get_bundled_api_key
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -29,7 +32,7 @@ class OpenAIProvider(AIProvider):
         key = os.environ.get("OPENAI_API_KEY")
         if key and key.strip():
             return key.strip()
-        return get_api_key("openai")
+        return get_api_key("openai") or get_bundled_api_key("openai")
 
     def is_available(self) -> bool:
         if not self._api_key():
