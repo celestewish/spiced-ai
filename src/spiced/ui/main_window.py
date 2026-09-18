@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from spiced.ai.mock_provider import MockProvider
 from spiced.app.services import Services
+from spiced.core.demo_data import DEMO_CRASH_LOG_EXCERPT
 from spiced.core.keyboard_shortcuts import ACTIONS, binding_for, load_bindings
 from spiced.ui import theme
 from spiced.ui.build_scheduler import BuildScheduler
@@ -40,6 +42,8 @@ from spiced.ui.screens.team import TeamScreen
 from spiced.ui.screens.testing import TestingScreen
 from spiced.ui.shortcuts_cheatsheet import ShortcutsCheatSheet
 from spiced.ui.top_bar import TopBar
+from spiced.ui.tutorial.finish_dialog import TutorialFinishDialog
+from spiced.ui.tutorial.tutorial_overlay import TutorialOverlay, TutorialStep
 from spiced.ui.widgets.mascot_logo import MascotLogo
 from spiced.ui.widgets.nav_icons import NavOrbButton
 
@@ -125,6 +129,9 @@ class MainWindow(QWidget):
     def __init__(self, services: Services) -> None:
         super().__init__()
         self._services = services
+        # Created lazily by _start_tutorial(); checked (None-safe) in
+        # resizeEvent below, so it must exist before any resize can happen.
+        self._tutorial_overlay: TutorialOverlay | None = None
         # Registered before any child widget is built below -- PillButton and
         # NavOrbButton (built at ~100 call sites across every screen) resolve
         # their splash's reduced_motion check through this rather than
@@ -218,8 +225,18 @@ class MainWindow(QWidget):
 
         self._apply_glass_elevation()
 
+        # First-launch tutorial (In-App Tutorial spec): deferred via
+        # singleShot(0, ...) so it starts only after this window is shown
+        # and laid out -- the overlay needs real widget geometries from
+        # mapTo(), which aren't valid before the first show. A no-op if
+        # it's already been completed (or skipped) in a previous run.
+        if not self._services.tutorial_completed():
+            QTimer.singleShot(0, self._start_tutorial)
+
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._background.setGeometry(self.rect())
+        if self._tutorial_overlay is not None:
+            self._tutorial_overlay.resize_to_parent()
         super().resizeEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -264,6 +281,83 @@ class MainWindow(QWidget):
             shadow.setOffset(0, 6)
             shadow.setColor(QColor(20, 10, 40, 90))
             frame.setGraphicsEffect(shadow)
+
+    # --- First-launch tutorial (In-App Tutorial spec) -----------------------
+    #
+    # One task -- a crash analysis on the bundled demo project -- start to
+    # finish, not a tour of every screen (see TUTORIAL_SPEC.md's design
+    # principles). Lives here rather than on DebuggingScreen itself since it
+    # needs to reach across screens (switching the active project/nav tab)
+    # and reads real widget geometry only available once this window is shown.
+
+    def _start_tutorial(self) -> None:
+        demo_project = self._services.demo.seed()  # no-op if already seeded
+        self._switch_active_project(demo_project.id)
+        self._stack.setCurrentIndex(NAV_ITEMS.index("Debugging Buddy"))
+
+        debugging = self._debugging_screen
+        steps = [
+            TutorialStep(
+                title="Welcome to Spiced",
+                body=(
+                    "This is Debugging Buddy -- Spiced's crash analyzer. We've loaded a "
+                    "sample project so you can try a real analysis safely."
+                ),
+                target=lambda: self._nav_buttons[NAV_ITEMS.index("Debugging Buddy")],
+            ),
+            TutorialStep(
+                title="A real crash log",
+                body="Here's a real crash log -- go ahead and click Analyze.",
+                target=lambda: debugging._log_input,
+                on_enter=lambda: debugging._log_input.setPlainText(DEMO_CRASH_LOG_EXCERPT),
+            ),
+            TutorialStep(
+                title="Analyze",
+                body=(
+                    "Click Analyze and watch the steps below while it works -- this runs "
+                    "offline, no API key needed."
+                ),
+                target=lambda: debugging._analyze_btn,
+                # Runs the click through MockProvider (always available, zero
+                # setup) instead of the developer's own provider setting --
+                # see DebuggingScreen.set_tutorial_provider_override. The
+                # user's own click drives the tutorial forward here, not a
+                # Next button -- the actual "doing" part of "learn by doing".
+                on_enter=lambda: debugging.set_tutorial_provider_override(MockProvider()),
+                auto_advance_signal=debugging.analysis_finished,
+            ),
+            TutorialStep(
+                title="The result",
+                body="Here's the explanation and next steps, plain-language, no jargon.",
+                target=lambda: debugging._result,
+            ),
+            TutorialStep(
+                title="Full transparency",
+                body=(
+                    "Expand this anytime to see exactly what was sent and what was "
+                    "happening right before the crash."
+                ),
+                target=lambda: debugging._source_link,
+            ),
+        ]
+        self._tutorial_overlay = TutorialOverlay(self, self._services)
+        self._tutorial_overlay.start(steps, on_finished=self._on_tutorial_overlay_finished)
+
+    def _on_tutorial_overlay_finished(self, skipped: bool) -> None:
+        # Per NN/G's guidance, dismissing (skip, at any step) must be
+        # low-friction and must not be held hostage to finishing a step the
+        # user doesn't want right now -- it still marks this "seen" so a
+        # skip is a genuine dismissal, not a "try again next launch".
+        self._services.set_tutorial_completed(True)
+        if not skipped:
+            self._show_tutorial_finish_dialog()
+
+    def _show_tutorial_finish_dialog(self) -> None:
+        dialog = TutorialFinishDialog(self)
+        dialog.connect_project_requested.connect(
+            lambda: self._stack.setCurrentIndex(NAV_ITEMS.index("Projects"))
+        )
+        dialog.exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._build_scheduler.stop()
@@ -584,6 +678,9 @@ class MainWindow(QWidget):
         # The notification routing panel (#6) needs to reload whenever the
         # active project (and therefore its team) changes.
         self._projects_screen.projects_changed.connect(self._settings_screen.refresh)
+        # First-launch tutorial (In-App Tutorial spec): "Replay tutorial" in
+        # Settings runs the same flow regardless of the persisted flag.
+        self._settings_screen.replay_tutorial_requested.connect(self._start_tutorial)
 
         self._stack.addWidget(self._dashboard_screen)
         self._stack.addWidget(self._projects_screen)

@@ -38,6 +38,16 @@ DEMO_UNITY_PATH = "Bundled demo — no real Unity folder on disk"
 DEMO_SOURCE = "demo"
 DEMO_PROVIDER_LABEL = "Sample data (no AI used)"
 
+# Shared with ui.tutorial (the first-launch walkthrough pre-fills the crash
+# analysis log input with this exact text) so the live analysis it walks the
+# user through and this seeded session's own "Recent sessions" entry tell
+# the same story, instead of two different-looking HealthPickup crashes.
+DEMO_CRASH_LOG_EXCERPT = (
+    "NullReferenceException: Object reference not set to an instance of an object\n"
+    "  at HealthPickup.OnTriggerEnter (UnityEngine.Collider other) "
+    "[0x00000] in HealthPickup.cs:24"
+)
+
 # Six-line playtest scenario used to build the feedback batch. Deliberately
 # mixes a bug, confusion, performance, UI, and praise so the review is realistic.
 DEMO_FEEDBACK_TEXT = "\n".join(
@@ -131,11 +141,7 @@ class DemoDataService:
             detected_error_type="NullReferenceException",
             detected_file="HealthPickup.cs",
             detected_line=24,
-            raw_excerpt=(
-                "NullReferenceException: Object reference not set to an instance of an object\n"
-                "  at HealthPickup.OnTriggerEnter (UnityEngine.Collider other) "
-                "[0x00000] in HealthPickup.cs:24"
-            ),
+            raw_excerpt=DEMO_CRASH_LOG_EXCERPT,
             suggested_next_steps=[
                 "Open HealthPickup.cs and check what is referenced on line 24.",
                 "Confirm the player's health component is assigned in the Inspector.",

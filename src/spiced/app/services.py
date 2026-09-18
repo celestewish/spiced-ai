@@ -178,6 +178,10 @@ DEFAULT_ACCESSIBILITY_TEXT_SIZE = "normal"
 # whole-value preference document per feature).
 WIDGET_PREFERENCES_KEY = "widget_preferences_v1"
 KEYBOARD_SHORTCUTS_KEY = "keyboard_shortcuts_v1"
+# First-launch tutorial (In-App Tutorial spec): same thin key/value shape as
+# every other one-off flag above -- no new table, no new repository. Off
+# (not completed) by default so a fresh install shows the walkthrough once.
+TUTORIAL_COMPLETED_KEY = "tutorial_completed"
 
 
 class Services:
@@ -594,6 +598,14 @@ class Services:
 
     def set_accessibility_reduce_motion_enabled(self, enabled: bool) -> None:
         self._settings.set(ACCESSIBILITY_REDUCE_MOTION_KEY, "1" if enabled else "")
+
+    # --- First-launch tutorial (In-App Tutorial spec) -----------------------
+
+    def tutorial_completed(self) -> bool:
+        return self._settings.get(TUTORIAL_COMPLETED_KEY, "") == "1"
+
+    def set_tutorial_completed(self, completed: bool) -> None:
+        self._settings.set(TUTORIAL_COMPLETED_KEY, "1" if completed else "")
 
     # --- Customizable Dashboard Widgets / Keyboard Shortcuts: raw JSON -----
     #

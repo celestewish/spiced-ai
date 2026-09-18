@@ -200,6 +200,13 @@ class _BillingActionWorker(QObject):
 
 class SettingsScreen(QWidget):
     settings_changed = Signal()
+    # First-launch tutorial (In-App Tutorial spec): MainWindow owns the
+    # actual walkthrough (it needs real widget geometry from other
+    # screens), so this screen only asks for it -- same "screen emits,
+    # MainWindow connects" shape as settings_changed/projects_changed
+    # elsewhere in this app, rather than threading a callback through the
+    # constructor.
+    replay_tutorial_requested = Signal()
 
     def __init__(self, services: Services) -> None:
         super().__init__()
@@ -370,6 +377,7 @@ class SettingsScreen(QWidget):
         layout.addWidget(_hairline())
         self._build_accessibility_section(layout)
         self._build_keyboard_shortcuts_section(layout)
+        self._build_tutorial_section(layout)
         self._build_notification_routing_section(layout)
         self._build_notification_preferences_section(layout)
         self._build_automation_rules_section(layout)
@@ -828,6 +836,34 @@ class SettingsScreen(QWidget):
         self._on_shortcut_action_changed(self._shortcut_action_box.currentIndex())
         self._refresh_shortcuts_list()
         self.settings_changed.emit()
+
+    # --- First-launch tutorial (In-App Tutorial spec) -----------------------
+    #
+    # NN/G's guidance is that guidance must be easy to both dismiss (the
+    # overlay's own Skip button) and *recall* later -- skipping isn't the
+    # same as losing access to it forever. This is that recall path: replay
+    # works regardless of the persisted "already seen it" flag, and reuses
+    # DemoDataService.seed() (already idempotent) the same way the first
+    # run does.
+
+    def _build_tutorial_section(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(_hairline())
+        heading = QLabel("Tutorial")
+        heading.setObjectName("SectionTitle")
+        layout.addSpacing(6)
+        layout.addWidget(heading)
+
+        note = QLabel(
+            "A short, guided walkthrough of Debugging Buddy using the bundled sample "
+            "project -- runs a real (mock) crash analysis so you can see how it works."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        replay_btn = PillButton("Replay tutorial", ghost=True)
+        replay_btn.clicked.connect(self.replay_tutorial_requested.emit)
+        layout.addWidget(replay_btn)
 
     # --- Relevance-Based Notifications: routing config (Phase J, #6) --------
     #

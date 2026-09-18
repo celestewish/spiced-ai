@@ -195,3 +195,107 @@ def test_close_event_removes_the_application_event_filter(tmp_path):
     # this only needs to confirm close() doesn't raise -- there's no public
     # API to assert a filter is no longer installed.
     QApplication.instance().removeEventFilter(window)
+
+
+# --- First-launch tutorial (In-App Tutorial spec) ---------------------------
+#
+# QTimer.singleShot(0, ...) only actually fires once the event loop runs --
+# these tests drive that explicitly with processEvents() rather than relying
+# on a real event loop, matching this file's existing headless-construction
+# pattern.
+
+
+def test_fresh_services_triggers_the_tutorial_exactly_once(tmp_path):
+    services = _services(tmp_path)
+    assert services.tutorial_completed() is False
+
+    window = MainWindow(services)
+    try:
+        assert window._tutorial_overlay is None  # not started yet -- deferred
+        QApplication.processEvents()  # runs the singleShot(0, ...) callback
+
+        assert window._tutorial_overlay is not None
+        assert window._tutorial_overlay.isHidden() is False
+        # Demo project seeded and made active, Debugging Buddy selected --
+        # see MainWindow._start_tutorial.
+        assert services.demo.is_seeded() is True
+        assert services.active_project().name == services.demo.find_demo_project().name
+        assert window._stack.currentIndex() == NAV_ITEMS.index("Debugging Buddy")
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_a_completed_tutorial_does_not_retrigger_on_construction(tmp_path):
+    services = _services(tmp_path)
+    services.set_tutorial_completed(True)
+
+    window = MainWindow(services)
+    try:
+        QApplication.processEvents()
+
+        assert window._tutorial_overlay is None
+        # Nothing about a normal launch should silently seed/switch to the
+        # demo project once the tutorial has already been seen.
+        assert services.demo.is_seeded() is False
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_skipping_the_tutorial_marks_it_completed_without_showing_the_finish_dialog(tmp_path):
+    services = _services(tmp_path)
+    window = MainWindow(services)
+    try:
+        QApplication.processEvents()
+        overlay = window._tutorial_overlay
+        assert overlay is not None
+
+        overlay._skip_btn.click()
+
+        assert services.tutorial_completed() is True
+        assert overlay.isVisible() is False
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_completing_every_step_marks_completed_and_shows_the_finish_dialog(tmp_path, monkeypatch):
+    # TutorialFinishDialog.exec() is a real modal event loop -- stub it out
+    # so this test doesn't block waiting for a click nothing will ever send.
+    shown = []
+    monkeypatch.setattr(
+        "spiced.ui.main_window.TutorialFinishDialog.exec", lambda self: shown.append(True)
+    )
+    services = _services(tmp_path)
+    window = MainWindow(services)
+    try:
+        QApplication.processEvents()
+        overlay = window._tutorial_overlay
+        assert overlay is not None
+
+        for _ in range(len(overlay._steps)):
+            overlay._advance()
+
+        assert services.tutorial_completed() is True
+        assert shown == [True]
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()
+
+
+def test_replay_tutorial_from_settings_restarts_it_even_when_already_completed(tmp_path):
+    services = _services(tmp_path)
+    services.set_tutorial_completed(True)
+    window = MainWindow(services)
+    try:
+        QApplication.processEvents()
+        assert window._tutorial_overlay is None  # didn't auto-start
+
+        window._settings_screen.replay_tutorial_requested.emit()
+
+        assert window._tutorial_overlay is not None
+        assert window._tutorial_overlay.isHidden() is False
+    finally:
+        window._build_scheduler.stop()
+        window._top_bar.stop()

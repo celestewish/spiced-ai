@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from spiced.ai.base import AIProvider
 from spiced.app.services import Services
 from spiced.core.asset_scan import AssetScanFindings, AssetScanReview
 from spiced.core.asset_scan import NoProjectFolderError as AssetScanNoUnityFolderError
@@ -135,17 +136,28 @@ class _CrashWorker(AIStreamWorker):
     progress = Signal(str)
 
     def __init__(
-        self, services: Services, log_text: str, source_type: str, source_filename: str | None
+        self,
+        services: Services,
+        log_text: str,
+        source_type: str,
+        source_filename: str | None,
+        *,
+        provider_override: AIProvider | None = None,
     ) -> None:
         super().__init__()
         self._services = services
         self._log_text = log_text
         self._source_type = source_type
         self._source_filename = source_filename
+        # Used only by the first-launch tutorial (ui.tutorial), which runs
+        # its live analysis step through MockProvider so it works with zero
+        # setup -- never touches the developer's own provider_name() setting
+        # in Settings. None (the default) means "use it, same as always".
+        self._provider_override = provider_override
 
     def _call(self, on_chunk):
         self.progress.emit("Reading the log…")
-        provider = self._services.build_provider()
+        provider = self._provider_override or self._services.build_provider()
         project = self._services.active_project()
         team_mode = self._services.team_mode_enabled()
         self.progress.emit(f"Contacting {provider.display_name()}…")
@@ -514,6 +526,11 @@ class _DraftTranslationWorker(AIStreamWorker):
 
 class DebuggingScreen(QWidget):
     usage_changed = Signal()
+    # First-launch tutorial (ui.tutorial): fires once a crash analysis
+    # finishes, so the "Analyze" step can auto-advance on the user's own
+    # click completing rather than a "Next" button -- see
+    # set_tutorial_provider_override and _on_done.
+    analysis_finished = Signal()
 
     # Tool switcher (Frutiger Aqua redesign): one entry per existing
     # _build_* method, in the same order they used to appear as sections in
@@ -535,6 +552,7 @@ class DebuggingScreen(QWidget):
         super().__init__()
         self._services = services
         self._pending_filename: str | None = None
+        self._tutorial_provider_override: AIProvider | None = None
         self._version_pending_filename: str | None = None
         self._health_pending_filename: str | None = None
         self._current_changelog_draft_id: int | None = None
@@ -1840,7 +1858,16 @@ class DebuggingScreen(QWidget):
         self._result.clear()
         self._analysis_progress_trail.reset()
 
-        worker = _CrashWorker(self._services, log_text, source_type, filename)
+        worker = _CrashWorker(
+            self._services,
+            log_text,
+            source_type,
+            filename,
+            provider_override=self._tutorial_provider_override,
+        )
+        # One-shot: a real (non-tutorial) analysis right after a tutorial
+        # one must never silently keep using MockProvider.
+        self._tutorial_provider_override = None
         thread = launch_worker(self, worker, progress_slot=self._analysis_progress_trail.add_step)
         thread.started.connect(worker.run)
         worker.chunk.connect(self._on_chunk)
@@ -1869,11 +1896,25 @@ class DebuggingScreen(QWidget):
         self._set_busy(False)
         self.usage_changed.emit()
         self._refresh_history()
+        self.analysis_finished.emit()
+
+    def set_tutorial_provider_override(self, provider: AIProvider | None) -> None:
+        """Force the *next* Analyze click through ``provider`` instead of
+        ``Services.build_provider()`` -- used only by the first-launch
+        tutorial (ui.tutorial), which passes a ``MockProvider()`` so its
+        live analysis step works with zero setup and never touches the
+        developer's own provider_name() setting. Cleared automatically
+        after that one analysis starts (see _on_analyze)."""
+        self._tutorial_provider_override = provider
 
     def _on_failed(self, message: str) -> None:
         self._result.setPlainText(message)
         self._source_link.set_source(None, None)
         self._set_busy(False)
+        # Also fires on failure (not just success) -- if the tutorial's
+        # analysis step were ever waiting on this, it must not hang
+        # forever just because something went wrong.
+        self.analysis_finished.emit()
 
     def _set_busy(self, busy: bool) -> None:
         self._analyze_btn.setEnabled(not busy)
