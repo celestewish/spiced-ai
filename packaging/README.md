@@ -70,53 +70,53 @@ release.yml` runs this automatically on every tagged build.
 
 ## What's been verified vs. not, as of this revision
 
-`packaging/spiced.spec` was actually run (`pyinstaller packaging/spiced.spec`)
-against a real environment -- Analysis/PYZ/EXE/COLLECT all complete, the
-font `datas=` entry lands correctly, and the ffmpeg-bundling conditional
-was exercised (both present and absent). The resulting exe's own runtime
-behavior is where a real, unresolved issue turned up -- see the next
-section.
+The full pipeline -- `pyinstaller packaging/spiced.spec`, the built exe's
+own `--smoke-test`, and `iscc packaging\inno_setup.iss` -- has now run
+**end to end, successfully, on a real `windows-latest` GitHub Actions
+runner** (`.github/workflows/release.yml`, triggered via
+`workflow_dispatch`, Python 3.12.10 / PySide6 6.11.2 / PyInstaller
+6.22.3 / Inno Setup 6.7.1), producing a real, working `Spiced-Setup.exe`
+as a workflow artifact. Both real bugs that blocked this before are fixed
+-- see the two subsections below. Install/uninstall/registry-write
+behavior (the `[Code]` section's `WM_SETTINGCHANGE` broadcast) still
+hasn't been manually exercised by actually running the installer and
+clicking through it on a machine -- the CI pipeline confirms it *compiles
+and produces an exe*, not that every installer-time code path behaves
+exactly as intended.
 
-`packaging/inno_setup.iss` was **not** compiled or run -- no Inno Setup /
-`iscc` install was available in the environment this spec was authored in.
-The script (including the `[Code]` section's `WM_SETTINGCHANGE` broadcast,
-Inno Setup's own documented pattern for making a just-written registry env
-var visible to new processes immediately) is written to Inno Setup 6's
-documented syntax, but compile it once (`iscc packaging\inno_setup.iss`)
-and sanity-check the install/uninstall/registry-write flow on a real
-Windows machine before relying on it for a release.
+### Fixed: the packaged build's silent crash was sys.stdout/stderr being None
 
-## Known issue: Qt6Core.dll crash on a from-scratch build (unresolved)
+The exe used to fail `--smoke-test` with zero output and no Windows
+Application-log crash record at all -- genuinely unexplained at the time.
+Root-caused by building a diagnostic console-subsystem variant (which ran
+clean) and comparing: a frozen, **windowed** (`console=False`, the shape
+this spec actually ships) build has `sys.stdout`/`sys.stderr` as `None`,
+since there's no console for them to be connected to. This module's own
+`print("Spiced smoke test OK")` on the success path -- along with
+anything else that touches those streams -- raised an uncaught
+`AttributeError` that killed the process before it could report
+anything. Fixed at the source in `spiced.app.main._ensure_std_streams()`:
+redirects either stream to a real per-user log file
+(`~/.spiced/spiced_stdio.log`) when it's `None`, rather than leaving
+Spiced unable to report a startup failure a real (non-technical) user
+hits. See that function's own docstring, and `tests/test_app_main_std_streams.py`.
 
-Building `packaging/spiced.spec` against **PySide6 6.11.1 / PyInstaller
-6.22.2 / Python 3.14** produced a `dist/Spiced/Spiced.exe` that completed
-`Analysis`/`PYZ`/`EXE`/`COLLECT` without error, correctly bundled the font
-`datas=` entry, and correctly included `opengl32sw.dll` (the one binary
-this combination is known to sometimes drop) -- but the built exe itself
-crashed on launch (`--smoke-test` included) with a Windows fault inside
-`Qt6Core.dll`, exception code `0xc0000409`, both with and without
-`QT_QPA_PLATFORM=offscreen` set, and both with `console=True` and
-`console=False`. The exact same PySide6 install runs Spiced fine
-un-frozen (`python -m spiced.app.main --smoke-test` succeeds), so this is
-specific to the frozen build, not a Spiced code bug or a headless/display
-limitation.
+If you're chasing a *different*-looking crash locally (in particular, an
+actual Windows Application-log record naming `Qt6Core.dll` with exception
+code `0xc0000409`) that persists after this fix, that's a separate issue
+from the one above -- it did not reproduce on CI's clean
+`windows-latest`/Python 3.12 environment even before this fix, so it may
+be specific to a particular local toolchain/Python version pairing rather
+than something wrong with this spec.
 
-Not yet root-caused -- diagnosing further needs a debugger attached to the
-frozen exe (WinDbg or similar) or trying an older, more established
-PySide6/Python pairing, neither of which was available in the environment
-this spec was authored in. Likely candidates, in rough order of
-probability: a Qt platform-plugin compatibility gap between this
-particular (very recent) PySide6 6.11.1 release and
-`pyinstaller-hooks-contrib`'s PySide6 hook; a Python 3.14 / PyInstaller
-bootloader compatibility gap (3.14 is new enough that native-extension
-tooling may not have fully caught up). **Before relying on this spec for a
-real release, build it and run `--smoke-test` against the actual exe once
-(see above) to confirm this either doesn't reproduce on your toolchain
-versions or has been fixed** -- `.github/workflows/release.yml`'s own
-smoke-test step exists specifically to catch this class of thing
-automatically, but hasn't itself been exercised on a real `windows-latest`
-runner yet either. Pinning an older, more widely-used PySide6 (e.g. 6.7.x)
-is the first thing worth trying if it reproduces there too.
+### Fixed: inno_setup.iss had never actually been compiled
+
+First real `iscc packaging\inno_setup.iss` run caught a genuine bug: the
+`[Code]` section's own `HWND_BROADCAST` constant declaration collided
+with Inno Setup 6's built-in identifier of the same name ("Duplicate
+identifier 'HWND_BROADCAST'", compile aborted). Removed the redundant
+declaration -- `WM_SETTINGCHANGE`/`SMTO_ABORTIFHUNG` weren't flagged, so
+those are still declared locally as before.
 
 ## Code signing (Finding 3 fix 7 -- open decision, not yet made)
 
