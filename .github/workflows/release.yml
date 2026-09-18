@@ -73,17 +73,25 @@ jobs:
         # against the *built* exe and exits without opening a real window
         # -- catches a missing-DLL/missing-font/missing-FFMPEG_PATH
         # bundling gap here, before a user hits it. See packaging/README.md.
-        # Explicitly redirects every stream (*>&1) to a file rather than
-        # relying on the runner's own capture of the child process's
-        # inherited standard handles, which is the one thing that changed
-        # for this diagnostic run.
+        # Start-Process -Wait -PassThru, not a bare `&` call with stream
+        # redirection: for a windowed-subsystem (console=False) exe,
+        # PowerShell's own process-wait/$LASTEXITCODE tracking around a
+        # directly-redirected `&` invocation turned out to be unreliable
+        # (an empty $LASTEXITCODE, not 0 or 1, observed while diagnosing
+        # this very step) -- Start-Process is the documented, reliable way
+        # to launch *and wait for* a native process and get its real exit
+        # code regardless of subsystem.
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          & dist\Spiced\Spiced.exe --smoke-test *> smoke_test_output.txt
-          $code = $LASTEXITCODE
-          Write-Host "--- smoke test output ---"
-          Get-Content smoke_test_output.txt -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath "dist\Spiced\Spiced.exe" -ArgumentList "--smoke-test" `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput smoke_test_stdout.txt -RedirectStandardError smoke_test_stderr.txt
+          $code = $proc.ExitCode
+          Write-Host "--- smoke test stdout ---"
+          Get-Content smoke_test_stdout.txt -ErrorAction SilentlyContinue
+          Write-Host "--- smoke test stderr ---"
+          Get-Content smoke_test_stderr.txt -ErrorAction SilentlyContinue
           Write-Host "--- exit code: $code ---"
           if ($code -ne 0) {
             Write-Error "Smoke test failed with exit code $code"
