@@ -89,10 +89,15 @@ Type: filesandordirs; Name: "{app}"
 // documented pattern (FAQ: "How do I make changes to environment variables
 // take effect immediately?") for broadcasting WM_SETTINGCHANGE so new
 // processes pick up a just-written registry env var without a full login.
+// HWND_BROADCAST is already a built-in Inno Setup 6 Pascal Script constant
+// (confirmed by compiling this script: "Duplicate identifier
+// 'HWND_BROADCAST'" -- this whole file was never actually run through
+// iscc before the Pre-Alpha Build spec's CI verification pass; see
+// packaging/README.md's former "not compiled or run" caveat). Declaring
+// it again here is a compile error, not a harmless redefinition.
 const
   WM_SETTINGCHANGE = $001A;
   SMTO_ABORTIFHUNG = $0002;
-  HWND_BROADCAST = $FFFF;
 
 function SendMessageTimeoutA(
   hWnd: LongInt; Msg: LongInt; wParam: LongInt; lParam: AnsiString;
