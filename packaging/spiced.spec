@@ -15,9 +15,16 @@ Output lands in dist/Spiced/ (the whole folder is what Inno Setup
 packaging/README.md for the full build.
 """
 
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(SPECPATH).resolve().parent  # SPECPATH is packaging/ itself
+# Debugging aid only, never the shipped default: set SPICED_DEBUG_CONSOLE=1
+# before running pyinstaller to get a console-subsystem build instead of a
+# windowed one, so a Python traceback (or anything else printed) is
+# actually visible when diagnosing a build that fails --smoke-test with no
+# other output -- see packaging/README.md's "Known issue" section.
+DEBUG_CONSOLE = bool(os.environ.get("SPICED_DEBUG_CONSOLE"))
 SRC = REPO_ROOT / "src"
 
 # Bundled Baloo 2 / Nunito font files (pyproject.toml's
@@ -76,7 +83,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,
+    console=DEBUG_CONSOLE,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,

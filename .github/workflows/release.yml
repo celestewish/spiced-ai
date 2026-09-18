@@ -60,6 +60,13 @@ jobs:
           }
 
       - name: Build the PyInstaller onedir bundle
+        # SPICED_DEBUG_CONSOLE=1 (temporary, for diagnosing the known
+        # silent-crash issue -- packaging/README.md) makes this a
+        # console-subsystem build instead of the shipped windowed one, so
+        # anything the process writes on its way down is actually captured
+        # instead of going to a standard-handle nobody's reading.
+        env:
+          SPICED_DEBUG_CONSOLE: "1"
         run: pyinstaller packaging/spiced.spec
 
       - name: Smoke-test the built exe
@@ -67,13 +74,20 @@ jobs:
         # against the *built* exe and exits without opening a real window
         # -- catches a missing-DLL/missing-font/missing-FFMPEG_PATH
         # bundling gap here, before a user hits it. See packaging/README.md.
+        # Explicitly redirects every stream (*>&1) to a file rather than
+        # relying on the runner's own capture of the child process's
+        # inherited standard handles, which is the one thing that changed
+        # for this diagnostic run.
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          dist\Spiced\Spiced.exe --smoke-test
-          Write-Host "LASTEXITCODE: $LASTEXITCODE"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Smoke test failed with exit code $LASTEXITCODE"
+          & dist\Spiced\Spiced.exe --smoke-test *> smoke_test_output.txt
+          $code = $LASTEXITCODE
+          Write-Host "--- smoke test output ---"
+          Get-Content smoke_test_output.txt -ErrorAction SilentlyContinue
+          Write-Host "--- exit code: $code ---"
+          if ($code -ne 0) {
+            Write-Error "Smoke test failed with exit code $code"
             exit 1
           }
 
