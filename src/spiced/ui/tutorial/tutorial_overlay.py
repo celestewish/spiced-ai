@@ -17,11 +17,23 @@ of anything inside it):
 
 Styling deliberately reuses what ``theme.py``/``ui.widgets.pill_button``
 already define rather than inventing new colors: the callout gets
-``objectName("Panel")`` (the same one-liner ``ShortcutsCheatSheet`` already
-uses to pick up ``QDialog#Panel``'s rounded cream-glass rule), its heading
-gets ``objectName("SectionTitle")``, and its buttons are ``PillButton``. A
-screenshot of a tutorial step should be indistinguishable in style from any
-other Spiced panel.
+``objectName("Panel")`` (the same rounded cream-glass look ``ShortcutsCheatSheet``
+gets from ``QDialog#Panel`` -- the callout itself is a ``QFrame``, which is
+what picks up ``theme.py``'s separate ``QFrame#Panel`` rule; a plain
+``QWidget`` matches neither selector and paints no background at all), its
+heading gets ``objectName("SectionTitle")``, and its buttons are
+``PillButton``. A screenshot of a tutorial step should be indistinguishable
+in style from any other Spiced panel.
+
+The cutout around the current step's target widget is a real hole, not a
+painted illusion: ``setMask()`` excludes that region from this widget's own
+paint *and* hit-testing, so the target widget already rendered underneath
+shows through with correct compositing (not a solid black square -- trying
+to "clear" a hole into an opaque widget's own paint buffer via
+``CompositionMode_Clear`` does not reveal a sibling widget's already-painted
+pixels, it just leaves undefined/black content there) and, critically,
+remains genuinely clickable through the overlay -- the entire point of the
+"click Analyze" step this overlay drives.
 """
 
 from __future__ import annotations
@@ -30,9 +42,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QRect
+from PySide6.QtGui import QColor, QPainter, QRegion
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from spiced.ui import theme
 from spiced.ui.widgets.pill_button import PillButton
@@ -76,7 +88,7 @@ class TutorialOverlay(QWidget):
         self._on_finished: Callable[[bool], None] | None = None
         self._connected_signal: Any = None
 
-        self._callout = QWidget(self)
+        self._callout = QFrame(self)
         self._callout.setObjectName("Panel")
         self._callout.setFixedWidth(320)
         callout_layout = QVBoxLayout(self._callout)
@@ -120,7 +132,7 @@ class TutorialOverlay(QWidget):
         automatically when its parent does."""
         if self.isVisible():
             self.setGeometry(self._main_window.rect())
-            self.update()
+            self._refresh_cutout()
 
     # --- Step flow -------------------------------------------------------
 
@@ -135,7 +147,7 @@ class TutorialOverlay(QWidget):
         if step.auto_advance_signal is not None:
             step.auto_advance_signal.connect(self._advance)
             self._connected_signal = step.auto_advance_signal
-        self.update()
+        self._refresh_cutout()
 
     def _disconnect_auto_advance(self) -> None:
         if self._connected_signal is not None:
@@ -155,27 +167,70 @@ class TutorialOverlay(QWidget):
     def finish(self, *, skipped: bool) -> None:
         self._disconnect_auto_advance()
         self._callout.hide()
+        self.clearMask()
         self.hide()
         if self._on_finished is not None:
             self._on_finished(skipped)
+
+    # --- Cutout: a real hole, not a painted illusion ------------------------
+    #
+    # setMask() excludes the cutout region from both this widget's own
+    # painting AND its hit-testing -- unlike trying to "clear" a hole via
+    # CompositionMode_Clear (which only ever operates on this widget's own
+    # paint buffer and can't reveal a sibling's already-rendered pixels;
+    # it just leaves undefined/black content there instead), masking lets
+    # the target widget underneath show through with correct compositing
+    # and, just as importantly, keeps it genuinely clickable through the
+    # overlay -- required for the "click Analyze" step to work at all.
+
+    def _resolve_cutout(self) -> QRect | None:
+        if not self._steps:
+            return None
+        target = self._steps[self._index].target()
+        if target is None or not target.isVisible():
+            return None
+        self._ensure_target_visible(target)
+        top_left = target.mapTo(self._main_window, target.rect().topLeft())
+        return QRect(top_left, target.size())
+
+    @staticmethod
+    def _ensure_target_visible(target: QWidget) -> None:
+        """Scroll ``target`` into view first if it's inside a ``QScrollArea``
+        that hasn't already scrolled to show it -- e.g. DebuggingScreen puts
+        every tool's content in its own per-tool QScrollArea, and a widget
+        further down that content (like the "Full transparency" step's
+        source-link expander) reports ``isVisible() == True`` regardless of
+        whether it's actually within the scrolled viewport right now. Without
+        this, the cutout/callout end up pointing at a widget the developer
+        can't see or reach without first scrolling manually -- the walkthrough
+        needs to do that scrolling itself, not assume the page is already
+        positioned right.
+        """
+        parent = target.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                parent.ensureWidgetVisible(target, 20, 20)
+                return
+            parent = parent.parentWidget()
+
+    def _refresh_cutout(self) -> None:
+        cutout = self._resolve_cutout()
+        if cutout is None:
+            self.clearMask()
+        else:
+            region = QRegion(self.rect())
+            region -= QRegion(cutout)
+            self.setMask(region)
+        self.update()
+        self._position_callout(cutout)
 
     # --- Painting ----------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if not self._steps:
             return
-        target = self._steps[self._index].target()
         painter = QPainter(self)
         painter.fillRect(self.rect(), self._scrim_color())
-        cutout = None
-        if target is not None and target.isVisible():
-            top_left = target.mapTo(self._main_window, target.rect().topLeft())
-            cutout = QRect(top_left, target.size())
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            painter.fillRect(cutout, Qt.GlobalColor.transparent)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        painter.end()
-        self._position_callout(cutout)
 
     def _scrim_color(self) -> QColor:
         high_contrast = bool(

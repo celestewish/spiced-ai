@@ -14,8 +14,16 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtWidgets import QApplication, QGraphicsEffect, QWidget  # noqa: E402
+from PySide6.QtCore import QPoint, QTimer  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFrame,
+    QGraphicsEffect,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from spiced.ui.tutorial.tutorial_overlay import TutorialOverlay, TutorialStep  # noqa: E402
 
@@ -141,7 +149,12 @@ def test_auto_advance_signal_hides_next_and_fires_on_signal():
     assert overlay._title_label.text() == "Next step"
 
 
-def test_target_resolved_fresh_each_time_not_cached():
+def test_target_resolved_fresh_on_each_cutout_refresh_not_cached():
+    # Target/cutout geometry is only ever resolved on a real step-change or
+    # resize (_refresh_cutout) -- not on every paint, since paintEvent no
+    # longer needs to know where the target is (masking handles that
+    # separately, once, when the cutout is computed). See this module's
+    # docstring for why painting stays a flat "fill the scrim" now.
     window, target = _window_with_target()
     other_target = QWidget(window)
     other_target.setGeometry(300, 300, 80, 30)
@@ -156,14 +169,116 @@ def test_target_resolved_fresh_each_time_not_cached():
     overlay = TutorialOverlay(window, _FakeServices())
     steps = [TutorialStep(title="One", body="", target=_resolve)]
     overlay.start(steps, on_finished=lambda skipped: None)
-    # .repaint() is a documented no-op under the offscreen QPA platform (see
-    # tools/profile_effects.py's module docstring) -- .render() drives the
-    # real paintEvent synchronously, so two calls means two real paints.
-    overlay.render(_blank_pixmap(window))
-    overlay.render(_blank_pixmap(window))
+    assert calls == [1]
 
-    # target() is called again on each paint, not memoized from start().
+    overlay._refresh_cutout()  # e.g. triggered by a resize
+
     assert len(calls) >= 2
+
+
+# --- Cutout: a real hole via setMask(), not a painted illusion --------------
+#
+# Regression coverage for the actual reported bug: the old
+# CompositionMode_Clear approach rendered the cutout as a solid black
+# square (it can't reveal a sibling widget's already-painted pixels from
+# inside this widget's own paint buffer) and, worse, never excluded that
+# region from hit-testing at all -- the target widget was genuinely
+# unclickable through the overlay for every step, including "click Analyze".
+
+
+def test_cutout_excludes_the_target_rect_from_the_mask_but_keeps_the_rest():
+    window, target = _window_with_target()
+    overlay = TutorialOverlay(window, _FakeServices())
+    steps = [TutorialStep(title="One", body="", target=lambda: target)]
+
+    overlay.start(steps, on_finished=lambda skipped: None)
+
+    mask = overlay.mask()
+    assert mask.isEmpty() is False
+    # Center of the target (100,100,120,40) -- must be OUTSIDE the mask so
+    # clicks there reach the real target widget underneath, not the overlay.
+    assert mask.contains(QPoint(160, 120)) is False
+    # Elsewhere on the window -- still inside the mask, so the overlay
+    # still dims/intercepts that area as normal.
+    assert mask.contains(QPoint(10, 10)) is True
+
+
+def test_no_target_clears_the_mask_entirely():
+    window, _target = _window_with_target()
+    overlay = TutorialOverlay(window, _FakeServices())
+    steps = [TutorialStep(title="Gone", body="", target=lambda: None)]
+
+    overlay.start(steps, on_finished=lambda skipped: None)
+
+    assert overlay.mask().isEmpty() is True
+
+
+def test_finish_clears_the_mask():
+    window, target = _window_with_target()
+    overlay = TutorialOverlay(window, _FakeServices())
+    steps = [TutorialStep(title="One", body="", target=lambda: target)]
+    overlay.start(steps, on_finished=lambda skipped: None)
+    assert overlay.mask().isEmpty() is False
+
+    overlay.finish(skipped=True)
+
+    assert overlay.mask().isEmpty() is True
+
+
+def _window_with_scrolled_target():
+    """A DebuggingScreen-shaped setup: the target lives inside a per-tool
+    QScrollArea, far enough down that it starts outside the visible
+    viewport -- reproduces the actual reported bug (the callout/cutout
+    pointed at a widget the developer had to scroll to reach manually,
+    which they couldn't do through the overlay)."""
+    window = QWidget()
+    window.resize(800, 600)
+    outer = QVBoxLayout(window)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    content = QWidget()
+    content_layout = QVBoxLayout(content)
+    content_layout.addWidget(QLabel("spacer"))
+    content_layout.itemAt(0).widget().setFixedHeight(1200)  # pushes target off-screen
+    target = QWidget()
+    target.setFixedSize(120, 40)
+    content_layout.addWidget(target)
+    scroll.setWidget(content)
+    outer.addWidget(scroll)
+
+    window.show()
+    scroll.show()
+    target.show()
+    return window, scroll, target
+
+
+def test_target_scrolled_out_of_view_is_scrolled_into_view_before_the_cutout_is_computed():
+    window, scroll, target = _window_with_scrolled_target()
+    assert scroll.verticalScrollBar().value() == 0  # starts scrolled to the top, target hidden
+
+    overlay = TutorialOverlay(window, _FakeServices())
+    steps = [TutorialStep(title="Deep", body="", target=lambda: target)]
+    overlay.start(steps, on_finished=lambda skipped: None)
+
+    assert scroll.verticalScrollBar().value() > 0
+    # The cutout now sits within the window's own visible bounds, not off
+    # past the bottom where the developer could never see or click it.
+    mask = overlay.mask()
+    assert mask.isEmpty() is False
+    target_top_left = target.mapTo(window, target.rect().topLeft())
+    assert window.rect().contains(target_top_left)
+
+
+def test_callout_is_a_qframe_so_it_picks_up_the_panel_qss_rule():
+    # theme.py styles QFrame#Panel and QDialog#Panel as two separate
+    # selectors -- a plain QWidget#Panel matches neither and paints no
+    # background at all, which is exactly why the callout's text used to
+    # float unreadable over whatever was behind it.
+    window, target = _window_with_target()
+    overlay = TutorialOverlay(window, _FakeServices())
+    assert isinstance(overlay._callout, QFrame)
+    assert overlay._callout.objectName() == "Panel"
 
 
 def _blank_pixmap(window):
